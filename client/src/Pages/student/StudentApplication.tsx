@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import { api } from "../../lib/api";
-import { docFileUrl, isImageMime } from "../../lib/docUrl";
+import { docFileUrl, isImageMime, friendlyErrorMessage } from "../../lib/docUrl";
 
 interface AppDoc {
     _id: string;
@@ -73,7 +73,9 @@ export default function StudentApplication() {
     const [saved, setSaved] = useState(false);
     const [savedMsg, setSavedMsg] = useState("");
     const [uploadFor, setUploadFor] = useState<string | null>(null);
+    const [uploadError, setUploadError] = useState("");
 
+    
 
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -112,9 +114,32 @@ export default function StudentApplication() {
                 });
             } else {
                 setForm({});
+                // No application yet: auto-create an empty draft so the student
+                // can start uploading documents immediately without first having
+                // to fill in Program / School. Those fields are only enforced at
+                // submission time, not for drafts (see Application model).
+                try {
+                    const created = await api<{ success: boolean; application: App }>("/student/application", {
+                        method: "POST",
+                        body: JSON.stringify({}),
+                    });
+                    setApp(created.application);
+                } catch (createErr) {
+                    const msg = createErr instanceof Error ? createErr.message : "Unable to create application.";
+                    // If the server already reports a draft exists (race condition),
+                    // that's fine — retry the fetch.
+                    if (msg.includes("already have a draft")) {
+                        await refresh();
+                        return;
+                    }
+                    setErr(friendlyErrorMessage(msg));
+                    setApp(null);
+                    setDocs([]);
+                }
             }
         } catch (e) {
-            setErr(e instanceof Error ? e.message : "Unable to load your application.");
+            const message = e instanceof Error ? e.message : "Unable to load your application.";
+            setErr(friendlyErrorMessage(message));
             setApp(null);
             setDocs([]);
         } finally {
@@ -357,6 +382,7 @@ function UploadModal({
             form.append("file", file);
             form.append("docType", docType);
             form.append("originalName", docType);
+            form.append("context", "application");
             await api<{ success: boolean; message: string; document: AppDoc }>(
                 "/student/application/documents",
                 { method: "POST", body: form }
@@ -364,7 +390,7 @@ function UploadModal({
             onUploaded();
             onClose();
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Upload failed.");
+            setError(friendlyErrorMessage(err instanceof Error ? err.message : "Upload failed."));
             setUploading(false);
         }
     };

@@ -18,3 +18,31 @@ export function docFileUrl(filename?: string | null): string | null {
 export function isImageMime(mime?: string | null): boolean {
   return mime === 'image/jpeg' || mime === 'image/png';
 }
+
+/**
+ * Translate raw server error messages into human-friendly text.
+ * Must never show a Mongoose ValidationError string like
+ * "Application validation failed: school: Path `school` is required."
+ */
+export function friendlyErrorMessage(message: string): string {
+  const lower = (message || '').toLowerCase();
+  if (lower.includes('school') && lower.includes('program')) {
+    return 'Please fill in your Scholarship Program and School Name before uploading documents.';
+  }
+  if (lower.includes('program')) {
+    return 'Please fill in your Scholarship Program before uploading.';
+  }
+  if (lower.includes('school')) {
+    return 'Please fill in your School Name before uploading.';
+  }
+  if (lower.includes('application') && (lower.includes('not found') || lower.includes('404'))) {
+    return 'Your application could not be found. Please refresh the page.';
+  }
+  if (lower.includes('validation failed')) {
+    return 'Some required fields are missing. Please complete the form and try again.';
+  }
+  if (lower.includes('duplicate key')) {
+    return 'You already have a draft application. Please refresh the page.';
+  }
+  return message;
+}

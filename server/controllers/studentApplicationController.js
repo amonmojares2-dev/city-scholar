@@ -42,6 +42,18 @@ const updateStudentApplication = async (req, res, next) => {
     if (req.body.school !== undefined) application.school = req.body.school;
     // Support submitting through PATCH (draft -> submitted only).
     if (req.body.status === 'submitted' && application.status === 'draft') {
+      // school and program are required at submission time (enforced here
+      // rather than at the schema level so drafts with empty values are allowed).
+      const program = (req.body.program || application.program || '').trim();
+      const school = (req.body.school || application.school || '').trim();
+      if (!program) {
+        return res.status(400).json({ success: false, message: 'Please fill in your Scholarship Program before submitting.' });
+      }
+      if (!school) {
+        return res.status(400).json({ success: false, message: 'Please fill in your School Name before submitting.' });
+      }
+      application.program = program;
+      application.school = school;
       application.status = 'submitted';
       application.submittedAt = req.body.submittedAt ? new Date(req.body.submittedAt) : new Date();
     }
@@ -56,7 +68,15 @@ const submitStudentApplication = async (req, res, next) => {
   try {
     const application = await Application.findOne({ student: req.user.id }).sort({ createdAt: -1 });
     if (!application) return res.status(404).json({ success: false, message: 'No application found.' });
-    if (application.status !== 'draft') return res.status(400).json({ success: false, message: 'Cannot submit.' });
+        if (application.status !== 'draft') return res.status(400).json({ success: false, message: 'Cannot submit.' });
+    // school and program are required at submission time (enforced here rather
+    // than at the schema level so drafts with empty values are allowed).
+    if (!application.program || !application.program.trim()) {
+        return res.status(400).json({ success: false, message: 'Please fill in your Scholarship Program before submitting.' });
+    }
+    if (!application.school || !application.school.trim()) {
+        return res.status(400).json({ success: false, message: 'Please fill in your School Name before submitting.' });
+    }
     application.status = 'submitted';
     application.submittedAt = new Date();
     await application.save();

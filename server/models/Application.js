@@ -3,8 +3,12 @@ const mongoose = require("mongoose");
 const applicationSchema = new mongoose.Schema({
     student: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     barangay: { type: mongoose.Schema.Types.ObjectId, ref: "Barangay" },
-    program: { type: String, required: true, trim: true },
-    school: { type: String, required: true, trim: true },
+    // school and program are validated at the controller layer (only enforced
+    // when the application is being SUBMITTED, not for in-progress drafts).
+    // This lets a student start uploading documents before filling every
+    // field — the draft is created empty and populated later.
+    program: { type: String, trim: true, default: "" },
+    school: { type: String, trim: true, default: "" },
     applicant: {
         dateOfBirth: String,
         sex: String,
