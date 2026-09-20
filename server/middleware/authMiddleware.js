@@ -1,60 +1,144 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const {
+    SUPER_ADMIN_ROLES,
+    CITY_ADMIN_ROLES
+} = require("../utils/validation");
 
-const protect = (req, res, next) => {
+// ==========================================
+// Role groups
+//
+// The same mapping the client uses, kept here so the server never has
+// to trust anything the browser sends.
+// ==========================================
+const ROLE_GROUPS = {
+    student: ["student"],
+    barangay: ["barangay_staff"],
+    city: [...CITY_ADMIN_ROLES],
+    superadmin: [...SUPER_ADMIN_ROLES]
+};
+
+// ==========================================
+// PROTECT
+//
+// Verifies the bearer token, then reloads the account so the role is
+// read from MongoDB on every request. A role changed or an account
+// disabled in the database takes effect immediately, even if the user
+// is still holding an old token.
+// ==========================================
+const protect = async(req, res, next) => {
     try {
-        const authHeader = req.headers.authorization;
+        const header = req.headers.authorization || "";
 
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        const token = header.startsWith("Bearer ") ?
+            header.slice(7).trim() :
+            null;
+
+        if (!token) {
             return res.status(401).json({
                 success: false,
-                message: "Not authorized. No token provided."
+                message: "You need to sign in to continue."
             });
         }
 
-        const token = authHeader.split(" ")[1];
+        let decoded;
 
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET
-        );
+        try {
+            decoded = jwt.verify(
+                token,
+                process.env.JWT_SECRET
+            );
+        } catch {
+            return res.status(401).json({
+                success: false,
+                message: "Your session has expired. Please sign in again."
+            });
+        }
 
-        req.user = decoded;
+        const user = await User.findById(decoded.id)
+            .select("-password")
+            .populate("barangay", "name");
 
-        next();
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Your session has expired. Please sign in again."
+            });
+        }
 
+        if (user.status === "suspended" ||
+            user.status === "deactivated"
+        ) {
+            return res.status(403).json({
+                success: false,
+                message: "This account has been disabled. Please contact the City Scholarship Office."
+            });
+        }
+
+        req.user = {
+            id: user._id.toString(),
+            role: user.role,
+            name: user.name,
+            email: user.email,
+            barangay: user.barangay || null,
+            account: user
+        };
+
+        return next();
     } catch (error) {
-        return res.status(401).json({
+        console.error("Auth middleware error:", error.message);
+
+        return res.status(500).json({
             success: false,
-            message: "Invalid or expired token"
+            message: "Unable to verify your session."
         });
     }
 };
 
+// ==========================================
+// REQUIRE ROLE
+//
+// Usage:
+//   router.use(protect, requireRole("student"));
+//   router.use(protect, requireRole(...SUPER_ADMIN_ROLES));
+// ==========================================
+const requireRole = (...allowed) => (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({
+            success: false,
+            message: "You need to sign in to continue."
+        });
+    }
 
-// ROLE AUTHORIZATION
-const authorize = (...roles) => {
-    return (req, res, next) => {
+    if (!allowed.includes(req.user.role)) {
+        return res.status(403).json({
+            success: false,
+            message: "You do not have permission to perform this action."
+        });
+    }
 
-        if (!req.user) {
-            return res.status(401).json({
-                success: false,
-                message: "Not authenticated"
-            });
-        }
-
-        if (!roles.includes(req.user.role)) {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied"
-            });
-        }
-
-        next();
-    };
+    return next();
 };
 
+// ==========================================
+// REQUIRE PORTAL
+//
+// The same idea expressed in portal terms, so routes read the way the
+// client routes do:
+//   router.use(protect, requirePortal("city"));
+// ==========================================
+const requirePortal = (...portals) => (req, res, next) => {
+    const allowed = portals.flatMap(
+        (portal) => ROLE_GROUPS[portal] || []
+    );
+
+    return requireRole(...allowed)(req, res, next);
+};
 
 module.exports = {
     protect,
-    authorize
+    authorize: requireRole,
+    requireRole,
+    requirePortal,
+    ROLE_GROUPS
 };
