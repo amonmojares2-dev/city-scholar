@@ -5,7 +5,7 @@ import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
 
 type DocumentRecord = { _id: string; type: string; originalName: string; status: string; remarks?: string; createdAt: string };
-type Application = { _id: string; program: string; school: string; status: string };
+type Application = { _id: string; program?: string; school: string; status: string };
 
 const formatDate = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const label = (value: string) => value.replace(/[-_]/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
@@ -68,7 +68,7 @@ export default function StudentDocuments() {
     <div className="bg-white rounded-2xl border border-[#E5E7EB] p-5 mb-5">
       <h2 className="font-600 text-[#1F2937] text-sm mb-4">Upload a document</h2>
       {applications.length === 0 ? <p className="text-sm text-[#6B7280]">Submit an application before attaching documents.</p> : <div className="grid md:grid-cols-3 gap-3 items-end">
-        <label className="text-xs text-[#6B7280]">Application<select value={selectedApplication} onChange={event => setSelectedApplication(event.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-lg border border-[#E5E7EB] text-sm text-[#1F2937]">{applications.map(application => <option key={application._id} value={application._id}>{application.program} · {application.school}</option>)}</select></label>
+        <label className="text-xs text-[#6B7280]">Application<select value={selectedApplication} onChange={event => setSelectedApplication(event.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-lg border border-[#E5E7EB] text-sm text-[#1F2937]">{applications.map(application => <option key={application._id} value={application._id}>{application.program || application.school} · {application.school}</option>)}</select></label>
         <label className="text-xs text-[#6B7280]">Document type<select value={documentType} onChange={event => setDocumentType(event.target.value)} className="mt-1 w-full px-3 py-2.5 rounded-lg border border-[#E5E7EB] text-sm text-[#1F2937]">{['birth_certificate', 'residency', 'transcript', 'enrollment', 'income', 'school_id', 'other'].map(type => <option key={type} value={type}>{label(type)}</option>)}</select></label>
         <div><input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={event => setSelectedFile(event.target.files?.[0] || null)} className="w-full text-xs text-[#6B7280] mb-2" /><button onClick={upload} disabled={uploading || !selectedFile} className="w-full px-4 py-2.5 rounded-lg bg-[#0B1F3A] text-white text-sm font-600 disabled:opacity-40">{uploading ? 'Uploading...' : 'Upload document'}</button></div>
       </div>}

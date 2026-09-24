@@ -22,7 +22,9 @@ function serializeAccount(student) {
     const status = student.scholarVerificationStatus || "pending";
     const scholarType = student.scholarType || "new_applicant";
 
-    // The review status that decision is about the claimed Scholar ID.
+        // The review status that decision is about the student's existing-scholar
+    // claim. The Scholar ID field was removed from the Create Account form;
+    // the City Office now verifies claims manually without a claimed ID.
     const verificationStatus = status;
 
     // client-side "registrationType" (DB column: scholarType)
@@ -40,10 +42,9 @@ function serializeAccount(student) {
     }
 
     return {
-        id: String(student._id),
+                 id: String(student._id),
         name: student.name,
         email: student.email,
-        scholarId: student.scholarId || "",
         school: (student.profile && student.profile.schoolName) || "",
         barangay: (student.barangay && student.barangay.name) || "Not provided",
         registeredDate: student.createdAt,

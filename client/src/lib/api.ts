@@ -8,6 +8,10 @@ export const API_URL = (configuredApiUrl || browserApiUrl).replace(/\/$/, '');
 
 import { getSession, clearSession } from './auth';
 
+export function getAuthToken(): string | null {
+  return getSession()?.token || null;
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const session = getSession();
   const isFormData = options.body instanceof FormData;

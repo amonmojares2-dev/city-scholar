@@ -10,7 +10,7 @@ interface ApprovedScholar {
   id: string;
   name: string;
   email: string;
-  scholarId: string;
+  scholarId?: string;
   school: string;
   course: string;
   yearLevel: string;
@@ -47,7 +47,7 @@ export default function BarangayScholars() {
 
   const query = search.trim().toLowerCase();
   const filtered = scholars.filter((scholar) =>
-    (scholar.name + ' ' + scholar.school + ' ' + scholar.scholarId).toLowerCase().includes(query));
+    (scholar.name + ' ' + scholar.school).toLowerCase().includes(query));
 
   if (!barangayId) {
     return (
@@ -68,14 +68,14 @@ export default function BarangayScholars() {
       {error && <div className="mb-4 bg-red-50 rounded-xl p-4 text-sm text-red-700">{error}</div>}
       <div className="relative mb-5">
         <Icon name="search" size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#9CA3AF]" />
-        <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#E5E7EB] text-sm bg-white" placeholder="Search scholars by name, school or scholar ID..." />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#E5E7EB] text-sm bg-white" placeholder="Search scholars by name or school..." />
       </div>
       <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-[#E5E7EB] bg-[#F6F7F9]">
-                {['Scholar', 'Scholar ID', 'School', 'Email', 'Status'].map((header) => (
+                {['Scholar', 'School', 'Email', 'Status'].map((header) => (
                   <th key={header} className="px-5 py-3 text-left text-xs font-600 text-[#6B7280]">{header}</th>
                 ))}
               </tr>
@@ -84,7 +84,6 @@ export default function BarangayScholars() {
               {filtered.map((scholar) => (
                 <tr key={scholar.id}>
                   <td className="px-5 py-3.5 font-600 text-sm text-[#1F2937]">{scholar.name}</td>
-                  <td className="px-5 py-3.5 text-sm text-[#6B7280]">{scholar.scholarId || '—'}</td>
                   <td className="px-5 py-3.5 text-sm text-[#6B7280]">{scholar.school || '—'}</td>
                   <td className="px-5 py-3.5 text-sm text-[#6B7280]">{scholar.email}</td>
                   <td className="px-5 py-3.5"><StatusBadge status="scholar" size="sm" /></td>

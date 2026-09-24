@@ -13,9 +13,15 @@ const applicationSchema = new mongoose.Schema({
         dateOfBirth: String,
         sex: String,
         civilStatus: String,
-        nationality: String,
         mobileNumber: String,
         address: String,
+        // DEPRECATED (kept for historical reads only): `nationality`, `city`
+        // and `zipCode` were removed from the Application form. The server no
+        // longer writes them (see stripRemovedApplicantFields in
+        // studentApplicationController), so values already stored on
+        // previously submitted applications stay readable but nothing new is
+        // collected. Do not re-add form inputs for these without a migration.
+        nationality: String,
         city: String,
         zipCode: String,
         studentId: String,
@@ -29,11 +35,49 @@ const applicationSchema = new mongoose.Schema({
         unitsEnrolled: String,
         schoolAddress: String,
         schoolType: String,
-        schoolYear: String
+        schoolYear: String,
+        // Home address captured on the student Application form. `address` is
+        // the street name (labelled "Address (Street Name)" on the form) and
+        // `lotNo` is the lot number. Both are required at submission time —
+        // enforced in studentApplicationController so in-progress drafts may
+        // still be incomplete (same rule as program / school).
+        lotNo: String
     },
-    status: { type: String, enum: ["draft", "submitted", "under_review", "approved", "rejected", "renewal"], default: "draft" },
+    // "additional_requirements" is set by the City Office (PATCH
+    // /api/applications/:id/review) when the student has to complete or
+    // replace documents before the application can be processed.
+    status: {
+        type: String,
+        enum: ["draft", "submitted", "under_review", "additional_requirements", "approved", "rejected", "renewal"],
+        default: "draft"
+    },
     remarks: { type: String, trim: true, default: "" },
-    submittedAt: Date
+    submittedAt: Date,
+    // Decision trail written by the City Office review endpoint. Kept on the
+    // application so the reviewer's name and the decision date survive
+    // (the Activity tab on the review page reads them back).
+    reviewedAt: { type: Date, default: null },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+    // ==========================================================
+    // Stage 1 of the Application -> Barangay -> City approval chain.
+    // The applicant's Barangay Admin confirms residency first:
+    //   pending  – submitted, no barangay action yet (default)
+    //   approved – residency confirmed; the application becomes visible
+    //              to the City Office, which makes the final decision
+    //   rejected – residency not confirmed; hidden from the City Office
+    // The City Office may only approve an application once this is
+    // "approved" (enforced in applicationController.reviewApplication).
+    // Legacy documents without this field are treated as "pending".
+    // ==========================================================
+    barangayVerificationStatus: {
+        type: String,
+        enum: ["pending", "approved", "rejected"],
+        default: "pending"
+    },
+    barangayVerificationNotes: { type: String, trim: true, default: "" },
+    barangayReviewedAt: { type: Date, default: null },
+    barangayReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Application", applicationSchema);

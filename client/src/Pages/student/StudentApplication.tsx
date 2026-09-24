@@ -4,6 +4,11 @@ import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import { api } from "../../lib/api";
 import { docFileUrl, isImageMime, friendlyErrorMessage } from "../../lib/docUrl";
+import { APPLICATION_DOCUMENT_TYPES } from "../../data/documentTypes";
+
+// Document slots come from the shared list (Certificates of Residency /
+// Indigency were removed from the application flow — see documentTypes.ts).
+const DOC_TYPES = APPLICATION_DOCUMENT_TYPES;
 
 interface AppDoc {
     _id: string;
@@ -11,15 +16,16 @@ interface AppDoc {
     originalName: string;
     filename?: string;
     mimeType?: string;
-    path: string;
     status: "pending" | "verified" | "rejected";
 }
 
 interface App {
     _id: string;
     status: string;
-    program: string;
     school: string;
+    // NOTE: `program` was removed from the Application form but is kept here
+    // (optional, historical) so previously submitted applications still read.
+    program?: string;
     applicant: {
         studentId?: string;
         parentName?: string;
@@ -28,6 +34,8 @@ interface App {
         dateOfBirth?: string;
         sex?: string;
         civilStatus?: string;
+        // NOTE: `nationality`, `city`, `zipCode` were removed from the form
+        // (kept optional for historical reads only — nothing new is written).
         nationality?: string;
         mobileNumber?: string;
         address?: string;
@@ -46,22 +54,104 @@ interface App {
     student: { _id: string; name: string; email: string } | null;
 }
 
-const DOC_TYPES = [
-    { key: "Certificate of Residency (Student)", label: "Certificate of Residency (Student)", required: true },
-    { key: "Certificate of Indigency (Student)", label: "Certificate of Indigency (Student)", required: true },
-    { key: "Certificate of Residency (Parent/Guardian)", label: "Certificate of Residency (Parent/Guardian)", required: true },
-    { key: "Certificate of Indigency (Parent/Guardian)", label: "Certificate of Indigency (Parent/Guardian)", required: true },
-    { key: "Certificate of Matriculation", label: "Certificate of Matriculation", required: true },
-    { key: "Report Card (Grade 12)", label: "Grade 12 Report Card", required: true },
-    { key: "School ID (Current)", label: "Current School ID", required: true },
-    { key: "Parent Valid ID", label: "Parent's Valid ID", required: true },
-];
-
 const fmt = (iso: string | null | undefined) => {
     if (!iso) return "—";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
 };
+
+// ============================================================
+// Form helpers — module scope on purpose.
+// These were previously declared INSIDE StudentApplication's body,
+// which recreated them on every keystroke and forced React to
+// remount each <Field>-wrapped <input>, stealing focus after a
+// single character. Keep them here so their identity is stable.
+// ============================================================
+
+const inputCls =
+    "w-full rounded-lg border border-[#D1D5DB] bg-white px-3.5 py-2.5 text-sm text-[#0B1F3A] placeholder-[#9CA3AF] focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:border-[#163A63] transition";
+
+const labelCls = "block text-sm font-medium text-[#374151] mb-1.5";
+
+const errorCls = "mt-1.5 text-xs text-[#DC2626] flex items-center gap-1";
+
+const inputErrorCls = " border-[#DC2626] focus:ring-[#DC2626] focus:border-[#DC2626]";
+
+// Student Number: two digits - two digits - four digits - six digits,
+// e.g. "03-01-2425-041702". Digits and dashes only.
+const STUDENT_NO_RE = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
+// PH mobile: 11 digits starting with 09, e.g. 09XXXXXXXXX.
+const MOBILE_RE = /^09\d{9}$/;
+
+function validateStudentId(v: string): string {
+    const t = (v || "").trim();
+    if (!t) return "Student Number is required.";
+    if (!STUDENT_NO_RE.test(t)) return "Format must be XX-XX-XXXX-XXXXXX (e.g. 03-01-2425-041702).";
+    return "";
+}
+
+function validateMobile(v: string): string {
+    const t = (v || "").trim();
+    if (!t) return "Mobile Number is required.";
+    if (!/^\d+$/.test(t)) return "Mobile Number must contain numbers only.";
+    if (!MOBILE_RE.test(t)) return "Mobile Number must be 11 digits starting with 09 (e.g. 09XXXXXXXXX).";
+    return "";
+}
+
+// Strip anything that is not a digit. Used for mobile onChange so letters /
+// symbols can never be typed or pasted in. Pure function — no component
+// identity involved, so it cannot reintroduce the focus-loss bug.
+function digitsOnly(v: string): string {
+    return (v || "").replace(/\D/g, "");
+}
+
+// Student Number may only contain digits and dashes. Everything else is
+// blocked at the keystroke (see onStudentIdChange below) and surfaced
+// immediately via blockedErr — never stored in form state.
+function sanitizeStudentId(v: string): string {
+    return (v || "").replace(/[^0-9-]/g, "").slice(0, 17);
+}
+
+const btnBaseCls =
+    "inline-flex items-center justify-center rounded-xl px-5 py-2.5 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:ring-offset-1 disabled:opacity-60 disabled:cursor-not-allowed";
+
+const primaryBtnCls = `${btnBaseCls} bg-[#163A63] text-white hover:bg-[#0B1F3A]`;
+const outlineBtnCls = `${btnBaseCls} border border-[#E5E7EB] text-[#163A63] bg-white hover:bg-[#F0F4FA]`;
+
+function Field({ label, children, required, error }: { label: string; children: ReactNode; required?: boolean; error?: string }) {
+    return (
+        <div className="mb-5">
+            <label className={labelCls}>
+                {label}
+                {required && <span className="text-[#DC2626] ml-1">*</span>}
+            </label>
+            {children}
+            {error && (
+                <p className={errorCls} role="alert">
+                    <span aria-hidden="true">⚠</span> {error}
+                </p>
+            )}
+        </div>
+    );
+}
+
+function Grid({ children }: { children: ReactNode }) {
+    return <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">{children}</div>;
+}
+
+function DocStatus({ doc }: { doc: AppDoc }) {
+    const style =
+        doc.status === "verified"
+            ? "bg-green-100 text-green-700"
+            : doc.status === "rejected"
+            ? "bg-red-100 text-red-700"
+            : "bg-amber-100 text-amber-700";
+    return (
+        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${style}`}>
+            {doc.status}
+        </span>
+    );
+}
 
 export default function StudentApplication() {
         const [app, setApp] = useState<App | null>(null);
@@ -74,6 +164,18 @@ export default function StudentApplication() {
     const [savedMsg, setSavedMsg] = useState("");
     const [uploadFor, setUploadFor] = useState<string | null>(null);
     const [uploadError, setUploadError] = useState("");
+    // Tracks which fields the user has interacted with so live (as-you-type)
+    // errors never flash on initial load — only after the first keystroke /
+    // blur, or after a submit attempt.
+    const [touched, setTouched] = useState<Record<string, boolean>>({});
+    const [submitAttempted, setSubmitAttempted] = useState(false);
+    // Transient "blocked keystroke" errors: shown IMMEDIATELY when the user
+    // types (or pastes) a disallowed character that we refuse to store, e.g.
+    // a letter in a numbers-only field. Rendered directly below the field
+    // via the Field `error` prop so the student knows exactly what happened
+    // and how to fix it.
+    const [studentIdBlockedErr, setStudentIdBlockedErr] = useState("");
+    const [mobileBlockedErr, setMobileBlockedErr] = useState("");
 
     
 
@@ -97,10 +199,7 @@ export default function StudentApplication() {
                     birthDate: p.dateOfBirth ?? "",
                     sex: p.sex ?? "",
                     civilStatus: p.civilStatus ?? "",
-                    nationality: p.nationality ?? "",
                     address: p.address ?? "",
-                    city: p.city ?? "",
-                    zipCode: p.zipCode ?? "",
                     schoolName: data.application.school ?? "",
                     schoolAddress: p.schoolAddress ?? "",
                     schoolType: p.schoolType ?? "",
@@ -110,14 +209,13 @@ export default function StudentApplication() {
                     schoolYear: p.schoolYear ?? "",
                     gwa: p.gwa ?? "",
                     unitsEnrolled: p.unitsEnrolled ?? "",
-                    program: data.application.program ?? "",
                 });
             } else {
                 setForm({});
                 // No application yet: auto-create an empty draft so the student
                 // can start uploading documents immediately without first having
-                // to fill in Program / School. Those fields are only enforced at
-                // submission time, not for drafts (see Application model).
+                // to fill in the School. School is only enforced at submission
+                // time, not for drafts (see Application model).
                 try {
                     const created = await api<{ success: boolean; application: App }>("/student/application", {
                         method: "POST",
@@ -151,8 +249,63 @@ export default function StudentApplication() {
 
     const set = (f: string, v: string) => { setForm(p => ({ ...p, [f]: v })); setSaved(false); };
 
+    const touch = (f: string) => setTouched(p => (p[f] ? p : { ...p, [f]: true }));
+
+    // ── Immediate (as-you-type) validation wiring ──────────────────────
+    // Student Number: allow only digits + dashes; block everything else at
+    // the keystroke and show "Numbers only" style feedback immediately.
+    // Mobile Number: digits only; block everything else and show the error
+    // immediately. Both handlers mark the field touched so the derived
+    // format error below the field also appears as they type.
+    const onStudentIdChange = (raw: string) => {
+        touch("studentId");
+        if (/[^0-9-]/.test(raw)) {
+            setStudentIdBlockedErr("Numbers only — Student Number may contain digits and dashes only.");
+        } else {
+            setStudentIdBlockedErr("");
+        }
+        set("studentId", sanitizeStudentId(raw));
+    };
+
+    const onMobileChange = (raw: string) => {
+        touch("mobile");
+        if (/[^0-9]/.test(raw)) {
+            setMobileBlockedErr("Numbers only.");
+        } else {
+            setMobileBlockedErr("");
+        }
+        // Strip letters/symbols so they can never appear; cap at 11 digits.
+        set("mobile", digitsOnly(raw).slice(0, 11));
+    };
+
+    // Derived live errors: shown once the field is touched (first keystroke)
+    // or after a submit attempt — never on pristine initial load.
+    const studentIdValue = form.studentId || "";
+    const mobileValue = form.mobile || "";
+    const showStudentIdErr = touched.studentId || submitAttempted;
+    const showMobileErr = touched.mobile || submitAttempted;
+    // Format error for Student Number: empty value defers to the "required"
+    // message only after submit; while typing, show the dash-pattern hint so
+    // the student sees the expected XX-XX-XXXX-XXXXXX format break/fix live.
+    const studentIdFormatErr = !studentIdValue
+        ? (submitAttempted ? "Student Number is required." : "")
+        : (!STUDENT_NO_RE.test(studentIdValue.trim())
+            ? "Format must be XX-XX-XXXX-XXXXXX (e.g. 03-01-2425-041702)."
+            : "");
+    const mobileFormatErr = !mobileValue
+        ? (submitAttempted ? "Mobile Number is required." : "")
+        : (!MOBILE_RE.test(mobileValue.trim())
+            ? "Mobile Number must be 11 digits starting with 09 (e.g. 09XXXXXXXXX)."
+            : "");
+    const studentIdErr = studentIdBlockedErr || (showStudentIdErr ? studentIdFormatErr : "");
+    const mobileErr = mobileBlockedErr || (showMobileErr ? mobileFormatErr : "");
+
     const requiredDocs = DOC_TYPES.filter(d => d.required);
     const allRequiredPresent = requiredDocs.every(d => docs.some(doc => doc.type === d.key));
+    // Course / Strand is required client-side too (server enforces it as
+    // well) so the submit button stays disabled until a value is picked.
+    const coursePresent = Boolean((form.course || "").trim());
+    const canSubmit = allRequiredPresent && coursePresent;
     const submitted = app && app.status !== "draft";
 
     const doSave = useCallback(async () => {
@@ -168,11 +321,8 @@ export default function StudentApplication() {
                     dateOfBirth: form.birthDate || undefined,
                     sex: form.sex || undefined,
                     civilStatus: form.civilStatus || undefined,
-                    nationality: form.nationality || undefined,
                     mobileNumber: form.mobile || undefined,
                     address: form.address || undefined,
-                    city: form.city || undefined,
-                    zipCode: form.zipCode || undefined,
                     course: form.course || undefined,
                     yearLevel: form.yearLevel || undefined,
                     academicTerm: form.academicTerm || undefined,
@@ -183,7 +333,6 @@ export default function StudentApplication() {
                     schoolYear: form.schoolYear || undefined,
                 },
                 school: form.schoolName || undefined,
-                program: form.program || undefined,
             };
                         const data = await api<{ success: boolean; application: App }>("/student/application", { method: "PATCH", body: JSON.stringify(body) });
             setApp(data.application);
@@ -198,6 +347,20 @@ export default function StudentApplication() {
 
     const doSubmit = useCallback(async () => {
         if (!app) return;
+        // Mark all validated fields touched so submit also reveals any
+        // outstanding inline errors directly below each field.
+        setSubmitAttempted(true);
+        setTouched(p => ({ ...p, studentId: true, mobile: true, course: true }));
+        const sidErr = validateStudentId(form.studentId || "");
+        const mobErr = validateMobile(form.mobile || "");
+        const courseErr = (form.course || "").trim() ? "" : "Course / Strand is required.";
+        if (sidErr || mobErr || courseErr) {
+            setStudentIdBlockedErr("");
+            setMobileBlockedErr("");
+            setSaved(false);
+            setSavedMsg([sidErr, mobErr, courseErr].filter(Boolean).join(" "));
+            return;
+        }
         setSaving(true);
         setSaved(false);
         setSavedMsg("");
@@ -214,7 +377,7 @@ export default function StudentApplication() {
         } finally {
             setSaving(false);
         }
-        }, [app]);
+        }, [app, form]);
 
     const doc = (key: string) => docs.find(d => d.type === key);
 
@@ -244,8 +407,8 @@ export default function StudentApplication() {
                                 <p className="text-[#6B7280]">{app.student?.email}</p>
                             </div>
                             <div>
-                                <span className="text-[#6B7280]">Program</span>
-                                <p className="font-semibold text-[#1F2937]">{app.program || "\u2014"}</p>
+                                <span className="text-[#6B7280]">Course / Strand</span>
+                                <p className="font-semibold text-[#1F2937]">{app.applicant?.course || "\u2014"}</p>
                             </div>
                             <div>
                                 <span className="text-[#6B7280]">School</span>
@@ -297,58 +460,11 @@ export default function StudentApplication() {
     }
 
 // ============================================================
-// Student Application Page
-// Reads / writes a real Application document. The form state is
-// a flat Record<string,string> keyed by Applicant subdocument
-// field names (see interface App above). When no application
-// exists, the student can create one here; when it exists as a
-// draft, they can edit it; once submitted, the view switches to
-// the read-only submitted state (rendered below this marker).
+// FORM VIEW — renders when the application is not yet submitted.
+// Field/Grid/DocStatus helpers live at module scope above so their
+// component identity stays stable while typing (see note there).
 // ============================================================
 
-const inputCls =
-    "w-full rounded-lg border border-[#D1D5DB] bg-white px-3.5 py-2.5 text-sm text-[#0B1F3A] placeholder-[#9CA3AF] focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:border-[#163A63] transition";
-
-const labelCls = "block text-sm font-medium text-[#374151] mb-1.5";
-
-const btnBaseCls =
-    "inline-flex items-center justify-center rounded-xl px-5 py-2.5 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:ring-offset-1 disabled:opacity-60 disabled:cursor-not-allowed";
-
-const primaryBtnCls = `${btnBaseCls} bg-[#163A63] text-white hover:bg-[#0B1F3A]`;
-const outlineBtnCls = `${btnBaseCls} border border-[#E5E7EB] text-[#163A63] bg-white hover:bg-[#F0F4FA]`;
-
-const LEFT_DOCS = DOC_TYPES.slice(0, 4);
-const RIGHT_DOCS = DOC_TYPES.slice(4);
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-    return (
-        <div className="mb-5">
-            <label className={labelCls}>{label}</label>
-            {children}
-        </div>
-    );
-}
-
-function Grid({ children }: { children: ReactNode }) {
-    return <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">{children}</div>;
-}
-
-function DocStatus({ doc }: { doc: AppDoc }) {
-    const style =
-        doc.status === "verified"
-            ? "bg-green-100 text-green-700"
-            : doc.status === "rejected"
-            ? "bg-red-100 text-red-700"
-            : "bg-amber-100 text-amber-700";
-    return (
-        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${style}`}>
-            {doc.status}
-        </span>
-    );
-}
-
-// Upload modal — fires on the real endpoint. File chosen here is
-// stored on disk via multer and linked to the student's application.
 function UploadModal({
     isOpen,
     docType,
@@ -522,14 +638,31 @@ function UploadModal({
                         <Field label="Full Name">
                             <input className={inputCls} value={form.fullName || ""} onChange={(e) => set("fullName", e.target.value)} placeholder="e.g. Juan Dela Cruz" required />
                         </Field>
-                        <Field label="Student Number / ID">
-                            <input className={inputCls} value={form.studentId || ""} onChange={(e) => set("studentId", e.target.value)} placeholder="e.g. 2024-000123" required />
+                        <Field label="Student Number / ID" required error={studentIdErr}>
+                            <input
+                                className={inputCls + (studentIdErr ? inputErrorCls : "")}
+                                value={form.studentId || ""}
+                                onChange={(e) => onStudentIdChange(e.target.value)}
+                                onBlur={() => touch("studentId")}
+                                placeholder="e.g. 03-01-2425-041702"
+                                inputMode="text"
+                                aria-invalid={Boolean(studentIdErr)}
+                                required
+                            />
                         </Field>
                         <Field label="Email Address">
                             <input className={inputCls} type="email" value={form.email || ""} readOnly required />
                         </Field>
-                        <Field label="Mobile Number">
-                            <input className={inputCls} value={form.mobile || ""} onChange={(e) => set("mobile", e.target.value)} placeholder="e.g. 09XXXXXXXXX" />
+                        <Field label="Mobile Number" required error={mobileErr}>
+                            <input
+                                className={inputCls + (mobileErr ? inputErrorCls : "")}
+                                value={form.mobile || ""}
+                                onChange={(e) => onMobileChange(e.target.value)}
+                                onBlur={() => touch("mobile")}
+                                placeholder="e.g. 09XXXXXXXXX"
+                                inputMode="numeric"
+                                aria-invalid={Boolean(mobileErr)}
+                            />
                         </Field>
                         <Field label="Birth Date">
                             <input className={inputCls} type="date" value={form.birthDate || ""} onChange={(e) => set("birthDate", e.target.value)} />
@@ -551,19 +684,10 @@ function UploadModal({
                                 <option value="Divorced">Divorced</option>
                             </select>
                         </Field>
-                        <Field label="Nationality">
-                            <input className={inputCls} value={form.nationality || ""} onChange={(e) => set("nationality", e.target.value)} placeholder="e.g. Filipino" />
-                        </Field>
                         <Field label="Complete Address">
                             <input className={inputCls} value={form.address || ""} onChange={(e) => set("address", e.target.value)} placeholder="House no., street, barangay" />
                         </Field>
-                        <Field label="City / Municipality">
-                            <input className={inputCls} value={form.city || ""} onChange={(e) => set("city", e.target.value)} />
-                        </Field>
-                        <Field label="Zip / Postal Code">
-                            <input className={inputCls} value={form.zipCode || ""} onChange={(e) => set("zipCode", e.target.value)} />
-                        </Field>
-                                        </Grid>
+                    </Grid>
                 </section>
 
                 {/* ── School Information ── */}
@@ -584,8 +708,41 @@ function UploadModal({
                                 <option value="State University">State University</option>
                             </select>
                         </Field>
-                        <Field label="Course / Strand">
-                            <input className={inputCls} value={form.course || ""} onChange={(e) => set("course", e.target.value)} placeholder="e.g. HUMSS, STEM, AB Communications" />
+                        <Field label="Course / Strand" required>
+                            <select
+                                className={inputCls + (submitAttempted && !form.course ? inputErrorCls : "")}
+                                value={form.course || ""}
+                                onChange={(e) => set("course", e.target.value)}
+                                onBlur={() => touch("course")}
+                                aria-invalid={Boolean(submitAttempted && !form.course)}
+                                required
+                            >
+                                <option value="">Select…</option>
+                                {/* Senior High strands */}
+                                <option value="STEM">STEM</option>
+                                <option value="HUMSS">HUMSS</option>
+                                <option value="ABM">ABM</option>
+                                <option value="GAS">GAS</option>
+                                <option value="TVL">TVL</option>
+                                {/* College courses */}
+                                <option value="BS Information Technology">BS Information Technology</option>
+                                <option value="BS Computer Science">BS Computer Science</option>
+                                <option value="BS Business Administration">BS Business Administration</option>
+                                <option value="BS Accountancy">BS Accountancy</option>
+                                <option value="BS Nursing">BS Nursing</option>
+                                <option value="BS Education">BS Education</option>
+                                <option value="BS Criminology">BS Criminology</option>
+                                <option value="BS Psychology">BS Psychology</option>
+                                <option value="BA Communication">BA Communication</option>
+                                <option value="BEEd / BSEd">BEEd / BSEd</option>
+                                <option value="BS Hospitality Management">BS Hospitality Management</option>
+                                <option value="BS Tourism Management">BS Tourism Management</option>
+                            </select>
+                            {submitAttempted && !form.course && (
+                                <p className={errorCls} role="alert">
+                                    <span aria-hidden="true">⚠</span> Course / Strand is required.
+                                </p>
+                            )}
                         </Field>
                         <Field label="Year Level">
                             <select className={inputCls} value={form.yearLevel || ""} onChange={(e) => set("yearLevel", e.target.value)}>
@@ -617,13 +774,6 @@ function UploadModal({
                         </Field>
                     </Grid>
                 </section>
-                                {/* ── Program Selection ── */}
-                <section>
-                    <h3 className="text-lg font-bold text-[#0B1F3A] mb-4">Program Selection</h3>
-                    <Field label="Scholarship Program">
-                        <input className={inputCls} value={form.program || ""} onChange={(e) => set("program", e.target.value)} placeholder="e.g. City Scholar Program" required />
-                    </Field>
-                </section>
 
                 {/* ── Required Documents ── */}
                 <section>
@@ -647,10 +797,10 @@ function UploadModal({
 
                                     {existing ? (
                                         <div className="flex items-center gap-3">
-                                            {isImageMime(existing.mimeType) && docFileUrl(existing.filename) && (
-                                                <a href={docFileUrl(existing.filename) as string} target="_blank" rel="noreferrer" title="Open full image">
+                                            {isImageMime(existing.mimeType) && docFileUrl(existing._id) && (
+                                                <a href={docFileUrl(existing._id) as string} target="_blank" rel="noreferrer" title="Open full image">
                                                     <img
-                                                        src={docFileUrl(existing.filename) as string}
+                                                        src={docFileUrl(existing._id) as string}
                                                         alt={existing.originalName}
                                                         className="w-12 h-12 rounded-lg object-cover border border-[#E5E7EB]"
                                                     />
@@ -692,9 +842,9 @@ function UploadModal({
                             </button>
                             <button
                                 onClick={doSubmit}
-                                disabled={saving || !allRequiredPresent}
+                                disabled={saving || !canSubmit}
                                 className={primaryBtnCls}
-                                style={{ backgroundColor: !allRequiredPresent ? "#9CA3AF" : "#163A63" }}
+                                style={{ backgroundColor: !canSubmit ? "#9CA3AF" : "#163A63" }}
                             >
                                 {saving ? "Submitting…" : "Submit Application"}
                             </button>

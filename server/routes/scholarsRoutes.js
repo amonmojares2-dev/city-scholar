@@ -27,9 +27,9 @@ router.get("/", async (req, res, next) => {
             filter.barangay = req.query.barangay;
         }
 
-        const rows = await User.find(filter)
+                        const rows = await User.find(filter)
             .select(
-                "name email scholarId scholarVerificationStatus scholarVerifiedAt " +
+                "name email scholarVerificationStatus scholarVerifiedAt " +
                 "barangay profile.schoolName profile.course profile.yearLevel profile.gwa"
             )
             .populate("barangay", "name")
@@ -40,7 +40,6 @@ router.get("/", async (req, res, next) => {
             id: String(row._id),
             name: row.name,
             email: row.email,
-            scholarId: row.scholarId || "",
             school: (row.profile && row.profile.schoolName) || "",
             course: (row.profile && row.profile.course) || "",
             yearLevel: (row.profile && row.profile.yearLevel) || "",

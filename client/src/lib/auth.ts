@@ -5,7 +5,8 @@ export type PortalRole = 'student' | 'barangay' | 'city' | 'superadmin';
 // - existing_scholar already a recipient, continuing scholar
 export type ScholarType = 'new_applicant' | 'existing_scholar';
 
-// City Office decision on an existing scholar's claimed Scholar ID.
+// City Office decision on an existing-scholar claim (verified manually —
+// no Scholar ID is collected at registration any more).
 // Renewal stays locked until this is 'approved'.
 export type ScholarVerificationStatus = 'not_required' | 'pending' | 'approved' | 'rejected';
 
@@ -13,9 +14,11 @@ export interface SessionUser {
   id: string;
   name: string;
   email: string;
-  role: 'student' | 'barangay_staff' | 'city_admin' | 'admin_staff' | 'super_admin' | 'superadmin';
+  // Role values written by the server. "barangay_admin" / "city_admin" are the
+  // canonical names (used by the Super Admin "Add User" flow); "barangay_staff"
+  // / "admin_staff" are the legacy self-registration names, still accepted.
+  role: 'student' | 'barangay_admin' | 'barangay_staff' | 'city_admin' | 'admin_staff' | 'super_admin' | 'superadmin';
   scholarType?: ScholarType;
-  scholarId?: string;
   scholarVerificationStatus?: ScholarVerificationStatus;
   barangay?: { _id: string; name: string };
 }
@@ -30,10 +33,16 @@ export const portalLabels: Record<PortalRole, string> = {
   superadmin: 'Super Admin',
 };
 
+// Role -> portal. This is what restricts a signed-in account to one portal:
+// RequireAuth (routes.tsx) redirects any account whose portal does not match
+// the route it tried to open.
 export function portalForRole(role: SessionUser['role']): PortalRole {
   if (role === 'student') return 'student';
-  if (role === 'barangay_staff') return 'barangay';
+  // Barangay Admin — canonical name and the legacy one. Without the canonical
+  // value here a Barangay Admin would fall through to the City Office portal.
+  if (role === 'barangay_admin' || role === 'barangay_staff') return 'barangay';
   if (role === 'super_admin' || role === 'superadmin') return 'superadmin';
+  // City Admin.
   return 'city';
 }
 
@@ -55,6 +64,7 @@ export function getSessionUser(): SessionUser | null {
 export function roleLabel(role: SessionUser['role']): string {
   const labels: Record<SessionUser['role'], string> = {
     student: 'Student',
+    barangay_admin: 'Barangay Administrator',
     barangay_staff: 'Barangay Staff',
     city_admin: 'City Administrator',
     admin_staff: 'Admin Staff',

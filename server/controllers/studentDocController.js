@@ -1,6 +1,18 @@
 const Application = require("../models/Application");
 const Document = require("../models/Document");
 const User = require("../models/User");
+const { removeStoredFile, removeStoredFileByFilename } = require("../config/storage");
+
+// Strip the deprecated raw filesystem path before a Document leaves the
+// server — clients must never see the server's directory structure.
+function publicDocument(document) {
+    if (!document) return document;
+    const plain = typeof document.toObject === "function" ? document.toObject() : { ...document };
+    delete plain.path;
+    return plain;
+}
+
+const publicDocuments = (documents) => (documents || []).map(publicDocument);
 
 const PAGE_SIZE = 50;
 
@@ -35,7 +47,7 @@ const listStudentDocuments = async(req, res, next) => {
             success: true,
             applicationId: application._id.toString(),
             application,
-            documents,
+            documents: publicDocuments(documents),
             pendingCount,
             uploadedCount
         });
@@ -59,10 +71,12 @@ const uploadStudentDocument = async(req, res, next) => {
 
         const mimeType = (req.file.mimetype || "").toLowerCase();
         if (!ALLOWED_MIME.has(mimeType)) {
+            removeStoredFileByFilename(req.file.filename);
             return sendError(400, "Only JPG and PNG image files are accepted.");
         }
 
         if ((req.file.size || 0) > MAX_BYTES) {
+            removeStoredFileByFilename(req.file.filename);
             return sendError(400, "File is too large. Maximum size is 5 MB.");
         }
 
@@ -74,11 +88,12 @@ const uploadStudentDocument = async(req, res, next) => {
             .sort({ createdAt: -1 });
 
         if (!application) {
-            try { if (req.file) require("fs").unlinkSync(req.file.path); } catch { /* ignore */ }
+            removeStoredFileByFilename(req.file.filename);
             return sendError(404, "No application found. Please create your application first, then upload documents.");
         }
 
         if (req.user.role === "student" && application.student.toString() !== req.user.id) {
+            removeStoredFileByFilename(req.file.filename);
             return sendError(403, "You can only upload documents for your own application.");
         }
 
@@ -103,12 +118,12 @@ const uploadStudentDocument = async(req, res, next) => {
         });
 
         if (existing) {
-            // Replace: remove the old file and update the record.
-            try { require("fs").unlinkSync(existing.path); } catch { /* best effort */ }
+            // Replace: remove the old file and update the record. Only the
+            // hashed filename is stored — never the raw absolute path.
+            removeStoredFile(existing);
             existing.filename = req.file.filename;
             existing.originalName = req.file.originalname;
             existing.mimeType = mimeType;
-            existing.path = req.file.path;
             existing.status = "pending";
             existing.remarks = "";
             existing.context = context;
@@ -121,7 +136,6 @@ const uploadStudentDocument = async(req, res, next) => {
                 type: documentType,
                 originalName: req.file.originalname,
                 filename: req.file.filename,
-                path: req.file.path,
                 mimeType
             });
         }
@@ -142,27 +156,26 @@ const uploadStudentDocument = async(req, res, next) => {
                 context,
                 originalName: req.file.originalname,
                 filename: req.file.filename,
-                path: req.file.path,
                 mimeType,
                 status: "pending"
             },
-            documents,
+            documents: publicDocuments(documents),
             message: existing
                 ? "Document replaced."
                 : "Document uploaded."
         });
     } catch (error) {
         // Best-effort cleanup of an orphaned upload on failure.
-        try { if (req.file) require("fs").unlinkSync(req.file.path); } catch { /* ignore */ }
+        removeStoredFileByFilename(req.file && req.file.filename);
         next(error);
     }
 };
 
+// Fallback slot guessing when a client uploads without a docType field.
+// The Certificates of Residency / Indigency (student and parent/guardian) were
+// dropped from the application flow, so they are no longer recognised here —
+// such a file falls through to "Other" instead of being filed in a removed slot.
 const KNOWN_DOC_TYPES = [
-    "Certificate of Residency (Student)",
-    "Certificate of Indigency (Student)",
-    "Certificate of Residency (Parent/Guardian)",
-    "Certificate of Indigency (Parent/Guardian)",
     "Certificate of Matriculation",
     "Report Card (Grade 12)",
     "School ID (Current)",
@@ -175,18 +188,14 @@ const KNOWN_DOC_TYPES = [
 
 function guessDocumentType(originalName) {
     const lower = originalName.toLowerCase();
-    if (/residency/i.test(lower) && /student/i.test(lower)) return KNOWN_DOC_TYPES[0];
-    if (/indigency/i.test(lower) && /student/i.test(lower)) return KNOWN_DOC_TYPES[1];
-    if (/residency/i.test(lower) && /parent/i.test(lower)) return KNOWN_DOC_TYPES[2];
-    if (/indigency/i.test(lower) && /parent/i.test(lower)) return KNOWN_DOC_TYPES[3];
-    if (/matriculation/i.test(lower)) return KNOWN_DOC_TYPES[4];
-    if (/report card/i.test(lower) || /grade 12/i.test(lower) || /reportcard/i.test(lower)) return KNOWN_DOC_TYPES[5];
-    if (/school id/i.test(lower)) return KNOWN_DOC_TYPES[6];
-    if (/valid id/i.test(lower) && /parent/i.test(lower)) return KNOWN_DOC_TYPES[7];
-    if (/clearance/i.test(lower)) return KNOWN_DOC_TYPES[8];
-    if (/birth/i.test(lower)) return KNOWN_DOC_TYPES[9];
-    if (/moral/i.test(lower)) return KNOWN_DOC_TYPES[10];
-    return KNOWN_DOC_TYPES[11];
+    if (/matriculation/i.test(lower)) return KNOWN_DOC_TYPES[0];
+    if (/report card/i.test(lower) || /grade 12/i.test(lower) || /reportcard/i.test(lower)) return KNOWN_DOC_TYPES[1];
+    if (/school id/i.test(lower)) return KNOWN_DOC_TYPES[2];
+    if (/valid id/i.test(lower) && /parent/i.test(lower)) return KNOWN_DOC_TYPES[3];
+    if (/clearance/i.test(lower)) return KNOWN_DOC_TYPES[4];
+    if (/birth/i.test(lower)) return KNOWN_DOC_TYPES[5];
+    if (/moral/i.test(lower)) return KNOWN_DOC_TYPES[6];
+    return KNOWN_DOC_TYPES[7];
 }
 
 module.exports = { listStudentDocuments, uploadStudentDocument };

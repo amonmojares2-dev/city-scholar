@@ -23,6 +23,8 @@ export const studentSidebarItems: SidebarItem[] = [
 export const barangaySidebarItems: SidebarItem[] = [
   { label: 'Dashboard', path: '/barangay', icon: 'grid' },
   { label: 'Scholars', path: '/barangay/scholars', icon: 'users' },
+  // Applicants now covers residency review too (the old "Application Review"
+  // page was merged into it), so there is no separate link for it.
   { label: 'Applicants', path: '/barangay/applicants', icon: 'user-plus' },
   { label: 'Announcements', path: '/barangay/announcements', icon: 'bell' },
   { label: 'Messages', path: '/barangay/messages', icon: 'message-square' },

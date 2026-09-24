@@ -10,17 +10,18 @@ const {
     validateRegistration,
     validatePassword,
     validateNewPassword,
+    validateStaffAccountCreation,
     EMAIL_PATTERN
 } = require("../utils/validation");
 const { sendOtpEmail } = require("../utils/email");
 const { logAudit } = require("../utils/audit");
 
-const OTP_TTL_MS = 30 * 1000;  // 30 seconds - for registration / password reset
-const LOGIN_OTP_TTL_MS = 10 * 60 * 1000;  // 10 minutes - login OTP does NOT expire after 30s
-const RESEND_COOLDOWN_MS = 30 * 1000;  // 30 seconds - must wait for timer to end before resend
-const MAX_ATTEMPTS = 6;  // Block OTP entry after 6 wrong attempts (login)
+const OTP_TTL_MS = 30 * 1000; // 30 seconds - for registration / password reset
+const LOGIN_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes - login OTP does NOT expire after 30s
+const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds - must wait for timer to end before resend
+const MAX_ATTEMPTS = 6; // Block OTP entry after 6 wrong attempts (login)
 const MAX_RESENDS = 5;
-const BLOCK_DURATION_MS = 30 * 1000;  // 30s block after 6 failed login attempts
+const BLOCK_DURATION_MS = 30 * 1000; // 30s block after 6 failed login attempts
 
 // ==========================================
 // CREATE 6-DIGIT OTP
@@ -69,14 +70,15 @@ function issueToken(user) {
 function publicUser(user) {
     return {
         id: user._id,
-        name: user.name,
+        // Staff accounts provisioned by the Super Admin start with no name;
+        // fall back to the email so the portal header is never blank.
+        name: String(user.name || "").trim() || user.email,
         email: user.email,
         role: user.role,
         // Student account type + the City Office's verification decision.
         // The client uses these to decide which student pages are unlocked
         // (Event Attendance / Renewal stay locked until approved).
         scholarType: user.scholarType || "new_applicant",
-        scholarId: user.scholarId || "",
         scholarVerificationStatus: user.scholarVerificationStatus ||
             "not_required",
         barangay: user.barangay || null
@@ -221,8 +223,6 @@ const registerUser = async(req, res) => {
                     schoolName: String(data.school).trim()
                 },
                 scholarType,
-                scholarId: scholarType === "existing_scholar" ?
-                    String(data.scholarId || "").trim().toUpperCase() : "",
                 // Existing scholars are queued for the City Office to
                 // confirm on the Scholar Approval page. Until then their
                 // Renewal page stays locked.
@@ -742,8 +742,7 @@ const verifyOtp = async(req, res) => {
                     mustResend: isLogin && challenge.attempts >= MAX_ATTEMPTS ? true : undefined,
                     attemptsRemaining: Math.max(0, MAX_ATTEMPTS - challenge.attempts),
                     message: challenge.attempts >= MAX_ATTEMPTS ?
-                        "Too many incorrect attempts. Please request a new verification code." :
-                        "Invalid verification code. You have " + (MAX_ATTEMPTS - challenge.attempts) + " attempt(s) remaining."
+                        "Too many incorrect attempts. Please request a new verification code." : "Invalid verification code. You have " + (MAX_ATTEMPTS - challenge.attempts) + " attempt(s) remaining."
                 });
         }
 
@@ -942,6 +941,130 @@ const resendOtp = async(req, res) => {
 };
 
 // ==========================================
+// CREATE STAFF ACCOUNT (Super Admin only)
+// ==========================================
+// Creates a barangay_admin or city_admin account directly in the database
+// without a password. The user sets their password via the standard
+// forgot-password flow on first login.
+//
+// This endpoint is protected by superAdminOnly middleware.
+// ==========================================
+const createStaffAccount = async(req, res) => {
+    try {
+        const { email, employeeNumber, role, barangay } = req.body || {};
+
+        // --- Validation ---
+        const validationError = validateStaffAccountCreation({ email, employeeNumber, role, barangay });
+        if (validationError) {
+            return res.status(400).json({
+                success: false,
+                message: validationError
+            });
+        }
+
+        const normalizedEmail = normalizeEmail(email);
+        const normalizedEmployeeNumber = employeeNumber.trim().toUpperCase();
+
+        // --- Check for duplicates ---
+        const existingByEmail = await User.findOne({ email: normalizedEmail });
+        if (existingByEmail) {
+            return res.status(400).json({
+                success: false,
+                message: "An account with this email address already exists."
+            });
+        }
+
+        const existingByEmployeeNumber = await User.findOne({ employeeNumber: normalizedEmployeeNumber });
+        if (existingByEmployeeNumber) {
+            return res.status(400).json({
+                success: false,
+                message: "This employee number is already registered."
+            });
+        }
+
+        // --- Determine the canonical role value ---
+        // Stored as "barangay_admin" / "city_admin" — the exact values the
+        // login flow reads back out of MongoDB to decide which portal the
+        // account may open (Barangay portal vs City Office portal).
+        const canonicalRole = role === "barangay_admin" ? "barangay_admin" : "city_admin";
+
+        // --- Barangay assignment (Barangay Admin only) ---
+        // Same lookup the student registration uses: the selected name
+        // against the active Barangay collection. Stored on User.barangay so
+        // the account is scoped to one barangay from the moment it exists —
+        // without it every Barangay portal page shows "Your account is not
+        // assigned to a barangay yet."
+        let assignedBarangay = null;
+        if (canonicalRole === "barangay_admin") {
+            assignedBarangay = await Barangay.findOne({
+                name: String(barangay || "").trim(),
+                status: "active"
+            });
+            if (!assignedBarangay) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please select a valid barangay."
+                });
+            }
+        }
+
+        // --- Create the user account ---
+        // No password is set here on purpose: the Super Admin is the trusted
+        // source for staff accounts, so the account is written straight to the
+        // database with no email verification / OTP step. The holder sets
+        // their own password on first login through the standard Forgot
+        // Password flow. The name is left blank and is filled in later from
+        // the user's own profile.
+        const user = new User({
+            name: "",
+            email: normalizedEmail,
+            password: "",
+            role: canonicalRole,
+            employeeNumber: normalizedEmployeeNumber,
+            status: "active",
+            mustChangePassword: false,
+            ...(assignedBarangay ? { barangay: assignedBarangay._id } : {})
+        });
+
+        await user.save();
+
+        // --- Log audit ---
+        // "Account Change" is the closest value in the AuditLog enum for
+        // provisioning a new account; the description spells out the details.
+        await logAudit({
+            req,
+            actionType: "Account Change",
+            description: `Created ${canonicalRole === "barangay_admin" ? "Barangay Admin" : "City Admin"} account ${normalizedEmail} (${normalizedEmployeeNumber})`,
+            targetType: "User",
+            targetId: user._id
+        });
+
+        return res.status(201).json({
+            success: true,
+            message: "Account created — the user can set their password via Forgot Password.",
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                employeeNumber: user.employeeNumber,
+                role: user.role,
+                type: canonicalRole === "barangay_admin" ? "barangay" : "city",
+                barangay: assignedBarangay ? assignedBarangay.name : "",
+                status: user.status,
+                createdAt: user.createdAt
+            }
+        });
+    } catch (error) {
+        console.error("Create staff account error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Server error while creating staff account."
+        });
+    }
+};
+
+// ==========================================
 // SUPER ADMIN — thin aliases over the shared handlers.
 //
 // loginUser/requestPasswordReset/setInitialPassword already work for every
@@ -967,5 +1090,6 @@ module.exports = {
     verifyOtp,
     resendOtp,
     getCurrentUser,
-    updateCurrentUser
+    updateCurrentUser,
+    createStaffAccount
 };

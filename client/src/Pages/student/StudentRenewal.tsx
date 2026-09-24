@@ -3,7 +3,7 @@ import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import StatusBadge from '../../components/StatusBadge';
 import { api } from '../../lib/api';
-import { docFileUrl, isImageMime } from '../../lib/docUrl';
+import { docFileUrl, isImageMime, friendlyErrorMessage } from '../../lib/docUrl';
 
 // The five renewal slots — identical to the server's KNOWN_DOC_TYPES[0..4],
 // so the upload endpoint stores them under the exact slot the student picked.
@@ -28,6 +28,7 @@ interface DocRow {
   note: string;
   status: UploadStatus;
   uploaded: string; // formatted date, '' when not uploaded
+  documentId: string;
   filename: string;
   mimeType: string;
 }
@@ -58,7 +59,7 @@ const getRenewalWindow = () => {
 };
 
 export default function StudentRenewal() {
-  const [docs, setDocs] = useState<DocRow[]>(RENEWAL_DOCS.map(d => ({ ...d, status: 'not-uploaded' as const, uploaded: '', filename: '', mimeType: '' })));
+  const [docs, setDocs] = useState<DocRow[]>(RENEWAL_DOCS.map(d => ({ ...d, status: 'not-uploaded' as const, uploaded: '', documentId: '', filename: '', mimeType: '' })));
   const [loading, setLoading] = useState(true);
   const [uploadFor, setUploadFor] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -85,12 +86,14 @@ export default function StudentRenewal() {
           note: slot.note,
           status: mapServerStatus(found?.status),
           uploaded: formatDate(found?.updatedAt || found?.createdAt),
+          documentId: found?._id || '',
           filename: found?.filename || '',
           mimeType: found?.mimeType || '',
         };
       }));
-    } catch (err) {
-      setNotice({ kind: 'error', text: err instanceof Error ? err.message : 'Unable to load documents.' });    } finally {
+        } catch (err) {
+      setNotice({ kind: 'error', text: friendlyErrorMessage(err instanceof Error ? err.message : 'Unable to load documents.') });
+    } finally {
       setLoading(false);
     }
   }, []);
@@ -130,8 +133,8 @@ export default function StudentRenewal() {
       closeUpload();
       await refresh();
       setNotice({ kind: 'success', text: 'Document uploaded. It will be reviewed by the scholarship office.' });
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed.');
+        } catch (err) {
+      setUploadError(friendlyErrorMessage(err instanceof Error ? err.message : 'Upload failed.'));
     } finally {
       setUploading(false);
     }
@@ -147,8 +150,8 @@ export default function StudentRenewal() {
       await api('/student/application', { method: 'PATCH', body: JSON.stringify({ status: 'submitted' }) });
       setSubmitted(true);
       setNotice({ kind: 'success', text: 'Renewal submitted. Track its status on this page.' });
-    } catch (err) {
-      setNotice({ kind: 'error', text: err instanceof Error ? err.message : 'Unable to submit your renewal.' });
+        } catch (err) {
+      setNotice({ kind: 'error', text: friendlyErrorMessage(err instanceof Error ? err.message : 'Unable to submit your renewal.') });
     } finally {
       setSubmitting(false);
     }
@@ -242,10 +245,10 @@ export default function StudentRenewal() {
         <div className="divide-y divide-[#E5E7EB]">
           {docs.map(doc => (
             <div key={doc.docType} className="flex items-start gap-4 px-5 py-4">
-              {doc.filename && isImageMime(doc.mimeType) && docFileUrl(doc.filename) ? (
-                <a href={docFileUrl(doc.filename) as string} target="_blank" rel="noreferrer" title="Open full image" className="flex-shrink-0 mt-0.5">
+              {doc.documentId && isImageMime(doc.mimeType) && docFileUrl(doc.documentId) ? (
+                <a href={docFileUrl(doc.documentId) as string} target="_blank" rel="noreferrer" title="Open full image" className="flex-shrink-0 mt-0.5">
                   <img
-                    src={docFileUrl(doc.filename) as string}
+                    src={docFileUrl(doc.documentId) as string}
                     alt={doc.docType}
                     className="w-14 h-14 rounded-xl object-cover border border-[#E5E7EB]"
                   />

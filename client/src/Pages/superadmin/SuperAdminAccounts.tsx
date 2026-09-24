@@ -3,6 +3,8 @@ import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
 import { api } from "../../lib/api";
+// Same barangay list the student sign-up / Application flow uses.
+import { BARANGAYS } from "../../data/barangays";
 
 type AccountStatus = "pending" | "approved" | "rejected";
 type AccountType = "city" | "barangay";
@@ -16,6 +18,7 @@ interface BaseAccount {
   status: AccountStatus;
   type: AccountType;
   reviewNotes?: string;
+  role?: string;
 }
 
 interface CityAccount extends BaseAccount {
@@ -40,9 +43,13 @@ interface ReviewModalProps {
   onClose: () => void;
   onApprove: (id: string, notes: string) => Promise<void>;
   onReject: (id: string, notes: string) => Promise<void>;
+  // Assign / reassign the barangay of a Barangay Official. Separate from
+  // approve / reject so it also works for already-approved accounts (e.g.
+  // ones created before the Add User barangay dropdown existed).
+  onBarangayChange: (id: string, barangay: string) => Promise<void>;
 }
 
-function ReviewModal({ account, onClose, onApprove, onReject }: ReviewModalProps) {
+function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }: ReviewModalProps) {
   const [checklist, setChecklist] = useState<ChecklistState>({
     employeeValid: false,
     emailDomain: false,
@@ -51,6 +58,13 @@ function ReviewModal({ account, onClose, onApprove, onReject }: ReviewModalProps
   const [notes, setNotes] = useState(account.reviewNotes ?? "");
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
+  // Barangay assignment edit — usable for every status so the Super Admin
+  // can fix accounts created without one or reassign a transferred official.
+  const [editBarangay, setEditBarangay] = useState(
+    account.type === "barangay" ? (account as BarangayAccount).barangay : ""
+  );
+  const [barangaySaving, setBarangaySaving] = useState(false);
+  const [barangaySaved, setBarangaySaved] = useState(false);
 
   const isPending = account.status === "pending";
 
@@ -79,6 +93,26 @@ function ReviewModal({ account, onClose, onApprove, onReject }: ReviewModalProps
       setModalError(requestError instanceof Error ? requestError.message : "Unable to reject this account.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Save the barangay assignment on its own — independent of the approve /
+  // reject workflow, so it works for already-approved accounts too.
+  const handleBarangaySave = async () => {
+    if (!editBarangay.trim()) {
+      setModalError("Please select a barangay.");
+      return;
+    }
+    setBarangaySaving(true);
+    setModalError("");
+    setBarangaySaved(false);
+    try {
+      await onBarangayChange(account.id, editBarangay.trim());
+      setBarangaySaved(true);
+    } catch (requestError) {
+      setModalError(requestError instanceof Error ? requestError.message : "Unable to update the barangay assignment.");
+    } finally {
+      setBarangaySaving(false);
     }
   };
 
@@ -140,6 +174,46 @@ function ReviewModal({ account, onClose, onApprove, onReject }: ReviewModalProps
               />
             </div>
           </div>
+
+          {/* Barangay assignment — editable for every status so the Super
+              Admin can fix accounts created without one (before this field
+              existed) or reassign an official who transferred. */}
+          {account.type === "barangay" && (
+            <div className="mb-6">
+              <h3
+                className="text-sm font-semibold uppercase tracking-wider mb-3"
+                style={{ color: "#163A63" }}
+              >
+                Barangay Assignment
+              </h3>
+              <div className="flex items-end gap-2">
+                <select
+                  value={editBarangay}
+                  onChange={(event) => { setEditBarangay(event.target.value); setBarangaySaved(false); setModalError(""); }}
+                  className="flex-1 rounded-lg px-3 py-2.5 text-sm focus:outline-none transition-colors"
+                  style={{ border: "1px solid #E5E7EB", backgroundColor: "#ffffff", color: "#0B1F3A" }}
+                >
+                  <option value="">Select a barangay</option>
+                  {BARANGAYS.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleBarangaySave}
+                  disabled={barangaySaving || !editBarangay.trim()}
+                  className="px-4 py-2.5 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+                  style={{ backgroundColor: "#163A63" }}
+                >
+                  {barangaySaving ? "Saving…" : "Save"}
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs" style={{ color: barangaySaved ? "#16a34a" : "#6b7280" }}>
+                {barangaySaved
+                  ? "Saved — this account is now scoped to the selected barangay."
+                  : "Which barangay this official serves. Barangay portal queues only show this barangay's records."}
+              </p>
+            </div>
+          )}
 
           {/* Verification Checklist */}
           <div className="mb-6">
@@ -319,6 +393,313 @@ function StatusDot({ status }: { status: AccountStatus }) {
   );
 }
 
+// Barangay column (replaces the old Status column):
+//   • Barangay Official → the barangay assigned on the account (set by the
+//     Add User dropdown, or by the Review modal's "Save" / the All Users
+//     "Reassign Barangay" action). Blank means the account predates the
+//     fix — flagged as "Not assigned" because every Barangay portal page
+//     then shows "not assigned to a barangay yet".
+//   • City Office Staff → "City-wide" — the City portal is not scoped to a
+//     single barangay.
+//   • Anything else (e.g. a Super Admin, if ever listed here) → "—".
+function BarangayCell({ account }: { account: Account }) {
+  // Widened to string so the fallback branch stays meaningful if another
+  // account type is ever listed in this table.
+  const type: string = account.type;
+  const assigned = (account as BarangayAccount).barangay || "";
+
+  if (type === "barangay") {
+    if (!assigned) {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: "#b45309" }}>
+          <Icon name="alert-circle" size={13} className="flex-shrink-0" />
+          Not assigned
+        </span>
+      );
+    }
+
+    return (
+      <span className="inline-flex items-center gap-1.5" style={{ color: "#374151" }}>
+        <Icon name="map-pin" size={13} className="text-purple-400 flex-shrink-0" />
+        {assigned}
+      </span>
+    );
+  }
+
+  if (type === "city") {
+    return <span style={{ color: "#6b7280" }}>City-wide</span>;
+  }
+
+  return <span style={{ color: "#9ca3af" }}>—</span>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD USER MODAL (Super Admin only)
+//
+// Provisions a Barangay Admin or City Admin account straight into the
+// database. The Super Admin is the trusted source, so there is NO email
+// verification / OTP step and NO password at creation time: the new user sets
+// their own password through the standard Forgot Password flow on the login
+// page, using the email entered here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Same shape the server validates with (see server/utils/validation.js).
+const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMPLOYEE_FORMAT: Record<"barangay_admin" | "city_admin", RegExp> = {
+  barangay_admin: /^BRG-\d{4}-\d{4}$/,
+  city_admin: /^CSO-\d{4}-\d{4}$/,
+};
+
+const STAFF_ROLE_OPTIONS = [
+  { value: "barangay_admin", label: "Barangay Admin" },
+  { value: "city_admin", label: "City Admin" },
+] as const;
+
+type StaffRoleValue = (typeof STAFF_ROLE_OPTIONS)[number]["value"];
+
+interface CreatedAccount {
+  message: string;
+  type: AccountType;
+  email: string;
+}
+
+interface AddUserModalProps {
+  onClose: () => void;
+  onCreated: (account: CreatedAccount) => void;
+}
+
+function AddUserModal({ onClose, onCreated }: AddUserModalProps) {
+  const [email, setEmail] = useState("");
+  const [employeeNumber, setEmployeeNumber] = useState("");
+  const [role, setRole] = useState<StaffRoleValue>("barangay_admin");
+  // Required when role is Barangay Admin — the account is scoped to exactly
+  // one barangay (User.barangay), without which every Barangay portal page
+  // shows "Your account is not assigned to a barangay yet."
+  const [barangay, setBarangay] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [modalError, setModalError] = useState("");
+
+  const roleIsBarangay = role === "barangay_admin";
+  const employeeExample = roleIsBarangay ? "BRG-2026-0001" : "CSO-2026-0001";
+
+  // Runs before the request goes out. The server repeats every one of these
+  // checks and additionally enforces email / employee-number uniqueness.
+  const validate = () => {
+    if (!email.trim()) return "Email address is required.";
+    if (!EMAIL_FORMAT.test(email.trim())) return "Enter a valid email address.";
+    if (!employeeNumber.trim()) return "Employee number is required.";
+    if (!EMPLOYEE_FORMAT[role].test(employeeNumber.trim().toUpperCase())) {
+      return `Employee number must follow the ${roleIsBarangay ? "BRG" : "CSO"}-YYYY-0000 format.`;
+    }
+    if (roleIsBarangay && !barangay.trim()) {
+      return "Please select a barangay for this Barangay Admin.";
+    }
+    return "";
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setModalError("");
+
+    const validationError = validate();
+    if (validationError) {
+      setModalError(validationError);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const result = await api<{
+        message: string;
+        user: { email: string; role: string; type: AccountType };
+      }>("/auth/super-admin/create-user", {
+        method: "POST",
+        body: JSON.stringify({
+          email: email.trim(),
+          employeeNumber: employeeNumber.trim().toUpperCase(),
+          role,
+          // Sent only for Barangay Admin — the server resolves the name to a
+          // Barangay record and stores it on User.barangay.
+          ...(roleIsBarangay ? { barangay: barangay.trim() } : {}),
+        }),
+      });
+
+      onCreated({
+        message: result.message || "Account created.",
+        type: result.user?.type ?? (roleIsBarangay ? "barangay" : "city"),
+        email: result.user?.email ?? email.trim(),
+      });
+    } catch (requestError) {
+      setModalError(requestError instanceof Error ? requestError.message : "Unable to create this account.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputClass =
+    "w-full px-3.5 py-2.5 rounded-lg text-sm focus:outline-none transition-colors";
+  const inputStyle = { border: "1px solid #E5E7EB", color: "#0B1F3A" };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div
+        className="relative w-full max-w-lg rounded-xl shadow-2xl overflow-hidden"
+        style={{ backgroundColor: "#ffffff" }}
+      >
+        {/* Modal Header */}
+        <div className="flex items-center justify-between px-6 py-4" style={{ backgroundColor: "#0B1F3A" }}>
+          <div>
+            <h2 className="text-lg font-semibold text-white">Add User</h2>
+            <p className="text-sm mt-0.5" style={{ color: "#94a3b8" }}>
+              Create a staff account — no password is set here
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg transition-colors hover:bg-white/10">
+            <Icon name="x" size={20} className="text-white" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+          {/* Email */}
+          <div>
+            <label htmlFor="add-user-email" className="block text-xs mb-1.5" style={{ color: "#374151", fontWeight: 600 }}>
+              Email Address <span className="text-[#DC2626]">*</span>
+            </label>
+            <input
+              id="add-user-email"
+              name="email"
+              type="email"
+              required
+              autoComplete="off"
+              value={email}
+              onChange={(event) => { setEmail(event.target.value); setModalError(""); }}
+              placeholder="name@city.gov.ph"
+              className={inputClass}
+              style={inputStyle}
+            />
+            <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>
+              The password-reset code is sent to this address, so it must be correct.
+            </p>
+          </div>
+
+          {/* Employee Number */}
+          <div>
+            <label htmlFor="add-user-employee" className="block text-xs mb-1.5" style={{ color: "#374151", fontWeight: 600 }}>
+              Employee Number <span className="text-[#DC2626]">*</span>
+            </label>
+            <input
+              id="add-user-employee"
+              name="employeeNumber"
+              type="text"
+              required
+              autoComplete="off"
+              value={employeeNumber}
+              onChange={(event) => { setEmployeeNumber(event.target.value); setModalError(""); }}
+              placeholder={`e.g. ${employeeExample}`}
+              className={`${inputClass} uppercase`}
+              style={inputStyle}
+            />
+            <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>
+              {roleIsBarangay ? "As issued by the Barangay office" : "As issued by the City Government"}
+            </p>
+          </div>
+
+          {/* Role */}
+          <div>
+            <label htmlFor="add-user-role" className="block text-xs mb-1.5" style={{ color: "#374151", fontWeight: 600 }}>
+              Role <span className="text-[#DC2626]">*</span>
+            </label>
+            <select
+              id="add-user-role"
+              name="role"
+              required
+              value={role}
+              onChange={(event) => { setRole(event.target.value as StaffRoleValue); setModalError(""); }}
+              className={inputClass}
+              style={inputStyle}
+            >
+              {STAFF_ROLE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>
+              {roleIsBarangay
+                ? "Gives access to the Barangay portal only."
+                : "Gives access to the City Office portal only."}
+            </p>
+          </div>
+
+          {/* Barangay — required for Barangay Admin so the account is scoped
+              to one barangay from creation. Same list the student sign-up /
+              Application flow uses (data/barangays.ts). */}
+          {roleIsBarangay && (
+            <div>
+              <label htmlFor="add-user-barangay" className="block text-xs mb-1.5" style={{ color: "#374151", fontWeight: 600 }}>
+                Barangay <span className="text-[#DC2626]">*</span>
+              </label>
+              <select
+                id="add-user-barangay"
+                name="barangay"
+                required
+                value={barangay}
+                onChange={(event) => { setBarangay(event.target.value); setModalError(""); }}
+                className={inputClass}
+                style={inputStyle}
+              >
+                <option value="">Select a barangay</option>
+                {BARANGAYS.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+              <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>
+                The Barangay portal only shows records from this barangay.
+              </p>
+            </div>
+          )}
+
+          <div
+            className="rounded-lg px-3.5 py-2.5 text-xs"
+            style={{ backgroundColor: "#F6F7F9", color: "#6b7280", border: "1px solid #E5E7EB" }}
+          >
+            No password is set at creation. The new user signs in with{' '}
+            <span style={{ color: "#0B1F3A", fontWeight: 600 }}>Forgot Password</span> using this email to set their own
+            password for the first time.
+          </div>
+
+          {modalError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700">
+              {modalError}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-4 py-2.5 rounded-lg text-sm transition-colors"
+              style={{ backgroundColor: "#F6F7F9", color: "#374151", border: "1px solid #E5E7EB", fontWeight: 600 }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm text-white transition-all hover:opacity-90 disabled:opacity-60"
+              style={{ backgroundColor: "#0B1F3A", fontWeight: 600 }}
+            >
+              <Icon name="user-plus" size={15} className="text-[#D4A72C]" />
+              {submitting ? "Creating account…" : "Create Account"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function SuperAdminAccounts() {
   const [activeTab, setActiveTab] = useState<"city" | "barangay">("city");
   const [cityAccounts, setCityAccounts] = useState<CityAccount[]>([]);
@@ -328,6 +709,10 @@ export default function SuperAdminAccounts() {
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
+  // Super Admin "Add User": the modal that provisions a staff account and the
+  // confirmation shown after one is created.
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [notice, setNotice] = useState("");
 
   const loadAccounts = async (tab: "city" | "barangay") => {
     setLoading(true);
@@ -373,6 +758,21 @@ export default function SuperAdminAccounts() {
     loadAccounts(activeTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // Super Admin "Add User" → the account now exists in the database. Show the
+  // confirmation, then reload the Staff Account list so the new user appears.
+  const handleCreated = (created: CreatedAccount) => {
+    setShowAddUser(false);
+    setNotice(`${created.message} New account: ${created.email}.`);
+    setSearchQuery("");
+    if (created.type === activeTab) {
+      // Same tab: the loader effect below does not re-run, so reload directly.
+      loadAccounts(activeTab);
+    } else {
+      // Switching tab re-runs the loader through the effect below.
+      setActiveTab(created.type);
+    }
+  };
 
   const handleApprove = async (id: string, notes: string) => {
     setSaving(true);
@@ -428,6 +828,24 @@ export default function SuperAdminAccounts() {
     }
   };
 
+  // Super Admin "Edit": assign or reassign the barangay of an existing
+  // Barangay Official — fixes accounts created before the Add User dropdown
+  // existed and officials transferred to another barangay. Errors throw so
+  // the modal can surface them inline.
+  const handleBarangayChange = async (id: string, barangay: string) => {
+    const result = await api<{ account: BaseAccount & { barangay?: string } }>(
+      `/super-admin/accounts/${id}`,
+      { method: "PATCH", body: JSON.stringify({ barangay }) }
+    );
+    const updatedName = result.account?.barangay ?? barangay;
+    setBarangayAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, barangay: updatedName } : a)));
+    setSelectedAccount((prev) =>
+      prev && prev.id === id && prev.type === "barangay"
+        ? { ...(prev as BarangayAccount), barangay: updatedName }
+        : prev
+    );
+  };
+
   const filteredCity = cityAccounts.filter(
     (a) =>
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -449,8 +867,19 @@ export default function SuperAdminAccounts() {
     <div className="min-h-screen" style={{ backgroundColor: "#F6F7F9" }}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <PageHeader
-          title="Staff Account Approval"
-          subtitle="Review and approve City Office and Barangay Official account registrations"
+          title="Staff Accounts"
+          subtitle="Create City Admin and Barangay Admin accounts, and review existing staff records"
+          action={
+            <button
+              type="button"
+              onClick={() => { setShowAddUser(true); setNotice(""); }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm text-white transition-all hover:opacity-90"
+              style={{ backgroundColor: "#0B1F3A", fontWeight: 600 }}
+            >
+              <Icon name="user-plus" size={16} className="text-[#D4A72C]" />
+              Add User
+            </button>
+          }
         />
 
         {/* Card Container */}
@@ -501,6 +930,22 @@ export default function SuperAdminAccounts() {
           </div>
 
           {/* Request Status */}
+          {notice && (
+            <div className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">
+              <span className="flex items-start gap-2">
+                <Icon name="check-circle" size={16} className="mt-0.5 flex-shrink-0" />
+                <span>{notice}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setNotice("")}
+                className="flex-shrink-0 text-green-700 transition-colors hover:text-green-900"
+                aria-label="Dismiss confirmation"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          )}
           {error && (
             <div className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
               {error}
@@ -525,8 +970,15 @@ export default function SuperAdminAccounts() {
                   <TableHeader>Name</TableHeader>
                   <TableHeader>Email</TableHeader>
                   <TableHeader>Employee Number</TableHeader>
-                  {activeTab === "barangay" && <TableHeader>Barangay</TableHeader>}
                   <TableHeader>Registered Date</TableHeader>
+                  {/* This column used to be headed "Status" — it now shows the
+                      account's barangay assignment for every account type (see
+                      BarangayCell): barangay name for a Barangay Admin,
+                      "City-wide" for a City Admin. */}
+                  <TableHeader>Barangay</TableHeader>
+                  {/* User.status is still needed elsewhere on this page (the
+                      Review/View button and the "pending review" footer count),
+                      so it keeps its own column instead of being dropped. */}
                   <TableHeader>Status</TableHeader>
                   <TableHeader align="center">Action</TableHeader>
                 </tr>
@@ -535,7 +987,7 @@ export default function SuperAdminAccounts() {
                 {currentAccounts.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={activeTab === "barangay" ? 7 : 6}
+                      colSpan={7}
                       className="text-center py-12 text-sm"
                       style={{ color: "#9ca3af" }}
                     >
@@ -561,13 +1013,11 @@ export default function SuperAdminAccounts() {
                       <td className="px-6 py-4 whitespace-nowrap font-mono text-xs" style={{ color: "#374151" }}>
                         {account.employeeNumber}
                       </td>
-                      {activeTab === "barangay" && (
-                        <td className="px-6 py-4 whitespace-nowrap" style={{ color: "#374151" }}>
-                          {(account as BarangayAccount).barangay}
-                        </td>
-                      )}
                       <td className="px-6 py-4 whitespace-nowrap" style={{ color: "#6b7280" }}>
                         {account.registeredDate}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <BarangayCell account={account} />
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <StatusDot status={account.status} />
@@ -622,6 +1072,15 @@ export default function SuperAdminAccounts() {
           onClose={() => setSelectedAccount(null)}
           onApprove={handleApprove}
           onReject={handleReject}
+          onBarangayChange={handleBarangayChange}
+        />
+      )}
+
+      {/* Super Admin "Add User" — provision a staff account */}
+      {showAddUser && (
+        <AddUserModal
+          onClose={() => setShowAddUser(false)}
+          onCreated={handleCreated}
         />
       )}
     </div>

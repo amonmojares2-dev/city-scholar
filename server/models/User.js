@@ -1,9 +1,14 @@
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
+    // The student registration form always supplies a full name, so this is
+    // normally filled in. Staff accounts are provisioned by the Super Admin
+    // with only an email, employee number and role — the holder fills the
+    // name in later from their own profile, so a blank name is allowed here.
     name: {
         type: String,
-        required: true,
+        required: false,
+        default: "",
         trim: true
     },
 
@@ -15,9 +20,15 @@ const userSchema = new mongoose.Schema({
         trim: true
     },
 
+    // Students (and staff who self-registered before this flow existed) set a
+    // password at registration, so this is normally a bcrypt hash. Accounts
+    // provisioned by the Super Admin are created with NO password at all
+    // (empty string) — loginUser detects that and the holder sets their own
+    // password through the standard Forgot Password flow on the login page.
     password: {
         type: String,
-        required: true
+        required: false,
+        default: ""
     },
 
     // Forces the account to choose a new password before the login OTP
@@ -56,6 +67,7 @@ const userSchema = new mongoose.Schema({
         enum: [
             "student",
             "barangay_staff",
+            "barangay_admin",
             // City Office. "city_admin" is the canonical value; "admin_staff"
             // is still accepted for older documents.
             "city_admin",
@@ -86,8 +98,9 @@ const userSchema = new mongoose.Schema({
         default: "new_applicant"
     },
 
-    // Scholar ID claimed by an existing scholar (e.g. SCH-2024-0182).
-    // Confirmed by the City Office before renewal is unlocked.
+                // Scholar ID previously claimed by an existing scholar (e.g. SCH-2024-0182).
+    // Retained in the schema for backward compatibility with older records;
+    // new students no longer supply a Scholar ID at registration.
     scholarId: {
         type: String,
         trim: true,

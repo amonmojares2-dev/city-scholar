@@ -11,9 +11,10 @@ const {
     verifyOtp,
     resendOtp,
     getCurrentUser,
-    updateCurrentUser
+    updateCurrentUser,
+    createStaffAccount
 } = require("../controllers/userController");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, superAdminOnly } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
@@ -32,6 +33,11 @@ router.post("/resend-otp", resendOtp);
 router.post("/super-admin/login", loginSuperAdmin);
 router.post("/super-admin/set-password", setSuperAdminPassword);
 router.post("/super-admin/forgot-password", forgotSuperAdminPassword);
+
+// Super Admin: Create staff account (barangay_admin / city_admin)
+// This endpoint creates an account directly without password/OTP.
+// The user sets their password via the standard forgot-password flow.
+router.post("/super-admin/create-user", protect, superAdminOnly, createStaffAccount);
 
 router.get("/me", protect, getCurrentUser);
 router.patch("/me", protect, updateCurrentUser);

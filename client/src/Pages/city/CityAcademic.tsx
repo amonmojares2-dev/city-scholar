@@ -11,7 +11,7 @@ interface ApprovedScholar {
   id: string;
   name: string;
   email: string;
-  scholarId: string;
+  scholarId?: string;
   school: string;
   course: string;
   yearLevel: string;

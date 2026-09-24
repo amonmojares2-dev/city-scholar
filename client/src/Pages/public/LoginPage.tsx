@@ -6,18 +6,52 @@ import { portalForRole, saveSession, type SessionUser } from '../../lib/auth';
 import { SCHOOLS } from '../../data/schools';
 import { BARANGAYS } from '../../data/barangays';
 
+// ------------------------------------------------------------
+// Create Account helpers: inline field validation + password strength
+// ------------------------------------------------------------
+
+const REG_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Inline required-field / format validation. Returns an error message,
+// or null when the field value is acceptable.
+function regFieldError(name: string, value: string): string | null {
+  const v = String(value || '').trim();
+  if (!v) return 'This field is required.';
+  if (name === 'email' && !REG_EMAIL_RE.test(v)) return 'Enter a valid email address.';
+  if (name === 'password' && v.length < 8) return 'Password must be at least 8 characters.';
+  return null;
+}
+
+// Live password strength for the Create Account form:
+// 0 = weak (red), 1 = fair (yellow), 2 = strong (green).
+function passwordStrength(pw: string): { score: number; label: string; color: string } {
+  if (!pw) return { score: -1, label: '', color: '' };
+  let points = 0;
+  if (pw.length >= 8) points++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) points++;
+  if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) points++;
+  if (points <= 1) return { score: 0, label: 'Weak password', color: '#DC2626' };
+  if (points === 2) return { score: 1, label: 'Fair password', color: '#D97706' };
+  return { score: 2, label: 'Strong password', color: '#22A06B' };
+}
+
 type Tab = 'login' | 'register' | 'forgot';
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<Tab>(() => searchParams.get('tab') === 'register' ? 'register' : 'login');
-  const [registerRole, setRegisterRole] = useState<'student' | 'barangay' | 'city'>('student');
   // Account Type (students only): new applicants start with the applicant
   // portal, existing scholars continue through Renewal once the City Office
   // confirms their registration.
   const [scholarType, setScholarType] = useState<'new_applicant' | 'existing_scholar'>('new_applicant');
   const [showPass, setShowPass] = useState(false);
+  // Register form: inline field errors (set on blur/change), password
+  // visibility toggle, and a controlled password value that drives the
+  // live strength bar.
+  const [showRegPass, setShowRegPass] = useState(false);
+  const [regPassword, setRegPassword] = useState('');
+  const [regErrors, setRegErrors] = useState<Record<string, string>>({});
   const [otpStep, setOtpStep] = useState(false);
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [otpError, setOtpError] = useState('');
@@ -112,28 +146,36 @@ export default function LoginPage() {
     } finally { setFormLoading(false); }
   };
 
+  // The public "Create Account" page creates STUDENT accounts only.
+  // City Admin and Barangay Admin accounts are no longer self-registered on
+  // this page: the Super Admin provisions them from the Staff Accounts page.
+  // The server enforces the same rule (see SELF_REGISTERABLE_ROLES).
   const handleRegister = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError('');
     setFormLoading(true);
     const fields = new FormData(e.currentTarget);
-    const roleMap = { student: 'student', barangay: 'barangay_staff', city: 'city_admin' } as const;
     const schoolField = e.currentTarget.elements.namedItem('school') as HTMLSelectElement | null;
     const school = schoolField?.value || selectedSchool;
-    if (registerRole === 'student' && !school) {
+    if (!school) {
       setFormError('Please select your school or university.');
       setFormLoading(false);
       return;
     }
-    // Existing scholars must claim the Scholar ID the City Office has on
-    // file — it is what gets verified on the Scholar Approval page.
-    const scholarIdField = e.currentTarget.elements.namedItem('scholarId') as HTMLInputElement | null;
-    const scholarId = (scholarIdField?.value || '').trim().toUpperCase();
-    if (registerRole === 'student' && scholarType === 'existing_scholar' && !/^SCH-\d{4}-\d{4}$/.test(scholarId)) {
-      setFormError('Enter the Scholar ID on file with the City Office (e.g. SCH-2024-0182).');
+    // Submit-time pass over the remaining fields — the same messages the
+    // inline (blur/change) validation shows under each field.
+    const nextErrors: Record<string, string> = {};
+    for (const name of ['firstName', 'lastName', 'email', 'barangay', 'password']) {
+      const err = regFieldError(name, String(fields.get(name) || ''));
+      if (err) nextErrors[name] = err;
+    }
+    if (Object.keys(nextErrors).length > 0) {
+      setRegErrors(nextErrors);
+      setFormError('Please fix the highlighted fields.');
       setFormLoading(false);
       return;
     }
+    setRegErrors({});
     try {
       const result = await api<{ challengeId: string; email: string }>('/auth/register', {
         method: 'POST', body: JSON.stringify({
@@ -141,13 +183,11 @@ export default function LoginPage() {
           lastName: fields.get('lastName'),
           email: fields.get('email'),
           password: fields.get('password'),
-          confirmPassword: fields.get('confirmPassword'),
-          role: roleMap[registerRole],
-          scholarType: registerRole === 'student' ? scholarType : undefined,
-          scholarId: registerRole === 'student' && scholarType === 'existing_scholar' ? scholarId : undefined,
+          // Always a student: no role is chosen on this page any more.
+          role: 'student',
+          scholarType,
           barangay: fields.get('barangay'),
           school,
-          employeeNumber: fields.get('employeeNumber'),
         }),
       });
       setChallengeId(result.challengeId);
@@ -618,160 +658,171 @@ export default function LoginPage() {
           {!otpStep && tab === 'register' && (
             <>
               <h1 className="text-2xl font-800 text-[#1F2937] mb-1" style={{ fontWeight: 800 }}>Create Account</h1>
-              <p className="text-sm text-[#6B7280] mb-4">
-                {registerRole === 'student'
-                  ? (scholarType === 'existing_scholar'
-                    ? 'Continue your scholarship as an existing scholar'
-                    : 'Start your scholarship application journey')
-                  : registerRole === 'barangay' ? 'Register as a Barangay Official' : 'Register as a City Scholarship Office staff'}
+              <p className="text-sm text-[#6B7280] mb-5">
+                {scholarType === 'existing_scholar'
+                  ? 'Continue your scholarship as an existing scholar'
+                  : 'Start your scholarship application journey'}
               </p>
 
-              <div className="grid grid-cols-3 gap-2 mb-5 p-1 bg-[#F6F7F9] rounded-xl">
-                {(['student', 'barangay', 'city'] as const).map(r => (
-                  <button key={r} onClick={() => setRegisterRole(r)}
-                    className={`py-2 rounded-lg text-xs font-600 transition-all ${registerRole === r ? 'bg-white shadow-sm text-[#0B1F3A]' : 'text-[#6B7280] hover:text-[#1F2937]'}`}
-                    style={{ fontWeight: 600 }}>
-                    {r === 'student' ? 'Student' : r === 'barangay' ? 'Barangay' : 'City Office'}
-                  </button>
-                ))}
-              </div>
+              {/* Student registration only. City Admin and Barangay Admin
+                  accounts are created by the Super Admin on the Staff
+                  Accounts page — this page no longer offers those options. */}
 
-              {/* Account Type — students only. Decides which portal pages
-                  open: new applicants start with the application flow,
-                  existing scholars continue through renewal. */}
-              {registerRole === 'student' && (
-                <div className="mb-5">
-                  <span className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Account Type</span>
-                  <div className="grid grid-cols-2 gap-3">
-                    {([
-                      { value: 'new_applicant', label: 'New Applicant', hint: 'First time applying for the scholarship' },
-                      { value: 'existing_scholar', label: 'Existing Scholar', hint: 'Already a recipient, continuing scholar' },
-                    ] as const).map(option => {
-                      const active = scholarType === option.value;
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          aria-pressed={active}
-                          onClick={() => setScholarType(option.value)}
-                          className={`text-left px-3.5 py-3 rounded-xl border transition-all ${active ? 'border-[#163A63] bg-[#F6F7F9] ring-2 ring-[#163A63]/10' : 'border-[#E5E7EB] hover:border-[#163A63]/40'}`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center flex-shrink-0 ${active ? 'border-[#163A63]' : 'border-[#D1D5DB]'}`}>
-                              {active && <span className="w-1.5 h-1.5 rounded-full bg-[#163A63]" />}
-                            </span>
-                            <span className={`text-sm text-[#0B1F3A] ${active ? 'font-700' : 'font-600'}`} style={{ fontWeight: active ? 700 : 600 }}>
-                              {option.label}
-                            </span>
+              {/* Account Type — decides which portal pages open: new
+                  applicants start with the application flow, existing
+                  scholars continue through renewal. */}
+              <div className="mb-5">
+                <span className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Account Type</span>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { value: 'new_applicant', label: 'New Applicant', hint: 'First time applying for the scholarship' },
+                    { value: 'existing_scholar', label: 'Existing Scholar', hint: 'Already a recipient, continuing scholar' },
+                  ] as const).map(option => {
+                    const active = scholarType === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setScholarType(option.value)}
+                        className={`text-left px-3.5 py-3 rounded-xl border transition-all ${active ? 'border-[#163A63] bg-[#F6F7F9] ring-2 ring-[#163A63]/10' : 'border-[#E5E7EB] hover:border-[#163A63]/40'}`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center flex-shrink-0 ${active ? 'border-[#163A63]' : 'border-[#D1D5DB]'}`}>
+                            {active && <span className="w-1.5 h-1.5 rounded-full bg-[#163A63]" />}
                           </span>
-                          <span className="block text-xs text-[#6B7280] mt-1.5 leading-snug">{option.hint}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                          <span className={`text-sm text-[#0B1F3A] ${active ? 'font-700' : 'font-600'}`} style={{ fontWeight: active ? 700 : 600 }}>
+                            {option.label}
+                          </span>
+                        </span>
+                        <span className="block text-xs text-[#6B7280] mt-1.5 leading-snug">{option.hint}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
+              </div>
 
               <form onSubmit={handleRegister} className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="register-first-name" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>First Name</label>
-                    <input id="register-first-name" name="firstName" autoComplete="given-name" required type="text" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Maria" />
+                    <input
+                      id="register-first-name"
+                      name="firstName"
+                      autoComplete="given-name"
+                      required
+                      type="text"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                      placeholder="Maria"
+                      onBlur={e => setRegErrors(prev => ({ ...prev, firstName: regFieldError('firstName', e.target.value) || '' }))}
+                    />
+                    {regErrors.firstName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.firstName}</p>}
                   </div>
                   <div>
                     <label htmlFor="register-last-name" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Last Name</label>
-                    <input id="register-last-name" name="lastName" autoComplete="family-name" required type="text" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Santos" />
+                    <input
+                      id="register-last-name"
+                      name="lastName"
+                      autoComplete="family-name"
+                      required
+                      type="text"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                      placeholder="Santos"
+                      onBlur={e => setRegErrors(prev => ({ ...prev, lastName: regFieldError('lastName', e.target.value) || '' }))}
+                    />
+                    {regErrors.lastName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.lastName}</p>}
                   </div>
                 </div>
                 <div>
                   <label htmlFor="register-email" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Email Address</label>
-                  <input id="register-email" name="email" autoComplete="email" required type="email" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="you@gmail.com" />
+                  <input
+                    id="register-email"
+                    name="email"
+                    autoComplete="email"
+                    required
+                    type="email"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                    placeholder="you@gmail.com"
+                    onBlur={e => setRegErrors(prev => ({ ...prev, email: regFieldError('email', e.target.value) || '' }))}
+                  />
+                  {regErrors.email && <p className="text-xs text-[#DC2626] mt-1">{regErrors.email}</p>}
                 </div>
 
-                {(registerRole === 'barangay' || registerRole === 'city') && (
-                  <div>
-                    <label htmlFor="employee-number" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
-                      Employee Number <span className="text-[#DC2626]">*</span>
-                    </label>
-                    <input
-                      id="employee-number"
-                      type="text"
-                      name="employeeNumber"
-                      autoComplete="off"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
-                      placeholder={registerRole === 'barangay' ? 'e.g. BRG-2026-0001' : 'e.g. CSO-2026-0001'}
-                    />
-                    <p className="text-xs text-[#9CA3AF] mt-1">
-                      {registerRole === 'barangay' ? 'As issued by your Barangay office' : 'As issued by the City Government'}
-                    </p>
-                  </div>
-                )}
-
-                {registerRole === 'student' && (
-                  <>
-                    <div>
-                      <label htmlFor="register-student-barangay" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Barangay</label>
-                      <select id="register-student-barangay" name="barangay" required className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]">
-                        <option value="">Select your barangay</option>
-                        {BARANGAYS.map(name => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label htmlFor="register-school" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
-                        School / University <span className="text-[#DC2626]">*</span>
-                      </label>
-                      <select id="register-school" name="school" required value={selectedSchool} onChange={event => setSelectedSchool(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]">
-                        <option value="">Select your school</option>
-                        {SCHOOLS.map(s => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
-                    </div>
-                    {/* Existing scholars only: the Scholar ID the City Office
-                        verifies before unlocking Renewal. */}
-                    {scholarType === 'existing_scholar' && (
-                      <div>
-                        <label htmlFor="register-scholar-id" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
-                          Existing Scholar ID <span className="text-[#DC2626]">*</span>
-                        </label>
-                        <input
-                          id="register-scholar-id"
-                          name="scholarId"
-                          type="text"
-                          autoComplete="off"
-                          required
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] uppercase"
-                          placeholder="e.g. SCH-2024-0182"
-                        />
-                        <p className="text-xs text-[#9CA3AF] mt-1">
-                          The Scholar ID on file with the City Scholarship Office. Renewal unlocks once they confirm it.
-                        </p>
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {registerRole === 'barangay' && (
-                  <div>
-                    <label htmlFor="register-staff-barangay" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Assigned Barangay</label>
-                    <select id="register-staff-barangay" name="barangay" required className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]">
-                      <option value="">Select barangay</option>
-                      {BARANGAYS.map(name => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <div>
+                  <label htmlFor="register-student-barangay" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Barangay</label>
+                  <select
+                    id="register-student-barangay"
+                    name="barangay"
+                    required
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]"
+                    onBlur={e => setRegErrors(prev => ({ ...prev, barangay: regFieldError('barangay', e.target.value) || '' }))}
+                  >
+                    <option value="">Select your barangay</option>
+                    {BARANGAYS.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="register-school" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
+                    School / University <span className="text-[#DC2626]">*</span>
+                  </label>
+                  <select id="register-school" name="school" required value={selectedSchool} onChange={event => setSelectedSchool(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]">
+                    <option value="">Select your school</option>
+                    {SCHOOLS.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
 
                 <div>
                   <label htmlFor="register-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Create Password</label>
-                  <input id="register-password" name="password" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Minimum 8 characters" />
-                </div>
-                <div>
-                  <label htmlFor="register-confirm-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Confirm Password</label>
-                  <input id="register-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Re-enter your password" />
+                  <div className="relative">
+                    <input
+                      id="register-password"
+                      name="password"
+                      autoComplete="new-password"
+                      required
+                      minLength={8}
+                      type={showRegPass ? 'text' : 'password'}
+                      value={regPassword}
+                      onChange={e => {
+                        setRegPassword(e.target.value);
+                        setRegErrors(prev => ({ ...prev, password: regFieldError('password', e.target.value) || '' }));
+                      }}
+                      onBlur={e => setRegErrors(prev => ({ ...prev, password: regFieldError('password', e.target.value) || '' }))}
+                      className="w-full px-3.5 py-2.5 pr-11 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                      placeholder="Minimum 8 characters"
+                    />
+                    {/* Eye toggle: closed = masked, open = plain text. */}
+                    <button
+                      type="button"
+                      aria-label={showRegPass ? 'Hide password' : 'Show password'}
+                      onClick={() => setShowRegPass(s => !s)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B7280] hover:text-[#1F2937]"
+                    >
+                      <Icon name={showRegPass ? 'eye' : 'eye-off'} size={16} />
+                    </button>
+                  </div>
+                  {/* Live strength bar: red / yellow / green. */}
+                  {regPassword && (() => {
+                    const strength = passwordStrength(regPassword);
+                    return (
+                      <div className="mt-2">
+                        <div className="flex gap-1.5">
+                          {[0, 1, 2].map(i => (
+                            <span
+                              key={i}
+                              className="h-1.5 flex-1 rounded-full transition-colors"
+                              style={{ backgroundColor: i <= strength.score ? strength.color : '#E5E7EB' }}
+                            />
+                          ))}
+                        </div>
+                        <p className="text-xs mt-1" style={{ color: strength.color }}>{strength.label}</p>
+                      </div>
+                    );
+                  })()}
+                  {regErrors.password && <p className="text-xs text-[#DC2626] mt-1">{regErrors.password}</p>}
                 </div>
                 {formError && <p className="text-xs text-[#DC2626]">{formError}</p>}
                 <button

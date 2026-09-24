@@ -8,11 +8,19 @@ const Announcement = require("../models/Announcement");
 const AuditLog = require("../models/AuditLog");
 const ProgramConfig = require("../models/ProgramConfig");
 const bcrypt = require("bcryptjs");
-const { SUPER_ADMIN_ROLES } = require("../utils/validation");
+const mongoose = require("mongoose");
+const {
+    SUPER_ADMIN_ROLES,
+    CITY_ADMIN_ROLES,
+    BARANGAY_ADMIN_ROLES
+} = require("../utils/validation");
 const { logAudit } = require("../utils/audit");
 
 // Roles reviewed through the Super Admin "Staff Accounts" page.
-const STAFF_ROLES = ["barangay_staff", "admin_staff"];
+// Both the canonical names — "barangay_admin" / "city_admin", written by the
+// Super Admin "Add User" flow — and the legacy self-registration names are
+// included, so accounts created either way show up in the same lists.
+const STAFF_ROLES = [...BARANGAY_ADMIN_ROLES, ...CITY_ADMIN_ROLES];
 
 // ==========================================
 // SHARED HELPERS
@@ -20,17 +28,18 @@ const STAFF_ROLES = ["barangay_staff", "admin_staff"];
 
 // Database role -> portal role used by the client pages.
 function toUiRole(dbRole) {
-    if (dbRole === "barangay_staff") return "barangay";
-    if (dbRole === "admin_staff") return "city";
+    if (BARANGAY_ADMIN_ROLES.includes(dbRole)) return "barangay";
+    if (CITY_ADMIN_ROLES.includes(dbRole)) return "city";
     if (SUPER_ADMIN_ROLES.includes(dbRole)) return "superadmin";
     return "student";
 }
 
-// Portal role -> database role.
+// Portal role -> database role, or a group of database roles when a portal
+// is served by both the canonical and the legacy role name.
 function toDbRole(uiRole) {
-    if (uiRole === "barangay") return "barangay_staff";
-    if (uiRole === "city") return "admin_staff";
-    if (uiRole === "superadmin") return "super_admin";
+    if (uiRole === "barangay") return { $in: [...BARANGAY_ADMIN_ROLES] };
+    if (uiRole === "city") return { $in: [...CITY_ADMIN_ROLES] };
+    if (uiRole === "superadmin") return { $in: [...SUPER_ADMIN_ROLES] };
     if (uiRole === "student") return "student";
     return null;
 }
@@ -75,6 +84,14 @@ function accountWorkflowStatus(status) {
 
 const toId = (value) => (value ? String(value) : "");
 
+// A staff account provisioned by the Super Admin is created with only an
+// email, employee number and role — no name. The holder fills the name in
+// later from their own profile, so fall back to the email address here and
+// lists never render a blank row.
+function displayName(user) {
+    return String(user?.name || "").trim() || user?.email || "";
+}
+
 // ==========================================
 // DASHBOARD
 // ==========================================
@@ -101,8 +118,8 @@ const getDashboard = async(req, res) => {
         ] = await Promise.all([
             User.countDocuments({ archived: { $ne: true } }),
             User.countDocuments({ role: "student", archived: { $ne: true } }),
-            User.countDocuments({ role: "barangay_staff", archived: { $ne: true } }),
-            User.countDocuments({ role: "admin_staff", archived: { $ne: true } }),
+            User.countDocuments({ role: { $in: BARANGAY_ADMIN_ROLES }, archived: { $ne: true } }),
+            User.countDocuments({ role: { $in: CITY_ADMIN_ROLES }, archived: { $ne: true } }),
             User.countDocuments({ role: { $in: SUPER_ADMIN_ROLES }, archived: { $ne: true } }),
             User.countDocuments({ status: "pending" }),
             Application.countDocuments(),
@@ -114,8 +131,8 @@ const getDashboard = async(req, res) => {
             Announcement.countDocuments({ published: true }),
             Event.countDocuments(),
             Document.countDocuments(),
-            User.countDocuments({ role: "admin_staff", status: "pending" }),
-            User.countDocuments({ role: "barangay_staff", status: "pending" })
+            User.countDocuments({ role: { $in: CITY_ADMIN_ROLES }, status: "pending" }),
+            User.countDocuments({ role: { $in: BARANGAY_ADMIN_ROLES }, status: "pending" })
         ]);
 
         // Applications vs approvals over the last 6 months.
@@ -224,7 +241,7 @@ function serializeAccount(user) {
 
     return {
         id: toId(user._id),
-        name: user.name,
+        name: displayName(user),
         email: user.email,
         employeeNumber: user.employeeNumber || "",
         type: uiRole === "barangay" ? "barangay" : "city",
@@ -245,9 +262,16 @@ const listAccounts = async(req, res) => {
         const type = String(req.query.type || "city").toLowerCase();
         const status = String(req.query.status || "all").toLowerCase();
 
-        const role = type === "barangay" ? "barangay_staff" : "admin_staff";
+        // Staff Accounts is split into two tabs. Each tab matches every role
+        // name that belongs to the portal, so an account created by the Super
+        // Admin "Add User" flow (role "barangay_admin" / "city_admin") and an
+        // older self-registered account (role "barangay_staff" / "admin_staff")
+        // both appear.
+        const roleFilter = type === "barangay" ?
+            { $in: [...BARANGAY_ADMIN_ROLES] } :
+            { $in: [...CITY_ADMIN_ROLES] };
 
-        const filter = { role, archived: { $ne: true } };
+        const filter = { role: roleFilter, archived: { $ne: true } };
 
         if (status === "pending") filter.status = "pending";
         else if (status === "approved") filter.status = "active";
@@ -291,6 +315,49 @@ const reviewAccount = async(req, res) => {
             return res.status(404).json({
                 success: false,
                 message: "Staff account not found."
+            });
+        }
+
+        // --- Barangay reassignment (Super Admin "Edit") ---
+        // Body { barangay: "<name>" } with NO status decision: assigns or
+        // moves an existing Barangay Official to a different barangay. Used
+        // to fix accounts created before the Add User dropdown existed and
+        // to reassign an official who transferred — works for every account
+        // status, independently of the approve / reject workflow.
+        if (req.body && typeof req.body.barangay === "string" && !("status" in req.body)) {
+            if (!BARANGAY_ADMIN_ROLES.includes(user.role)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Only Barangay Official accounts can be assigned a barangay."
+                });
+            }
+
+            const barangayName = req.body.barangay.trim();
+            const barangay = await Barangay.findOne({ name: barangayName, status: "active" });
+            if (!barangay) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please select a valid barangay."
+                });
+            }
+
+            const hadBarangay = Boolean(user.barangay);
+            user.barangay = barangay._id;
+            await user.save();
+            await user.populate("barangay", "name");
+
+            await logAudit({
+                req,
+                actionType: "Data Change",
+                description: `${hadBarangay ? "Reassigned" : "Assigned"} ${user.name || user.email} to Barangay ${barangayName}`,
+                targetType: "User",
+                targetId: user._id
+            });
+
+            return res.json({
+                success: true,
+                message: "Barangay assignment updated.",
+                account: serializeAccount(user)
             });
         }
 
@@ -345,7 +412,7 @@ const reviewAccount = async(req, res) => {
 function serializeUser(user) {
     return {
         id: toId(user._id),
-        name: user.name,
+        name: displayName(user),
         email: user.email,
         employeeNumber: user.employeeNumber || "",
         role: toUiRole(user.role),
@@ -380,9 +447,9 @@ const listUsers = async(req, res) => {
                 });
             }
 
-            filter.role = SUPER_ADMIN_ROLES.includes(dbRole) ?
-                { $in: SUPER_ADMIN_ROLES } :
-                dbRole;
+            // toDbRole already returns the exact match or the $in group that
+            // covers both the canonical and the legacy role name.
+            filter.role = dbRole;
         }
 
         if (status !== "all") filter.status = status;
@@ -456,7 +523,20 @@ const updateUser = async(req, res) => {
         }
 
         if (barangayId) {
-            const barangay = await Barangay.findById(barangayId);
+            // Belt-and-suspenders: accept a barangay ObjectId (what the UI
+            // now sends) OR a barangay display name, so a client that passes
+            // the name can never produce a Mongoose CastError — the update
+            // either resolves the right record or fails with a clear 400.
+            let barangay = null;
+            if (mongoose.isValidObjectId(String(barangayId))) {
+                barangay = await Barangay.findById(barangayId);
+            }
+            if (!barangay) {
+                barangay = await Barangay.findOne({
+                    name: String(barangayId).trim(),
+                    status: "active"
+                });
+            }
 
             if (!barangay) {
                 return res.status(400).json({

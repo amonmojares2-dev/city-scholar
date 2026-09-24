@@ -1,18 +1,22 @@
-// Builds a browser-loadable URL for a locally stored upload.
-// Server stores files on disk (server/uploads/) and serves them at GET /uploads/:filename.
-// API_URL ends with "/api" (e.g. http://host:5000/api), so strip that suffix to get the origin.
-// NOTE: local disk is dev-only. Before launch, migrate to Cloudinary/S3 — see
-// server/STORAGE_LAUNCH_BLOCKER.md (redeploys on Render/Railway/Vercel wipe local files).
-import { API_URL } from './api';
+// Uploads are NEVER served by static middleware: every file goes through the
+// authenticated GET /api/documents/:id/file endpoint, which resolves the
+// hashed filename internally so the server's directory structure is hidden.
+//
+// <img> / <a> tags cannot send the Authorization header, so the endpoint URL
+// carries the token as a query param (?token=...). The server accepts the
+// same JWT from either the header or the query string (see authMiddleware:
+// header first, ?token= fallback).
+import { API_URL, getAuthToken } from './api';
 
-const SERVER_BASE = API_URL.replace(/\/api\/?$/, '');
-
-export function docFileUrl(filename?: string | null): string | null {
-  if (!filename) return null;
-  // Filenames are generated server-side as "<timestamp>-<slug>.<ext>" — no slashes.
-  const safe = String(filename).split('/').pop()?.split('\\').pop() || '';
-  if (!safe) return null;
-  return `${SERVER_BASE}/uploads/${encodeURIComponent(safe)}`;
+export function docFileUrl(documentId?: string | null): string | null {
+  if (!documentId) return null;
+  const id = String(documentId).trim();
+  // A MongoDB ObjectId is 24 hex chars — refuse anything else so a filename
+  // or path can never be smuggled into this URL.
+  if (!/^[a-f0-9]{24}$/i.test(id)) return null;
+  const token = getAuthToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${API_URL}/documents/${encodeURIComponent(id)}/file${query}`;
 }
 
 export function isImageMime(mime?: string | null): boolean {
@@ -26,12 +30,6 @@ export function isImageMime(mime?: string | null): boolean {
  */
 export function friendlyErrorMessage(message: string): string {
   const lower = (message || '').toLowerCase();
-  if (lower.includes('school') && lower.includes('program')) {
-    return 'Please fill in your Scholarship Program and School Name before uploading documents.';
-  }
-  if (lower.includes('program')) {
-    return 'Please fill in your Scholarship Program before uploading.';
-  }
   if (lower.includes('school')) {
     return 'Please fill in your School Name before uploading.';
   }

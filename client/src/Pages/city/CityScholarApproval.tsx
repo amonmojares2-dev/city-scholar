@@ -3,7 +3,9 @@
 
 The City Scholar Approval page loads students who registered as
 "Existing Scholar" and are waiting for the City Office to confirm
-their claimed Scholar ID.
+their existing-scholar claim. Students no longer supply a Scholar
+ID at registration — the City Office verifies each claim manually
+against its own records outside the system.
 
 GET /api/city/scholar-approval
   Returns every student record where:
@@ -45,7 +47,8 @@ import { api } from '../../lib/api';
 type ApprovalStatus = 'pending' | 'approved' | 'rejected';
 
 // Row returned by GET /api/city/scholar-approval: a student who signed up on
-// the Create Account page as an "Existing Scholar" and claimed a Scholar ID.
+// the Create Account page as an "Existing Scholar" (no Scholar ID is
+// collected any more — the claim is verified manually by the City Office).
 interface ScholarAccount {
   id: string;
   name: string;
@@ -53,7 +56,6 @@ interface ScholarAccount {
   school: string | null;
   registeredDate: string | null;
   email: string;
-  scholarId: string | null;
   status: ApprovalStatus;
   // Which portal the account is currently on. An Existing Scholar claim is
   // still "existing_scholar"; a rejected claim has been moved to
@@ -99,8 +101,6 @@ export default function CityScholarApproval() {
     // Anything still waiting on the City Office is "pending", even if the
     // server returned a different casing.
     status: account.status === 'approved' || account.status === 'rejected' ? account.status : 'pending',
-    // Pass through the raw DB value — no fabricated defaults.
-    scholarId: account.scholarId || null,
   });
 
   const load = useCallback(async () => {
@@ -133,7 +133,6 @@ export default function CityScholarApproval() {
     const q = search.toLowerCase();
     const matchSearch = !q
       || a.name.toLowerCase().includes(q)
-      || (a.scholarId || '').toLowerCase().includes(q)
       || (a.barangay || '').toLowerCase().includes(q)
       || a.email.toLowerCase().includes(q)
       || (a.school || '').toLowerCase().includes(q);
@@ -219,7 +218,7 @@ export default function CityScholarApproval() {
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-9 pr-4 py-2 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
-              placeholder="Search by name, Scholar ID, or barangay…"
+              placeholder="Search by name or barangay…"
             />
           </div>
         </div>
@@ -237,7 +236,7 @@ export default function CityScholarApproval() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[#E5E7EB] bg-[#F6F7F9]">
-                  {['Scholar', 'Scholar ID', 'Barangay', 'School', 'Registered', 'Portal Access', 'Status', 'Action'].map(h => (
+                  {['Scholar', 'Barangay', 'School', 'Registered', 'Portal Access', 'Status', 'Action'].map(h => (
                     <th key={h} className="px-5 py-3 text-left text-xs font-600 text-[#6B7280]" style={{ fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
@@ -257,16 +256,6 @@ export default function CityScholarApproval() {
                             <div className="text-xs text-[#9CA3AF]">{a.email}</div>
                           </div>
                         </div>
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <span className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#F4F7FB] rounded-md text-xs font-600 text-[#163A63]">
-                          <Icon name="award" size={11} />
-                          {a.scholarId ? (
-                            a.scholarId
-                          ) : (
-                            <span className="text-[#9CA3AF] italic">Not provided</span>
-                          )}
-                        </span>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-[#6B7280]">{a.barangay || 'Not provided'}</td>
                       <td className="px-5 py-3.5 text-sm text-[#6B7280] max-w-[160px] truncate">{a.school || 'Not provided'}</td>
@@ -342,7 +331,6 @@ export default function CityScholarApproval() {
               {/* Details grid — real data, no placeholders */}
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { label: 'Scholar ID Claimed', value: selected.scholarId },
                   { label: 'Registered', value: formatDate(selected.registeredDate) },
                   { label: 'Barangay', value: selected.barangay || 'Not provided' },
                   { label: 'School', value: selected.school || 'Not provided' },
@@ -371,7 +359,7 @@ export default function CityScholarApproval() {
                   <span className="text-xs font-700 text-[#2563EB]" style={{ fontWeight: 700 }}>Verification Checklist</span>
                 </div>
                 <ul className="space-y-1.5 text-xs text-blue-700">
-                  <li className="flex items-start gap-2"><Icon name="check" size={11} className="text-[#2563EB] mt-0.5 flex-shrink-0" />Confirm the Scholar ID exists in the active scholar registry</li>
+                  <li className="flex items-start gap-2"><Icon name="check" size={11} className="text-[#2563EB] mt-0.5 flex-shrink-0" />Verify the existing-scholar claim against the City Office&rsquo;s own records</li>
                   <li className="flex items-start gap-2"><Icon name="check" size={11} className="text-[#2563EB] mt-0.5 flex-shrink-0" />Verify the name matches the name on file</li>
                   <li className="flex items-start gap-2"><Icon name="check" size={11} className="text-[#2563EB] mt-0.5 flex-shrink-0" />Confirm barangay and school details are consistent</li>
                   <li className="flex items-start gap-2"><Icon name="check" size={11} className="text-[#2563EB] mt-0.5 flex-shrink-0" />Check that the scholar is still within active enrollment period</li>

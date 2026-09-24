@@ -50,9 +50,8 @@ const SCHOOLS = new Set([
 // ------------------------------------------
 const SCHOLAR_TYPES = ["new_applicant", "existing_scholar"];
 
-// Scholar ID an existing scholar already holds, e.g. SCH-2024-0182
-const SCHOLAR_ID_PATTERN = /^SCH-\d{4}-\d{4}$/;
-
+// Scholar ID an existing scholar already holds, e.g. SCH-2024-0182 —
+// no longer collected at registration; kept out of exports entirely.
 
 // ------------------------------------------
 // Employee number patterns
@@ -67,17 +66,16 @@ const EMPLOYEE_PATTERNS = {
 
 
 // ------------------------------------------
-// Roles that are allowed to self-register.
-// 'super_admin' is intentionally excluded — those accounts are
-// provisioned directly in MongoDB and can only ever sign in,
-// never register through the public form.
+// Roles that are allowed to self-register
+// through the public "Create Account" page.
+//
+// ONLY students can self-register. Barangay Admin and City Admin accounts
+// are provisioned by the Super Admin (POST /auth/super-admin/create-user)
+// and set their own password through the standard Forgot Password flow.
+// 'super_admin' was already excluded — those accounts are provisioned
+// directly in MongoDB and can only ever sign in.
 // ------------------------------------------
-const SELF_REGISTERABLE_ROLES = [
-    "student",
-    "barangay_staff",
-    "city_admin",
-    "admin_staff"
-];
+const SELF_REGISTERABLE_ROLES = ["student"];
 
 
 // ------------------------------------------
@@ -93,6 +91,17 @@ const SUPER_ADMIN_ROLES = [SUPER_ADMIN_ROLE, "superadmin"];
 function isSuperAdminRole(role) {
     return SUPER_ADMIN_ROLES.includes(role);
 }
+
+
+// ------------------------------------------
+// Barangay role
+//
+// "barangay_admin" is the canonical value stored in MongoDB for
+// Barangay staff. "barangay_staff" is accepted as well so accounts
+// created before the rename keep working.
+// ------------------------------------------
+const BARANGAY_ADMIN_ROLE = "barangay_admin";
+const BARANGAY_ADMIN_ROLES = [BARANGAY_ADMIN_ROLE, "barangay_staff"];
 
 
 // ------------------------------------------
@@ -152,8 +161,7 @@ function validateRegistration(data, validBarangayNames) {
 
     const email = normalizeEmail(data.email);
 
-    const password = data.password;
-    const confirmPassword = data.confirmPassword;
+            const password = data.password;
 
     const role = data.role;
 
@@ -205,16 +213,8 @@ function validateRegistration(data, validBarangayNames) {
     // --------------------------------------
     // Validate password
     // --------------------------------------
-    if (!validatePassword(password)) {
+            if (!validatePassword(password)) {
         return "Password must contain at least 8 characters, including uppercase, lowercase, number, and special character.";
-    }
-
-
-    // --------------------------------------
-    // Confirm password
-    // --------------------------------------
-    if (password !== confirmPassword) {
-        return "Passwords do not match.";
     }
 
 
@@ -249,13 +249,13 @@ function validateRegistration(data, validBarangayNames) {
     }
 
 
-    // --------------------------------------
+        // --------------------------------------
     // Validate the student's account type
     //
     // Students choose "New Applicant" or "Existing Scholar" on the
-    // Create Account page. Existing scholars must also claim the
-    // Scholar ID the City Office has on file so it can be verified
-    // on the Scholar Approval page.
+    // Create Account page. The Scholar ID field has been removed from
+    // the form — the City Office verifies Existing Scholar claims
+    // manually on the Scholar Approval page without a claimed ID.
     // --------------------------------------
     if (role === "student") {
 
@@ -265,15 +265,6 @@ function validateRegistration(data, validBarangayNames) {
 
         if (!SCHOLAR_TYPES.includes(scholarType)) {
             return "Please choose a valid account type.";
-        }
-
-        if (
-            scholarType === "existing_scholar" &&
-            !SCHOLAR_ID_PATTERN.test(
-                String(data.scholarId || "").trim().toUpperCase()
-            )
-        ) {
-            return "Scholar ID must follow the SCH-YYYY-0000 format.";
         }
     }
 
@@ -354,6 +345,48 @@ function validateNewPassword(data) {
 
 
 // ==========================================
+// Validate Staff Account Creation (Super Admin)
+// ==========================================
+// Creates a staff account without a password. The user sets their
+// password via the standard forgot-password flow on first login.
+function validateStaffAccountCreation(data) {
+    const email = normalizeEmail(data.email);
+    const employeeNumber = String(data.employeeNumber || "").trim().toUpperCase();
+    const role = data.role;
+
+    // Validate role
+    if (role !== "barangay_admin" && role !== "city_admin") {
+        return "Role must be either Barangay Admin or City Admin.";
+    }
+
+    // Validate email
+    if (!EMAIL_PATTERN.test(email)) {
+        return "Please enter a valid email address.";
+    }
+
+    // Barangay Admin accounts are scoped to exactly one barangay — without
+    // it the account signs in but every Barangay portal page shows
+    // "Your account is not assigned to a barangay yet." The controller
+    // additionally resolves the name against the active Barangay collection.
+    if (role === "barangay_admin" && !String(data.barangay || "").trim()) {
+        return "Please select a barangay for this Barangay Admin.";
+    }
+
+    // Validate employee number format
+    if (role === "barangay_admin") {
+        if (!/^BRG-\d{4}-\d{4}$/.test(employeeNumber)) {
+            return "Barangay Admin employee number must follow the BRG-YYYY-0000 format.";
+        }
+    } else if (role === "city_admin") {
+        if (!/^CSO-\d{4}-\d{4}$/.test(employeeNumber)) {
+            return "City Admin employee number must follow the CSO-YYYY-0000 format.";
+        }
+    }
+
+    return null;
+}
+
+// ==========================================
 // Export
 // ==========================================
 module.exports = {
@@ -362,14 +395,16 @@ module.exports = {
     validateRegistration,
     validateSuperAdminLogin,
     validateNewPassword,
+    validateStaffAccountCreation,
     EMAIL_PATTERN,
     NAME_PATTERN,
     SCHOLAR_TYPES,
-    SCHOLAR_ID_PATTERN,
     SELF_REGISTERABLE_ROLES,
     SUPER_ADMIN_ROLE,
     SUPER_ADMIN_ROLES,
     isSuperAdminRole,
     CITY_ADMIN_ROLE,
-    CITY_ADMIN_ROLES
+    CITY_ADMIN_ROLES,
+    BARANGAY_ADMIN_ROLE,
+    BARANGAY_ADMIN_ROLES
 };

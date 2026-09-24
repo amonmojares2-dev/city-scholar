@@ -19,6 +19,7 @@ interface DirectoryUser {
 
 const roleLabels: Record<string, string> = {
   student: 'Student',
+  barangay_admin: 'Barangay Administrator',
   barangay_staff: 'Barangay Staff',
   city_admin: 'City Administrator',
   admin_staff: 'Admin Staff',
@@ -28,6 +29,7 @@ const roleLabels: Record<string, string> = {
 
 const roleColors: Record<string, string> = {
   student: 'bg-blue-50 text-blue-700',
+  barangay_admin: 'bg-purple-50 text-purple-700',
   barangay_staff: 'bg-purple-50 text-purple-700',
   city_admin: 'bg-amber-50 text-amber-700',
   admin_staff: 'bg-amber-50 text-amber-700',
@@ -47,6 +49,9 @@ const matchesRoleFilter = (role: string, filter: string) => {
   if (filter === 'all') return true;
   if (filter === 'city') return role === 'city_admin' || role === 'admin_staff';
   if (filter === 'superadmin') return role === 'super_admin' || role === 'superadmin';
+  // "Barangay Staff" covers the canonical role written by the Super Admin
+  // "Add User" flow as well as the legacy self-registration name.
+  if (filter === 'barangay_staff') return role === 'barangay_admin' || role === 'barangay_staff';
   return role === filter;
 };
 

@@ -1,5 +1,6 @@
 const notFound = (req, res) => {
-    res.status(404).json({ success: false, message: `Route not found: ${req.method} ${req.originalUrl}` });
+    res.status(404).json({ success: false, message: `Route not found:
+    ${req.method} ${req.originalUrl}` });
 };
 
 // Mongoose ValidationError messages look like

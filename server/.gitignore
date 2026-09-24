@@ -1,2 +1,43 @@
 .env
 node_modules
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Environment / credentials
+.env
+.env.local
+.env.*.local
+server/.env
+client/.env
+**/.env
+
+# Build output
+dist/
+client/dist/
+server/dist/
+build/
+
+# TypeScript compiled output
+*.tsbuildinfo
+
+# Logs / temp / smoke-test artifacts
+*.log
+*.out
+*.txt
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+ 
+# Uploaded documents (local dev disk storage -- never commit) 
+server/uploads/* 
+!server/uploads/.gitkeep

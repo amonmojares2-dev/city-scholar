@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from "react";
 import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import { api } from "../../lib/api";
-import { BARANGAYS } from "../../data/barangays";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -165,10 +164,16 @@ export default function SuperAdminAllUsers() {
 
   // Reassign modal state
   const [reassignUserId, setReassignUserId] = useState<string | null>(null);
+  // Always holds a barangay OBJECT ID: seeded from the user's current
+  // barangayId and matching the option values in the dropdown. (The old bug
+  // mixed names and ids here, so the Confirm button stayed disabled for
+  // unassigned accounts and sent a name where the server expected an id.)
   const [selectedBarangay, setSelectedBarangay] = useState("");
+  const [reassignError, setReassignError] = useState("");
 
   // Toast state
   const [toastUserId, setToastUserId] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState("");
 
   useEffect(() => {
     async function loadUsers() {
@@ -264,25 +269,48 @@ export default function SuperAdminAllUsers() {
   function openReassign(userId: string) {
     const user = users.find((u) => u.id === userId);
     setReassignUserId(userId);
+    // Seed with the current barangay OBJECT ID so it matches the dropdown's
+    // option values (ids). Unassigned accounts get "" — the placeholder.
     setSelectedBarangay(user?.barangayId ?? "");
+    setReassignError("");
+  }
+
+  function showToast(userId: string, message: string) {
+    setToastUserId(userId);
+    setToastMessage(message);
+    setTimeout(() => {
+      setToastUserId(null);
+      setToastMessage("");
+    }, 3000);
   }
 
   async function applyReassign() {
-    if (!reassignUserId || !selectedBarangay) return;
+    if (!reassignUserId || !selectedBarangay || selectedBarangay === reassignUser?.barangayId) return;
+    const reassignedId = reassignUserId;
     setSaving(true);
+    setReassignError("");
     setError("");
     try {
-      const result = await api<{ user: { barangay: string } }>(
-        `/super-admin/users/${reassignUserId}`,
+      const result = await api<{ user: { barangay: string; barangayId?: string } }>(
+        `/super-admin/users/${reassignedId}`,
+        // barangayId is a real ObjectId (the dropdown's option value) — the
+        // server resolves it with Barangay.findById and writes User.barangay.
         { method: "PATCH", body: JSON.stringify({ barangayId: selectedBarangay }) }
       );
+      const updatedName = result.user.barangay;
+      const updatedId = result.user.barangayId ?? selectedBarangay;
       setUsers((prev) =>
-        prev.map((u) => (u.id === reassignUserId ? { ...u, barangay: result.user.barangay } : u))
+        prev.map((u) => (u.id === reassignedId ? { ...u, barangay: updatedName, barangayId: updatedId } : u))
       );
+      showToast(reassignedId, "Barangay updated!");
       setReassignUserId(null);
       setSelectedBarangay("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to reassign this user.");
+      // Surface it BOTH inside the modal (the page banner sits behind the
+      // z-50 overlay) and at page level — never fail silently again.
+      const message = requestError instanceof Error ? requestError.message : "Unable to reassign this user.";
+      setReassignError(message);
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -297,8 +325,7 @@ export default function SuperAdminAllUsers() {
         { method: "POST", body: JSON.stringify({}) }
       );
       window.alert(`Temporary password issued: ${result.temporaryPassword}\nShare it with the user. They must change it on the next sign-in.`);
-      setToastUserId(userId);
-      setTimeout(() => setToastUserId(null), 3000);
+      showToast(userId, "Password reset sent!");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to reset the password.");
     } finally {
@@ -323,6 +350,12 @@ export default function SuperAdminAllUsers() {
           subtitle="Manage every account across all access levels"
           breadcrumb={["Super Admin", "User Management", "All Users"]}
         />
+
+        {/* Page-level errors (load / action failures) — this banner was
+            missing entirely, which made failed reassignments invisible. */}
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-sm text-red-700">{error}</div>
+        )}
 
         {/* ── Filter bar */}
         <div className="bg-white rounded-2xl border border-[#E5E7EB] p-4 mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -456,7 +489,7 @@ export default function SuperAdminAllUsers() {
                         </span>
                         {toastUserId === user.id && (
                           <span className="ml-2 text-xs text-green-600 font-medium animate-pulse">
-                            Password reset sent!
+                            {toastMessage || "Password reset sent!"}
                           </span>
                         )}
                       </td>
@@ -608,38 +641,54 @@ export default function SuperAdminAllUsers() {
               <div className="relative">
                 <select
                   value={selectedBarangay}
-                  onChange={(e) => setSelectedBarangay(e.target.value)}
+                  onChange={(e) => { setSelectedBarangay(e.target.value); setReassignError(""); }}
                   className="w-full appearance-none border border-[#E5E7EB] rounded-lg px-3 py-2.5 pr-9 text-sm text-[#0B1F3A] focus:outline-none focus:ring-2 focus:ring-[#163A63]/30 focus:border-[#163A63] bg-white"
                 >
-                  {BARANGAYS.map((b) => (
-                    <option key={b} value={b}>{b}</option>
+                  {/* Placeholder so the controlled value ("") always matches
+                      an option — the selection registers and Confirm enables
+                      only after a real choice is made. Options come from the
+                      DB-backed barangay list with OBJECT IDs as values, the
+                      exact type the server's Barangay.findById expects. */}
+                  <option value="">Select a barangay</option>
+                  {barangays.map((b) => (
+                    <option key={b._id} value={b._id}>{b.name}</option>
                   ))}
                 </select>
                 <Icon name="chevron-down" size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               </div>
 
-              {selectedBarangay && selectedBarangay !== reassignUser.barangay && (
+              {selectedBarangay && selectedBarangay !== reassignUser.barangayId && (
                 <div className="mt-3 p-2.5 bg-blue-50 rounded-lg border border-blue-100 text-xs text-blue-700 flex items-center gap-2">
                   <Icon name="info" size={13} />
-                  Will be reassigned from <span className="font-semibold">{reassignUser.barangay}</span> to{" "}
-                  <span className="font-semibold">{selectedBarangay}</span>
+                  Will be reassigned from <span className="font-semibold">{reassignUser.barangay || "no barangay"}</span> to{" "}
+                  <span className="font-semibold">
+                    {barangays.find((b) => b._id === selectedBarangay)?.name || "the selected barangay"}
+                  </span>
+                </div>
+              )}
+
+              {reassignError && (
+                <div className="mt-3 p-2.5 bg-red-50 rounded-lg border border-red-100 text-xs text-red-700 flex items-center gap-2">
+                  <Icon name="alert-circle" size={13} />
+                  {reassignError}
                 </div>
               )}
 
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   onClick={() => setReassignUserId(null)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 border border-[#E5E7EB] hover:bg-gray-50 transition-colors"
+                  disabled={saving}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 border border-[#E5E7EB] hover:bg-gray-50 transition-colors disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={applyReassign}
-                  disabled={!selectedBarangay || selectedBarangay === reassignUser.barangay}
+                  disabled={saving || !selectedBarangay || selectedBarangay === reassignUser.barangayId}
                   className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#163A63] hover:bg-[#0B1F3A] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                 >
                   <Icon name="check" size={14} />
-                  Confirm Reassignment
+                  {saving ? "Saving…" : "Confirm Reassignment"}
                 </button>
               </div>
             </div>

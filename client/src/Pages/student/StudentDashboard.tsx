@@ -3,11 +3,12 @@ import { Link } from 'react-router';
 import Icon from '../../components/Icon';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
+import { studentApplicationStatus } from '../../lib/applicationStatus';
 import { api } from '../../lib/api';
 import { getSession } from '../../lib/auth';
 import { buildStudentAccess, type StudentAccess } from '../../lib/studentAccess';
 
-type Application = { _id: string; program: string; school: string; status: string; submittedAt?: string; createdAt: string };
+type Application = { _id: string; program?: string; school: string; status: string; barangayVerificationStatus?: string; submittedAt?: string; createdAt: string };
 type Document = { _id: string; type: string; originalName: string; status: string; createdAt: string };
 type Conversation = { _id: string; subject: string; participants: { name: string }[]; lastMessageAt?: string };
 type Notification = { _id: string; title: string; message: string; createdAt: string; readAt?: string };
@@ -59,7 +60,7 @@ export default function StudentDashboard() {
           <div>
             <div className="text-xs text-white/50 mb-1">{latestApplication?.program || 'Scholarship Applications'}</div>
             <div className="font-700 text-lg mb-2" style={{ fontWeight: 700 }}>Scholarship Status</div>
-            {latestApplication ? <StatusBadge status={latestApplication.status.replace('_', '-')} /> : <span className="text-sm text-white/60">No application submitted</span>}
+            {latestApplication ? <StatusBadge status={studentApplicationStatus(latestApplication).badgeKey} /> : <span className="text-sm text-white/60">No application submitted</span>}
             <p className="text-sm text-white/60 mt-3 max-w-sm">
               {latestApplication ? `Your application for ${latestApplication.school} was submitted on ${formatDate(latestApplication.submittedAt || latestApplication.createdAt)}.` : 'Start an application to see your scholarship status and document requirements here.'}
             </p>
@@ -82,7 +83,7 @@ export default function StudentDashboard() {
       <div className="grid lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-[#E5E7EB]"><h2 className="font-600 text-[#1F2937] text-sm" style={{ fontWeight: 600 }}>Your Applications</h2><Link to="/student/renewal" className="text-xs font-600 text-[#163A63]">New application</Link></div>
-          {applications.length === 0 ? <div className="px-5 py-10 text-center text-sm text-[#6B7280]">No applications have been submitted yet.</div> : <div className="divide-y divide-[#E5E7EB]">{applications.map(application => <div key={application._id} className="flex items-center gap-4 px-5 py-4"><div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center"><Icon name="file-text" size={16} className="text-[#2563EB]" /></div><div className="flex-1 min-w-0"><div className="font-600 text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>{application.program}</div><div className="text-xs text-[#6B7280]">{application.school} · {formatDate(application.submittedAt || application.createdAt)}</div></div><StatusBadge status={application.status.replace('_', '-')} size="sm" /></div>)}</div>}
+          {applications.length === 0 ? <div className="px-5 py-10 text-center text-sm text-[#6B7280]">No applications have been submitted yet.</div> : <div className="divide-y divide-[#E5E7EB]">{applications.map(application => <div key={application._id} className="flex items-center gap-4 px-5 py-4"><div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center"><Icon name="file-text" size={16} className="text-[#2563EB]" /></div><div className="flex-1 min-w-0"><div className="font-600 text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>{application.program || application.school}</div><div className="text-xs text-[#6B7280]">{application.school} · {formatDate(application.submittedAt || application.createdAt)}</div></div><StatusBadge status={application.status.replace('_', '-')} size="sm" /></div>)}</div>}
         </div>
 
         <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
