@@ -1,5 +1,3 @@
-.env
-node_modules
 # Dependencies
 node_modules/
 client/node_modules/
@@ -37,7 +35,7 @@ build/
 # OS
 .DS_Store
 Thumbs.db
- 
-# Uploaded documents (local dev disk storage -- never commit) 
-server/uploads/* 
+
+# Uploaded documents (local dev disk storage -- never commit)
+server/uploads/*
 !server/uploads/.gitkeep
