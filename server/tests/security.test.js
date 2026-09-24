@@ -11,6 +11,10 @@ const securityHeaders = [
 ];
 
 describe("security headers", () => {
+    it("trusts one proxy hop for forwarded client addresses by default", () => {
+        expect(app.get("trust proxy")).toBe(1);
+    });
+
     it("does not expose uploaded files through the public static path", async() => {
         const filename = "security-profile-photo-test.txt";
         const filePath = path.join(profilePhotoDirectory, filename);

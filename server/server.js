@@ -33,11 +33,20 @@ const isProduction = process.env.NODE_ENV === "production";
 // [ADDED] Hide framework fingerprint (Helmet also removes it, this is a safety net)
 app.disable("x-powered-by");
 
-// [ADDED] Only set TRUST_PROXY (e.g. 1) if deployed behind a proxy such as Nginx, Render, or Heroku.
-// Needed so the rate limiter sees real client IPs.
-if (process.env.TRUST_PROXY) {
-    app.set("trust proxy", Number(process.env.TRUST_PROXY));
-}
+// Render and similar PaaS providers terminate the public connection at a
+// reverse proxy and add X-Forwarded-For. Trust one proxy hop by default so
+// req.ip and the rate limiters use the real client address instead of the
+// proxy address. TRUST_PROXY can override this for other deployment shapes
+// (for example, set it to 0 when the Node server is exposed directly).
+const configuredTrustProxy = process.env.TRUST_PROXY;
+const trustProxy = configuredTrustProxy === undefined
+    ? 1
+    : configuredTrustProxy === "true"
+        ? true
+        : configuredTrustProxy === "false"
+            ? false
+            : Number(configuredTrustProxy);
+app.set("trust proxy", trustProxy);
 
 // [CHANGED] Was: app.use(helmet());
 // Helmet v7+ option names. On helmet v6 or older, rename
