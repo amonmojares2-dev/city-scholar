@@ -1,10 +1,8 @@
-const browserApiUrl = typeof window !== 'undefined'
-  ? `${window.location.protocol}//${window.location.hostname}:5000/api`
-  : 'http://localhost:5000/api';
-// VITE_API_URL is the canonical name; VITE_API_BASE_URL is still honoured so the
-// value in client/.env works as written.
-const configuredApiUrl = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
-export const API_URL = (configuredApiUrl || browserApiUrl).replace(/\/$/, '');
+const localApiUrl = import.meta.env.DEV ? 'http://localhost:5000/api' : '';
+
+// VITE_API_URL is the single production API base and must include /api.
+const configuredApiUrl = import.meta.env.VITE_API_URL;
+export const API_URL = (configuredApiUrl || localApiUrl).replace(/\/$/, '');
 export const SERVER_URL = API_URL.replace(/\/api$/, '');
 
 import { getSession, clearSession } from './auth';
