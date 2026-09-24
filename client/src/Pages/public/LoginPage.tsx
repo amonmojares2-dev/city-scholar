@@ -3,37 +3,70 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import Icon from '../../components/Icon';
 import { api } from '../../lib/api';
 import { portalForRole, saveSession, type SessionUser } from '../../lib/auth';
-import { SCHOOLS } from '../../data/schools';
+import PasswordInput from '../../components/PasswordInput';
+import {
+  validateEmail,
+  validateName,
+  normalizeName,
+  validatePassword,
+  validatePasswordConfirmation,
+  validateRequired,
+} from '../../lib/validation';
 import { BARANGAYS } from '../../data/barangays';
 
 // ------------------------------------------------------------
 // Create Account helpers: inline field validation + password strength
 // ------------------------------------------------------------
 
-const REG_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// Inline required-field / format validation. Returns an error message,
-// or null when the field value is acceptable.
-function regFieldError(name: string, value: string): string | null {
-  const v = String(value || '').trim();
-  if (!v) return 'This field is required.';
-  if (name === 'email' && !REG_EMAIL_RE.test(v)) return 'Enter a valid email address.';
-  if (name === 'password' && v.length < 8) return 'Password must be at least 8 characters.';
-  return null;
-}
-
-// Live password strength for the Create Account form:
-// 0 = weak (red), 1 = fair (yellow), 2 = strong (green).
-function passwordStrength(pw: string): { score: number; label: string; color: string } {
+const passwordStrength = (pw: string): { score: number; label: string; color: string } => {
   if (!pw) return { score: -1, label: '', color: '' };
-  let points = 0;
-  if (pw.length >= 8) points++;
-  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) points++;
-  if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) points++;
+  const requirements = [pw.length >= 8, /[a-z]/.test(pw) && /[A-Z]/.test(pw), /\d/.test(pw)];
+  const points = requirements.filter(Boolean).length;
   if (points <= 1) return { score: 0, label: 'Weak password', color: '#DC2626' };
   if (points === 2) return { score: 1, label: 'Fair password', color: '#D97706' };
   return { score: 2, label: 'Strong password', color: '#22A06B' };
-}
+};
+
+type UniversityOption = {
+  id: string;
+  name: string;
+};
+
+type RegisterForm = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  barangay: string;
+  university: string;
+  password: string;
+  confirmPassword: string;
+};
+
+type AuthForm = {
+  email: string;
+  password: string;
+  confirmPassword: string;
+  newPassword: string;
+  confirmNewPassword: string;
+};
+
+const EMPTY_REGISTER_FORM: RegisterForm = {
+  firstName: '',
+  lastName: '',
+  email: '',
+  barangay: '',
+  university: '',
+  password: '',
+  confirmPassword: '',
+};
+
+const EMPTY_AUTH_FORM: AuthForm = {
+  email: '',
+  password: '',
+  confirmPassword: '',
+  newPassword: '',
+  confirmNewPassword: '',
+};
 
 type Tab = 'login' | 'register' | 'forgot';
 
@@ -45,13 +78,10 @@ export default function LoginPage() {
   // portal, existing scholars continue through Renewal once the City Office
   // confirms their registration.
   const [scholarType, setScholarType] = useState<'new_applicant' | 'existing_scholar'>('new_applicant');
-  const [showPass, setShowPass] = useState(false);
-  // Register form: inline field errors (set on blur/change), password
-  // visibility toggle, and a controlled password value that drives the
-  // live strength bar.
-  const [showRegPass, setShowRegPass] = useState(false);
-  const [regPassword, setRegPassword] = useState('');
+  const [registerForm, setRegisterForm] = useState<RegisterForm>({ ...EMPTY_REGISTER_FORM });
+  const [authForm, setAuthForm] = useState<AuthForm>({ ...EMPTY_AUTH_FORM });
   const [regErrors, setRegErrors] = useState<Record<string, string>>({});
+  const [authErrors, setAuthErrors] = useState<Record<string, string>>({});
   const [otpStep, setOtpStep] = useState(false);
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [otpError, setOtpError] = useState('');
@@ -69,7 +99,10 @@ export default function LoginPage() {
   const [formError, setFormError] = useState('');
   const [formLoading, setFormLoading] = useState(false);
   const [barangays, setBarangays] = useState<{ _id: string; name: string }[]>(() => BARANGAYS.map(name => ({ _id: name, name })));
-  const [selectedSchool, setSelectedSchool] = useState('');
+  const [universities, setUniversities] = useState<UniversityOption[]>([]);
+  const [universitiesLoading, setUniversitiesLoading] = useState(true);
+  const [universitiesError, setUniversitiesError] = useState('');
+  const [universitiesReload, setUniversitiesReload] = useState(0);
   // Roles are never chosen on the sign-in form — the server identifies the
   // account's role from MongoDB and the client routes to that role's portal.
   // needsPasswordSetup covers accounts with no password yet (e.g. a newly
@@ -110,6 +143,30 @@ export default function LoginPage() {
     }).catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    setUniversitiesLoading(true);
+    setUniversitiesError('');
+    setUniversities([]);
+
+    api<{ success: boolean; universities?: UniversityOption[] }>('/universities')
+      .then(result => {
+        if (!active) return;
+        const options = Array.isArray(result.universities) ? result.universities : [];
+        if (options.length === 0) {
+          throw new Error('Could not load universities. Please try again.');
+        }
+        setUniversities(options);
+      })
+      .catch(() => {
+        if (active) setUniversitiesError('Could not load universities. Please try again.');
+      })
+      .finally(() => {
+        if (active) setUniversitiesLoading(false);
+      });
+    return () => { active = false; };
+  }, [universitiesReload]);
+
   const resetLoginOtpState = () => {
     setOtp(['', '', '', '', '', '']);
     setOtpError('');
@@ -119,19 +176,95 @@ export default function LoginPage() {
     setMustResend(false);
   };
 
+  const switchTab = (nextTab: Tab, message = '') => {
+    setTab(nextTab);
+    setOtpStep(false);
+    setChallengeId('');
+    setMaskedEmail('');
+    setNeedsPasswordSetup(false);
+    setScholarType('new_applicant');
+    setRegisterForm({ ...EMPTY_REGISTER_FORM });
+    setAuthForm({ ...EMPTY_AUTH_FORM });
+    setRegErrors({});
+    setAuthErrors({});
+    setFormError(message);
+  };
+
+  const validateRegisterValue = (name: keyof RegisterForm, value: string) => {
+    if (name === 'firstName') return validateName(value, 'First name') || '';
+    if (name === 'lastName') return validateName(value, 'Last name') || '';
+    if (name === 'email') return validateEmail(value) || '';
+    if (name === 'barangay') return validateRequired(value, 'Barangay') || '';
+    if (name === 'university') {
+      if (!value) return 'Please select your University.';
+      return universities.some(option => option.name === value) ? '' : 'Please select a valid University.';
+    }
+    if (name === 'password') return validatePassword(value) || '';
+    return validatePasswordConfirmation(registerForm.password, value) || '';
+  };
+
+  const handleRegisterFieldChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = event.target;
+    if (!(name in EMPTY_REGISTER_FORM)) return;
+    const field = name as keyof RegisterForm;
+    const nextValue = field === 'firstName' || field === 'lastName' ? normalizeName(value) : value;
+    const error = validateRegisterValue(field, nextValue);
+    setRegisterForm(previous => ({ ...previous, [field]: nextValue }));
+    setRegErrors(previous => ({ ...previous, [field]: error }));
+    setFormError('');
+  };
+
+  const handleRegisterFieldBlur = (event: React.FocusEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = event.target;
+    if (!(name in EMPTY_REGISTER_FORM)) return;
+    const field = name as keyof RegisterForm;
+    const error = validateRegisterValue(field, value);
+    setRegErrors(previous => ({ ...previous, [field]: error }));
+  };
+
+  const validateAuthValue = (name: keyof AuthForm, value: string) => {
+    if (name === 'email') return validateEmail(value) || '';
+    if (name === 'password') return (tab === 'forgot' ? validatePassword(value) : validateRequired(value, 'Password')) || '';
+    if (name === 'confirmPassword') return validatePasswordConfirmation(authForm.password, value) || '';
+    if (name === 'newPassword') return validatePassword(value) || '';
+    return validatePasswordConfirmation(authForm.newPassword, value) || '';
+  };
+
+  const handleAuthFieldChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = event.target;
+    if (!(name in EMPTY_AUTH_FORM)) return;
+    const field = name as keyof AuthForm;
+    const error = validateAuthValue(field, value);
+    setAuthForm(previous => ({ ...previous, [field]: value }));
+    setAuthErrors(previous => ({ ...previous, [field]: error }));
+    setFormError('');
+  };
+
+  const handleAuthFieldBlur = (event: React.FocusEvent<HTMLInputElement>) => {
+    const { name, value } = event.target;
+    if (!(name in EMPTY_AUTH_FORM)) return;
+    const field = name as keyof AuthForm;
+    const error = validateAuthValue(field, value);
+    setAuthErrors(previous => ({ ...previous, [field]: error }));
+  };
+
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError('');
+    const email = authForm.email;
+    const password = authForm.password;
+    const emailError = validateEmail(email);
+    const passwordError = validateRequired(password, 'Password');
+    setAuthErrors({ email: emailError || '', password: passwordError || '' });
+    if (emailError || passwordError) return;
     setFormLoading(true);
-    const fields = new FormData(e.currentTarget);
     try {
       const result = await api<{ challengeId: string; email: string; requiresPasswordSetup?: boolean }>('/auth/login', {
-        method: 'POST', body: JSON.stringify({ email: fields.get('email'), password: fields.get('password') }),
+        method: 'POST', body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
       setChallengeId(result.challengeId);
       setMaskedEmail(result.email);
 
-      // First sign-in (or forced change): create a password before the OTP step.
       if (result.requiresPasswordSetup) {
         setNeedsPasswordSetup(true);
         return;
@@ -154,22 +287,32 @@ export default function LoginPage() {
     e.preventDefault();
     setFormError('');
     setFormLoading(true);
-    const fields = new FormData(e.currentTarget);
-    const schoolField = e.currentTarget.elements.namedItem('school') as HTMLSelectElement | null;
-    const school = schoolField?.value || selectedSchool;
-    if (!school) {
-      setFormError('Please select your school or university.');
+    const values = {
+      firstName: normalizeName(registerForm.firstName),
+      lastName: normalizeName(registerForm.lastName),
+      email: registerForm.email.trim().toLowerCase(),
+      barangay: registerForm.barangay,
+      university: registerForm.university.trim(),
+      password: registerForm.password,
+      confirmPassword: registerForm.confirmPassword,
+    };
+    const selectedUniversity = values.university;
+    if (!selectedUniversity || !universities.some(option => option.name === selectedUniversity)) {
+      setFormError('Please select your University.');
+      setRegErrors(previous => ({ ...previous, university: 'Please select your University.' }));
       setFormLoading(false);
       return;
     }
     // Submit-time pass over the remaining fields — the same messages the
     // inline (blur/change) validation shows under each field.
     const nextErrors: Record<string, string> = {};
-    for (const name of ['firstName', 'lastName', 'email', 'barangay', 'password']) {
-      const err = regFieldError(name, String(fields.get(name) || ''));
-      if (err) nextErrors[name] = err;
-    }
-    if (Object.keys(nextErrors).length > 0) {
+    nextErrors.firstName = validateName(values.firstName, 'First name') || '';
+    nextErrors.lastName = validateName(values.lastName, 'Last name') || '';
+    nextErrors.email = validateEmail(values.email) || '';
+    nextErrors.barangay = validateRequired(values.barangay, 'Barangay') || '';
+    nextErrors.password = validatePassword(values.password) || '';
+    nextErrors.confirmPassword = validatePasswordConfirmation(values.password, values.confirmPassword) || '';
+    if (Object.values(nextErrors).some(Boolean)) {
       setRegErrors(nextErrors);
       setFormError('Please fix the highlighted fields.');
       setFormLoading(false);
@@ -179,15 +322,14 @@ export default function LoginPage() {
     try {
       const result = await api<{ challengeId: string; email: string }>('/auth/register', {
         method: 'POST', body: JSON.stringify({
-          firstName: fields.get('firstName'),
-          lastName: fields.get('lastName'),
-          email: fields.get('email'),
-          password: fields.get('password'),
-          // Always a student: no role is chosen on this page any more.
+          firstName: values.firstName,
+          lastName: values.lastName,
+          email: values.email,
+          password: values.password,
           role: 'student',
           scholarType,
-          barangay: fields.get('barangay'),
-          school,
+          barangay: values.barangay,
+          university: selectedUniversity,
         }),
       });
       setChallengeId(result.challengeId);
@@ -205,16 +347,19 @@ export default function LoginPage() {
   const handleForgotPassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError('');
+    const email = authForm.email.trim().toLowerCase();
+    const { password, confirmPassword } = authForm;
+    const nextErrors = {
+      email: validateEmail(email) || '',
+      password: validatePassword(password) || '',
+      confirmPassword: validatePasswordConfirmation(password, confirmPassword) || '',
+    };
+    setAuthErrors(nextErrors);
+    if (Object.values(nextErrors).some(Boolean)) return;
     setFormLoading(true);
-    const fields = new FormData(e.currentTarget);
     try {
       const result = await api<{ challengeId: string; email: string }>('/auth/forgot-password', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: fields.get('email'),
-          password: fields.get('password'),
-          confirmPassword: fields.get('confirmPassword'),
-        }),
+        method: 'POST', body: JSON.stringify({ email, password, confirmPassword }),
       });
       setChallengeId(result.challengeId);
       setMaskedEmail(result.email);
@@ -238,16 +383,17 @@ export default function LoginPage() {
   const handleSetPassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError('');
+    const { newPassword, confirmNewPassword } = authForm;
+    const nextErrors = {
+      newPassword: validatePassword(newPassword) || '',
+      confirmNewPassword: validatePasswordConfirmation(newPassword, confirmNewPassword) || '',
+    };
+    setAuthErrors(nextErrors);
+    if (Object.values(nextErrors).some(Boolean)) return;
     setFormLoading(true);
-    const fields = new FormData(e.currentTarget);
     try {
       const result = await api<{ challengeId: string; email: string }>('/auth/set-password', {
-        method: 'POST',
-        body: JSON.stringify({
-          challengeId,
-          newPassword: fields.get('newPassword'),
-          confirmNewPassword: fields.get('confirmNewPassword'),
-        }),
+        method: 'POST', body: JSON.stringify({ challengeId, newPassword, confirmNewPassword }),
       });
       setChallengeId(result.challengeId);
       setMaskedEmail(result.email);
@@ -319,17 +465,13 @@ export default function LoginPage() {
 
       if (result.registered) {
         setOtpStep(false);
-        setChallengeId('');
-        setTab('login');
-        setFormError('Account verified. You can now sign in with your email and password.');
+        switchTab('login', 'Account verified. You can now sign in with your email and password.');
         return;
       }
 
       if (result.passwordReset) {
         setOtpStep(false);
-        setChallengeId('');
-        setTab('login');
-        setFormError('Password reset successfully. You can now sign in with your new password.');
+        switchTab('login', 'Password reset successfully. You can now sign in with your new password.');
         return;
       }
 
@@ -603,34 +745,32 @@ export default function LoginPage() {
                     id="login-email"
                     type="email"
                     name="email"
+                    value={authForm.email}
+                    onChange={handleAuthFieldChange}
+                    onBlur={handleAuthFieldBlur}
                     autoComplete="username"
                     className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm text-[#1F2937] bg-white focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] placeholder-[#9CA3AF] transition-colors"
                     placeholder="you@example.com"
                   />
                 </div>
-                <div>
-                  <label htmlFor="login-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Password</label>
-                  <div className="relative">
-                    <input
-                      id="login-password"
-                      type={showPass ? 'text' : 'password'}
-                      name="password"
-                      autoComplete="current-password"
-                      className="w-full px-3.5 py-2.5 pr-10 rounded-xl border border-[#E5E7EB] text-sm text-[#1F2937] bg-white focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] placeholder-[#9CA3AF]"
-                      placeholder="••••••••"
-                    />
-                    <button type="button" onClick={() => setShowPass(!showPass)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B7280] hover:text-[#1F2937]">
-                      <Icon name="eye" size={15} />
-                    </button>
-                  </div>
-                </div>
+        <PasswordInput
+          id="login-password"
+          name="password"
+          autoComplete="current-password"
+          label="Password"
+          value={authForm.password}
+          error={authErrors.password}
+          onChange={handleAuthFieldChange}
+          onBlur={handleAuthFieldBlur}
+          placeholder="••••••••"
+          className="bg-white"
+        />
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" className="rounded border-[#E5E7EB]" defaultChecked />
                     <span className="text-xs text-[#6B7280]">Remember me</span>
                   </label>
-                  <button type="button" onClick={() => setTab('forgot')}
+                  <button type="button" onClick={() => switchTab('forgot')}
                     className="text-xs font-600 text-[#163A63] hover:text-[#0B1F3A]" style={{ fontWeight: 600 }}>
                     Forgot password?
                   </button>
@@ -648,7 +788,7 @@ export default function LoginPage() {
 
               <p className="text-center text-xs text-[#6B7280] mt-5">
                 Don't have an account?{' '}
-                <button onClick={() => setTab('register')} className="font-600 text-[#163A63] hover:text-[#0B1F3A]" style={{ fontWeight: 600 }}>
+                <button onClick={() => switchTab('register')} className="font-600 text-[#163A63] hover:text-[#0B1F3A]" style={{ fontWeight: 600 }}>
                   Create account
                 </button>
               </p>
@@ -702,19 +842,21 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              <form onSubmit={handleRegister} className="space-y-4">
+              <form onSubmit={handleRegister} noValidate className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="register-first-name" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>First Name</label>
                     <input
                       id="register-first-name"
                       name="firstName"
+                      value={registerForm.firstName}
+                      onChange={handleRegisterFieldChange}
+                      onBlur={handleRegisterFieldBlur}
                       autoComplete="given-name"
                       required
                       type="text"
                       className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
                       placeholder="Maria"
-                      onBlur={e => setRegErrors(prev => ({ ...prev, firstName: regFieldError('firstName', e.target.value) || '' }))}
                     />
                     {regErrors.firstName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.firstName}</p>}
                   </div>
@@ -723,12 +865,14 @@ export default function LoginPage() {
                     <input
                       id="register-last-name"
                       name="lastName"
+                      value={registerForm.lastName}
+                      onChange={handleRegisterFieldChange}
+                      onBlur={handleRegisterFieldBlur}
                       autoComplete="family-name"
                       required
                       type="text"
                       className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
                       placeholder="Santos"
-                      onBlur={e => setRegErrors(prev => ({ ...prev, lastName: regFieldError('lastName', e.target.value) || '' }))}
                     />
                     {regErrors.lastName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.lastName}</p>}
                   </div>
@@ -738,12 +882,14 @@ export default function LoginPage() {
                   <input
                     id="register-email"
                     name="email"
+                    value={registerForm.email}
+                    onChange={handleRegisterFieldChange}
+                    onBlur={handleRegisterFieldBlur}
                     autoComplete="email"
                     required
                     type="email"
                     className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
                     placeholder="you@gmail.com"
-                    onBlur={e => setRegErrors(prev => ({ ...prev, email: regFieldError('email', e.target.value) || '' }))}
                   />
                   {regErrors.email && <p className="text-xs text-[#DC2626] mt-1">{regErrors.email}</p>}
                 </div>
@@ -753,9 +899,11 @@ export default function LoginPage() {
                   <select
                     id="register-student-barangay"
                     name="barangay"
+                    value={registerForm.barangay}
+                    onChange={handleRegisterFieldChange}
+                    onBlur={handleRegisterFieldBlur}
                     required
                     className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]"
-                    onBlur={e => setRegErrors(prev => ({ ...prev, barangay: regFieldError('barangay', e.target.value) || '' }))}
                   >
                     <option value="">Select your barangay</option>
                     {BARANGAYS.map(name => (
@@ -764,49 +912,48 @@ export default function LoginPage() {
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="register-school" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
-                    School / University <span className="text-[#DC2626]">*</span>
+                  <label htmlFor="register-university" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>
+                    University <span className="text-[#DC2626]">*</span>
                   </label>
-                  <select id="register-school" name="school" required value={selectedSchool} onChange={event => setSelectedSchool(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937]">
-                    <option value="">Select your school</option>
-                    {SCHOOLS.map(s => (
-                      <option key={s} value={s}>{s}</option>
+                  <select
+                    id="register-university"
+                    name="university"
+                    required
+                    value={registerForm.university}
+                    disabled={universitiesLoading}
+                    aria-invalid={Boolean(regErrors.university)}
+                    onChange={handleRegisterFieldChange}
+                    onBlur={handleRegisterFieldBlur}
+                    className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] bg-white text-[#1F2937] disabled:bg-[#F3F4F6] disabled:text-[#6B7280] ${regErrors.university ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
+                  >
+                    <option value="">
+                      {universitiesLoading ? 'Loading universities...' : 'Select your university'}
+                    </option>
+                    {universities.map(option => (
+                      <option key={option.id} value={option.name}>{option.name}</option>
                     ))}
                   </select>
+                  {regErrors.university && <p className="text-xs text-[#DC2626] mt-1">{regErrors.university}</p>}
+                  {universitiesError && (
+                    <div className="mt-1">
+                      <p className="text-xs text-[#DC2626]">{universitiesError}</p>
+                      <button
+                        type="button"
+                        onClick={() => setUniversitiesReload(value => value + 1)}
+                        className="mt-1 text-xs font-600 text-[#163A63] underline"
+                        style={{ fontWeight: 600 }}
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label htmlFor="register-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Create Password</label>
-                  <div className="relative">
-                    <input
-                      id="register-password"
-                      name="password"
-                      autoComplete="new-password"
-                      required
-                      minLength={8}
-                      type={showRegPass ? 'text' : 'password'}
-                      value={regPassword}
-                      onChange={e => {
-                        setRegPassword(e.target.value);
-                        setRegErrors(prev => ({ ...prev, password: regFieldError('password', e.target.value) || '' }));
-                      }}
-                      onBlur={e => setRegErrors(prev => ({ ...prev, password: regFieldError('password', e.target.value) || '' }))}
-                      className="w-full px-3.5 py-2.5 pr-11 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
-                      placeholder="Minimum 8 characters"
-                    />
-                    {/* Eye toggle: closed = masked, open = plain text. */}
-                    <button
-                      type="button"
-                      aria-label={showRegPass ? 'Hide password' : 'Show password'}
-                      onClick={() => setShowRegPass(s => !s)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B7280] hover:text-[#1F2937]"
-                    >
-                      <Icon name={showRegPass ? 'eye' : 'eye-off'} size={16} />
-                    </button>
-                  </div>
+                <PasswordInput id="register-password" name="password" autoComplete="new-password" required minLength={8} label="Create Password" value={registerForm.password} error={regErrors.password} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Minimum 8 characters" />
+                <PasswordInput id="register-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} label="Confirm Password" value={registerForm.confirmPassword} error={regErrors.confirmPassword} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Re-enter your password" />
                   {/* Live strength bar: red / yellow / green. */}
-                  {regPassword && (() => {
-                    const strength = passwordStrength(regPassword);
+                  {registerForm.password && (() => {
+                    const strength = passwordStrength(registerForm.password);
                     return (
                       <div className="mt-2">
                         <div className="flex gap-1.5">
@@ -823,11 +970,10 @@ export default function LoginPage() {
                     );
                   })()}
                   {regErrors.password && <p className="text-xs text-[#DC2626] mt-1">{regErrors.password}</p>}
-                </div>
                 {formError && <p className="text-xs text-[#DC2626]">{formError}</p>}
                 <button
                   type="submit"
-                  disabled={formLoading}
+                  disabled={formLoading || universitiesLoading}
                   className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm"
                   style={{ fontWeight: 700 }}
                 >
@@ -836,14 +982,14 @@ export default function LoginPage() {
               </form>
               <p className="text-center text-xs text-[#6B7280] mt-4">
                 Already have an account?{' '}
-                <button onClick={() => setTab('login')} className="font-600 text-[#163A63]" style={{ fontWeight: 600 }}>Sign in</button>
+                <button onClick={() => switchTab('login')} className="font-600 text-[#163A63]" style={{ fontWeight: 600 }}>Sign in</button>
               </p>
             </>
           )}
 
           {!otpStep && tab === 'forgot' && (
             <>
-              <button onClick={() => setTab('login')} className="flex items-center gap-1.5 text-sm text-[#6B7280] hover:text-[#1F2937] mb-6">
+              <button onClick={() => switchTab('login')} className="flex items-center gap-1.5 text-sm text-[#6B7280] hover:text-[#1F2937] mb-6">
                 <Icon name="arrow-left" size={14} /> Back to login
               </button>
               <h1 className="text-2xl font-800 text-[#1F2937] mb-1" style={{ fontWeight: 800 }}>Reset Password</h1>
@@ -851,16 +997,10 @@ export default function LoginPage() {
               <form onSubmit={handleForgotPassword} className="space-y-4">
                 <div>
                   <label htmlFor="forgot-email" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Email Address</label>
-                  <input id="forgot-email" name="email" autoComplete="email" required type="email" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="you@gmail.com" />
+                  <input id="forgot-email" name="email" value={authForm.email} onChange={handleAuthFieldChange} onBlur={handleAuthFieldBlur} autoComplete="email" required type="email" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="you@gmail.com" />
                 </div>
-                <div>
-                  <label htmlFor="forgot-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>New Password</label>
-                  <input id="forgot-password" name="password" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Minimum 8 characters" />
-                </div>
-                <div>
-                  <label htmlFor="forgot-confirm-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Confirm New Password</label>
-                  <input id="forgot-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Re-enter your new password" />
-                </div>
+                <PasswordInput id="forgot-password" name="password" autoComplete="new-password" required minLength={8} label="New Password" value={authForm.password} error={authErrors.password} onChange={handleAuthFieldChange} onBlur={handleAuthFieldBlur} placeholder="Minimum 8 characters" />
+                <PasswordInput id="forgot-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} label="Confirm New Password" value={authForm.confirmPassword} error={authErrors.confirmPassword} onChange={handleAuthFieldChange} onBlur={handleAuthFieldBlur} placeholder="Re-enter your new password" />
                 {formError && <p className="text-xs text-[#DC2626]">{formError}</p>}
                 <button type="submit" disabled={formLoading} className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm disabled:opacity-60" style={{ fontWeight: 700 }}>
                   {formLoading ? 'Sending code…' : 'Send Verification Code'}
@@ -885,14 +1025,8 @@ export default function LoginPage() {
                 This is your first sign-in as {maskedEmail}. Set a new password to continue.
               </p>
               <form onSubmit={handleSetPassword} className="space-y-4">
-                <div>
-                  <label htmlFor="set-new-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>New Password</label>
-                  <input id="set-new-password" name="newPassword" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Minimum 8 characters" />
-                </div>
-                <div>
-                  <label htmlFor="set-confirm-new-password" className="block text-xs font-600 text-[#1F2937] mb-1.5" style={{ fontWeight: 600 }}>Confirm New Password</label>
-                  <input id="set-confirm-new-password" name="confirmNewPassword" autoComplete="new-password" required minLength={8} type="password" className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]" placeholder="Re-enter your new password" />
-                </div>
+                <PasswordInput id="set-new-password" name="newPassword" autoComplete="new-password" required minLength={8} label="New Password" value={authForm.newPassword} error={authErrors.newPassword} onChange={handleAuthFieldChange} onBlur={handleAuthFieldBlur} placeholder="Minimum 8 characters" />
+                <PasswordInput id="set-confirm-new-password" name="confirmNewPassword" autoComplete="new-password" required minLength={8} label="Confirm New Password" value={authForm.confirmNewPassword} error={authErrors.confirmNewPassword} onChange={handleAuthFieldChange} onBlur={handleAuthFieldBlur} placeholder="Re-enter your new password" />
                 {formError && <p className="text-xs text-[#DC2626]">{formError}</p>}
                 <button type="submit" disabled={formLoading} className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm disabled:opacity-60" style={{ fontWeight: 700 }}>
                   {formLoading ? 'Saving…' : 'Save Password & Continue'}

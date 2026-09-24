@@ -15,6 +15,7 @@ type Application = {
   program?: string;
   school: string;
   status: string;
+  barangayVerificationStatus?: string;
   createdAt: string;
   submittedAt?: string;
 };
@@ -28,6 +29,8 @@ const date = (value: string) =>
 // the page it opens use one identical application number.
 const labels: Record<string, string> = {
   submitted: 'Submitted',
+  barangay_approved: 'Approved by barangay',
+  barangay_rejected: 'Rejected',
   under_review: 'Under Review',
   additional_requirements: 'Additional Requirements',
   approved: 'Approved',
@@ -52,7 +55,7 @@ export default function CityApplications() {
       // The API already hides drafts from the City Office; this second filter
       // keeps the page correct even if the browser is talking to an older
       // build, because a draft is never reviewable work.
-      .then(result => setApplications((result.applications || []).filter(a => a.status !== 'draft')))
+      .then(result => setApplications((result.applications || []).filter(a => a.status !== 'draft' && (a.status !== 'submitted' || a.barangayVerificationStatus === 'approved'))))
       .catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load applications.'))
       .finally(() => setLoading(false));
   }, []);
@@ -63,7 +66,7 @@ export default function CityApplications() {
   }, [applications]);
 
   const tabs = useMemo(() => {
-    const statuses = ['all', 'submitted', 'under_review', 'additional_requirements', 'approved', 'rejected'];
+    const statuses = ['all', 'barangay_approved', 'under_review', 'additional_requirements', 'approved', 'rejected'];
     return statuses.map(key => ({
       key,
       label: key === 'all' ? 'All' : labels[key] || key.replace('_', ' '),

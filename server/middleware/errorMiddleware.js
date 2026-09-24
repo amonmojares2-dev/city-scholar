@@ -1,3 +1,18 @@
+const fs = require("fs");
+const { removeStoredFileByFilename } = require("../config/storage");
+const multer = require("multer");
+
+function fieldErrorsFromMongoose(error) {
+  const errors = {};
+  for (const [path, fieldError] of Object.entries(error.errors || {})) {
+    const label = path.split('.').pop();
+    errors[label] = fieldError.kind === 'required'
+      ? `${label} is required.`
+      : `${label} ${fieldError.message || 'is invalid.'}`;
+  }
+  return errors;
+}
+
 const notFound = (req, res) => {
     res.status(404).json({ success: false, message: `Route not found:
     ${req.method} ${req.originalUrl}` });
@@ -28,13 +43,47 @@ function friendlyValidationError(error) {
     return unique.join(" ");
 }
 
-const errorHandler = (error, _req, res, _next) => {
+const errorHandler = (error, req, res, _next) => {
     console.error(error);
 
-    if (error.name === "ValidationError") {
+    if (req.file?.filename) {
+        removeStoredFileByFilename(req.file.filename);
+        try { if (req.file.path) fs.unlinkSync(req.file.path); } catch { /* already removed */ }
+    }
+
+    const messageByCode = {
+        LIMIT_FILE_SIZE: "File must be 5 MB or smaller.",
+        LIMIT_FILE_COUNT: "Please upload one file at a time.",
+        LIMIT_UNEXPECTED_FILE: "Use the file field to upload one document."
+    };
+    if (error instanceof multer.MulterError) {
         return res.status(400).json({
             success: false,
-            message: friendlyValidationError(error)
+            message: messageByCode[error.code] || "Unable to upload this file. Please try again."
+        });
+    }
+
+    if (error.name === "ValidationError") {
+        const errors = fieldErrorsFromMongoose(error);
+        return res.status(400).json({
+            success: false,
+            message: friendlyValidationError(error),
+            errors
+        });
+    }
+
+    if (error.name === "CastError") {
+        return res.status(400).json({
+            success: false,
+            message: "One or more fields contain an invalid value.",
+            errors: { [error.path]: "Invalid value." }
+        });
+    }
+
+    if (error.code === 11000) {
+        return res.status(409).json({
+            success: false,
+            message: "This record already exists. Please refresh and try again."
         });
     }
 

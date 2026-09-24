@@ -385,6 +385,56 @@ const reviewBarangayApplication = async(req, res, next) => {
 };
 
 
+
+// Canonical aliases used by routes/barangayRoutes.js. Keep the original
+// handler names exported for callers that still use the earlier contract.
+const listBarangayApplicationsCanonical = listBarangayApplications;
+
+const getBarangayApplication = async(req, res, next) => {
+    try {
+        const ownBarangay = req.user.barangay?._id || req.user.barangay || null;
+        if (!ownBarangay) {
+            return res.status(403).json({ success: false, message: "Your account is not assigned to a barangay yet." });
+        }
+
+        const application = await Application.findById(req.params.id)
+            .populate("student", "name email barangay")
+            .populate("barangay", "name");
+        if (!application) return res.status(404).json({ success: false, message: "Application not found" });
+
+        const belongs = (value) => value && String(value) === String(ownBarangay);
+        const studentBarangay = application.student?.barangay?._id || application.student?.barangay || null;
+        const applicationBarangay = application.barangay?._id || application.barangay || null;
+        if (!belongs(studentBarangay) && !belongs(applicationBarangay)) {
+            return res.status(403).json({ success: false, message: "This application does not belong to your barangay." });
+        }
+
+        const documents = await Document.find({ application: application._id })
+            .sort({ createdAt: 1 });
+        const publicDocuments = documents.map((document) => {
+            const plain = typeof document.toObject === "function" ? document.toObject() : { ...document };
+            delete plain.path;
+            return plain;
+        });
+        res.json({ success: true, application, documents: publicDocuments });
+    } catch (error) { next(error); }
+};
+
+const decideBarangayApplication = async(req, res, next) => {
+    try {
+        const decision = req.body?.decision;
+        if (!["approve", "reject"].includes(decision)) {
+            return res.status(400).json({ success: false, message: "Decision must be approve or reject." });
+        }
+        req.body = {
+            ...req.body,
+            status: decision === "approve" ? "approved" : "rejected",
+            notes: typeof req.body?.notes === "string" ? req.body.notes : (req.body?.reason || "")
+        };
+        return reviewBarangayApplication(req, res, next);
+    } catch (error) { next(error); }
+};
+
 module.exports = {
     listApplications,
     getApplication,
@@ -392,5 +442,8 @@ module.exports = {
     updateApplication,
     reviewApplication,
     listBarangayApplications,
-    reviewBarangayApplication
+    reviewBarangayApplication,
+    listBarangayApplicationsCanonical,
+    getBarangayApplication,
+    decideBarangayApplication
 };

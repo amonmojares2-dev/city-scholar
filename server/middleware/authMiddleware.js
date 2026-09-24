@@ -30,16 +30,7 @@ const ROLE_GROUPS = {
 const protect = async(req, res, next) => {
     try {
         const header = req.headers.authorization || "";
-
-        // <img> / <a> tags cannot send an Authorization header, so the file
-        // endpoint (GET /api/documents/:id/file) carries the same JWT as
-        // ?token=. The header wins when both are present; the query value is
-        // only a fallback for those browser-driven requests.
-        const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
-
-        const token = header.startsWith("Bearer ") ?
-            header.slice(7).trim() :
-            queryToken || null;
+        const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
 
         if (!token) {
             return res.status(401).json({

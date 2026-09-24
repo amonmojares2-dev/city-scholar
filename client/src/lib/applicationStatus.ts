@@ -21,6 +21,8 @@ export interface StudentApplicationState {
 export type StudentStatusBadgeKey =
   | 'draft'
   | 'submitted'
+  | 'barangay-approved'
+  | 'barangay-rejected'
   | 'under-review'
   | 'additional-requirements'
   | 'approved'
@@ -44,10 +46,8 @@ export function studentApplicationStatus(application: StudentApplicationState | 
   if (status === 'draft') return { label: 'Draft', badgeKey: 'draft' };
 
   // Stage 1: Barangay residency verification.
-  if (barangay === 'rejected') return { label: 'Rejected', badgeKey: 'rejected' };
-  // Barangay approval only confirms residency — the City Office has not
-  // decided yet, so the student sees "Under Review", not "Approved".
-  if (barangay === 'approved') return { label: 'Under Review', badgeKey: 'under-review' };
+  if (status === 'barangay_rejected' || barangay === 'rejected') return { label: 'Rejected', badgeKey: 'rejected' };
+  if (status === 'barangay_approved' || barangay === 'approved') return { label: 'Approved by barangay', badgeKey: 'barangay-approved' };
 
   // No barangay action yet: still just submitted (a city-side
   // under_review here can only come from legacy records).

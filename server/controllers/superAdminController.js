@@ -551,10 +551,9 @@ const updateUser = async(req, res) => {
 
         if (schoolName !== undefined) {
             const profile = user.profile?.toObject ? user.profile.toObject() : { ...(user.profile || {}) };
-
             profile.schoolName = String(schoolName || "").trim();
             user.profile = profile;
-
+            user.university = profile.schoolName;
             changes.push(`school to ${schoolName || "(none)"}`);
         }
 

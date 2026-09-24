@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import StatusBadge from '../../components/StatusBadge';
-import { api } from '../../lib/api';
-import { docFileUrl, isImageMime, friendlyErrorMessage } from '../../lib/docUrl';
+import { api, validateDocumentFile } from '../../lib/api';
+import { isImageMime, friendlyErrorMessage } from '../../lib/docUrl';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { PrivateDocumentImage } from '../../components/PrivateFile';
 
 // The five renewal slots — identical to the server's KNOWN_DOC_TYPES[0..4],
 // so the upload endpoint stores them under the exact slot the student picked.
@@ -67,6 +69,7 @@ export default function StudentRenewal() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -121,6 +124,8 @@ export default function StudentRenewal() {
 
   const handleUploadSubmit = async () => {
     if (!file || !uploadFor) return;
+    const validationError = validateDocumentFile(file);
+    if (validationError) { setUploadError(validationError); return; }
     setUploading(true);
     setUploadError('');
     try {
@@ -141,7 +146,11 @@ export default function StudentRenewal() {
   };
 
   const handleSubmitRenewal = async () => {
-    if (!allUploaded) return;
+    if (!allUploaded || confirmSubmit) return;
+    setConfirmSubmit(true);
+  };
+
+  const submitRenewal = async () => {
     setSubmitting(true);
     setNotice(null);
     try {
@@ -154,6 +163,7 @@ export default function StudentRenewal() {
       setNotice({ kind: 'error', text: friendlyErrorMessage(err instanceof Error ? err.message : 'Unable to submit your renewal.') });
     } finally {
       setSubmitting(false);
+      setConfirmSubmit(false);
     }
   };
 
@@ -245,14 +255,12 @@ export default function StudentRenewal() {
         <div className="divide-y divide-[#E5E7EB]">
           {docs.map(doc => (
             <div key={doc.docType} className="flex items-start gap-4 px-5 py-4">
-              {doc.documentId && isImageMime(doc.mimeType) && docFileUrl(doc.documentId) ? (
-                <a href={docFileUrl(doc.documentId) as string} target="_blank" rel="noreferrer" title="Open full image" className="flex-shrink-0 mt-0.5">
-                  <img
-                    src={docFileUrl(doc.documentId) as string}
-                    alt={doc.docType}
-                    className="w-14 h-14 rounded-xl object-cover border border-[#E5E7EB]"
-                  />
-                </a>
+              {doc.documentId && isImageMime(doc.mimeType) ? (
+                <PrivateDocumentImage
+                  documentId={doc.documentId}
+                  alt={doc.docType}
+                  className="w-14 h-14 rounded-xl object-cover border border-[#E5E7EB]"
+                />
               ) : (
               <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 ${
                 doc.status === 'verified' ? 'bg-green-50' :
@@ -313,9 +321,14 @@ export default function StudentRenewal() {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pdf,.jpg,.jpeg,.png"
+                accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf"
                 className="hidden"
-                onChange={e => { setFile(e.target.files?.[0] ?? null); setUploadError(''); }}
+                onChange={e => {
+                  const selected = e.target.files?.[0] ?? null;
+                  e.target.value = '';
+                  setFile(selected);
+                  setUploadError(selected ? validateDocumentFile(selected) : '');
+                }}
               />
               <div
                 onClick={() => fileRef.current?.click()}
@@ -324,8 +337,9 @@ export default function StudentRenewal() {
                 onDrop={e => {
                   e.preventDefault();
                   setDragOver(false);
-                  setFile(e.dataTransfer.files?.[0] ?? null);
-                  setUploadError('');
+                  const selected = e.dataTransfer.files?.[0] ?? null;
+                  setFile(selected);
+                  setUploadError(selected ? validateDocumentFile(selected) : '');
                 }}
                 className={`border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${
                   dragOver ? 'border-[#163A63] bg-[#163A63]/5' : 'border-[#E5E7EB] hover:border-[#163A63]/50'
@@ -336,7 +350,7 @@ export default function StudentRenewal() {
                 </div>
                 <p className="font-600 text-sm text-[#1F2937] mb-1" style={{ fontWeight: 600 }}>Drag and drop your file here</p>
                 <p className="text-xs text-[#6B7280] mb-3">or click to browse files</p>
-                <p className="text-xs text-[#9CA3AF]">PDF, JPG, PNG up to 5MB</p>
+                <p className="text-xs text-[#9CA3AF]">PDF, JPG, or PNG up to 5 MB</p>
               </div>
               {file && (
                 <p className="mt-3 text-xs text-[#1F2937] bg-[#F6F7F9] rounded-xl px-3 py-2 truncate">
@@ -365,6 +379,14 @@ export default function StudentRenewal() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmSubmit}
+        title="Submit renewal?"
+        message="Do you want to submit this renewal for review? You will not be able to edit the submission after it is sent."
+        confirmLabel="Submit Renewal"
+        onCancel={() => setConfirmSubmit(false)}
+        onConfirm={submitRenewal}
+      />
     </div>
   );
 }

@@ -9,7 +9,11 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: false,
         default: "",
-        trim: true
+        trim: true,
+        validate: {
+            validator: value => !value || /^\p{L}[\p{L}\s.'-]{1,100}$/u.test(value) && (value.match(/\p{L}/gu) || []).length >= 2,
+            message: "Name must start with a letter, contain at least 2 letters, and use only letters, spaces, periods, hyphens, or apostrophes."
+        }
     },
 
     email: {
@@ -52,7 +56,25 @@ const userSchema = new mongoose.Schema({
 
     lastLoginAt: { type: Date, default: null },
 
+    // Opaque generated filename and public URL for the user's profile image.
+    // The public URL is served from /uploads.
+    profilePhoto: {
+        filename: { type: String, default: "" },
+        url: { type: String, default: "" },
+        mimeType: { type: String, default: "" },
+        uploadedAt: { type: Date, default: null }
+    },
+
     archived: { type: Boolean, default: false },
+
+    // University is entered only during Create Account. The Application page
+// reads and displays this exact stored value; it never provides a selector.
+    // University selected during Create Account. The historical
+    // The school key is legacy registration compatibility only. The
+    // Application page always reads User.university.
+    // Canonical account value entered during Create Account. The public
+    // Application form reads this field read-only from /api/auth/me.
+    university: { type: String, trim: true, default: "" },
 
     employeeNumber: {
         type: String,

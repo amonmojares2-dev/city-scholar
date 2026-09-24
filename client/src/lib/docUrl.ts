@@ -1,22 +1,49 @@
-// Uploads are NEVER served by static middleware: every file goes through the
-// authenticated GET /api/documents/:id/file endpoint, which resolves the
-// hashed filename internally so the server's directory structure is hidden.
-//
-// <img> / <a> tags cannot send the Authorization header, so the endpoint URL
-// carries the token as a query param (?token=...). The server accepts the
-// same JWT from either the header or the query string (see authMiddleware:
-// header first, ?token= fallback).
-import { API_URL, getAuthToken } from './api';
+// Private application/renewal files are fetched with the Authorization header
+// and displayed through short-lived Blob URLs. JWTs are never placed in URLs.
+import { useEffect, useState } from 'react';
+import { fetchPrivateFile } from './api';
 
 export function docFileUrl(documentId?: string | null): string | null {
-  if (!documentId) return null;
-  const id = String(documentId).trim();
-  // A MongoDB ObjectId is 24 hex chars — refuse anything else so a filename
-  // or path can never be smuggled into this URL.
-  if (!/^[a-f0-9]{24}$/i.test(id)) return null;
-  const token = getAuthToken();
-  const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  return `${API_URL}/documents/${encodeURIComponent(id)}/file${query}`;
+  if (!documentId || !/^[a-f0-9]{24}$/i.test(String(documentId).trim())) return null;
+  return `/documents/${String(documentId).trim()}/file`;
+}
+
+export function usePrivateResourceUrl(resourcePath?: string | null): { url: string | null; error: string; loading: boolean } {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = '';
+    if (!resourcePath) {
+      setUrl(null);
+      setError('');
+      setLoading(false);
+      return () => { active = false; };
+    }
+    setLoading(true);
+    setError('');
+    const normalizedPath = resourcePath.startsWith('/api/') ? resourcePath.slice(4) : resourcePath;
+    fetchPrivateFile(normalizedPath)
+      .then(blob => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Unable to load file.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [resourcePath]);
+
+  return { url, error, loading };
+}
+
+export function usePrivateFileUrl(documentId?: string | null): { url: string | null; error: string; loading: boolean } {
+  return usePrivateResourceUrl(docFileUrl(documentId));
 }
 
 export function isImageMime(mime?: string | null): boolean {
@@ -30,8 +57,8 @@ export function isImageMime(mime?: string | null): boolean {
  */
 export function friendlyErrorMessage(message: string): string {
   const lower = (message || '').toLowerCase();
-  if (lower.includes('school')) {
-    return 'Please fill in your School Name before uploading.';
+  if (lower.includes('university') || lower.includes('school name')) {
+    return 'No university found on your account. Please contact the scholarship office to have it corrected.';
   }
   if (lower.includes('application') && (lower.includes('not found') || lower.includes('404'))) {
     return 'Your application could not be found. Please refresh the page.';

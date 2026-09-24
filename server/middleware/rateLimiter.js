@@ -3,7 +3,8 @@ const rateLimit = require("express-rate-limit");
 // ==========================================
 // Auth rate limiter
 //
-// Applied to /api/auth/login, /api/auth/verify-otp, /api/auth/resend-otp.
+// Applied to sensitive /api/auth endpoints such as login, OTP verification,
+// and OTP resend.
 // These are the endpoints an attacker would brute-force: password
 // guessing on login, OTP guessing on verify, or spamming resend to
 // exhaust the email quota / annoy the account owner.

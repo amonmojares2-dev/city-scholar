@@ -11,6 +11,7 @@ const {
     validatePassword,
     validateNewPassword,
     validateStaffAccountCreation,
+    normalizeName,
     EMAIL_PATTERN
 } = require("../utils/validation");
 const { sendOtpEmail } = require("../utils/email");
@@ -81,7 +82,11 @@ function publicUser(user) {
         scholarType: user.scholarType || "new_applicant",
         scholarVerificationStatus: user.scholarVerificationStatus ||
             "not_required",
-        barangay: user.barangay || null
+        barangay: user.barangay || null,
+        university: String(user.university || ""),
+        hasProfilePhoto: Boolean(user.profilePhoto?.filename),
+        profilePhotoUrl: user.profilePhoto?.filename ? "/api/users/me/photo" : null,
+        profilePhotoUpdatedAt: user.profilePhoto?.uploadedAt || null
     };
 }
 
@@ -202,16 +207,18 @@ const registerUser = async(req, res) => {
             }) :
             null;
 
+        const university = role === "student"
+            ? data.university.trim()
+            : "";
         const registrationData = {
-            name: `${String(data.firstName).trim()} ${String(
-                data.lastName
-            ).trim()}`,
+            name: `${normalizeName(data.firstName)} ${normalizeName(data.lastName)}`,
 
             email,
 
             password: await bcrypt.hash(data.password, 12),
 
             role,
+            university: role === "student" ? university : undefined,
 
             employeeNumber: data.employeeNumber ?
                 String(data.employeeNumber)
@@ -220,7 +227,7 @@ const registerUser = async(req, res) => {
 
             ...(role === "student" ? {
                 profile: {
-                    schoolName: String(data.school).trim()
+                    schoolName: university
                 },
                 scholarType,
                 // Existing scholars are queued for the City Office to
@@ -294,7 +301,16 @@ const getCurrentUser = async(req, res) => {
 
         return res.json({
             success: true,
-            user,
+            user: {
+                ...user,
+                university: String(user.university || ""),
+                hasProfilePhoto: Boolean(user.profilePhoto?.filename),
+                profilePhotoUrl: user.profilePhoto?.filename ? "/api/users/me/photo" : null,
+                profilePhotoUpdatedAt: user.profilePhoto?.uploadedAt || null
+            },
+            hasProfilePhoto: Boolean(user.profilePhoto?.filename),
+            profilePhotoUrl: user.profilePhoto?.filename ? "/api/users/me/photo" : null,
+            profilePhotoUpdatedAt: user.profilePhoto?.uploadedAt || null,
             latestApplication
         });
     } catch (error) {
@@ -324,14 +340,29 @@ const updateCurrentUser = async(req, res) => {
             }
         }
 
-        // Role, status and school name can never be changed from here.
+        // Role, status and school name can never be changed from here. Keep
+        // historical profile.schoolAddress untouched if an older record has it.
         if (updates.profile) {
             delete updates.profile.schoolName;
+            delete updates.profile.schoolAddress;
+            delete updates.profile.strand;
+            if (/^(grade 11|grade 12)$/i.test(String(updates.profile.yearLevel || "").trim())) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please select a college Year Level."
+                });
+            }
         }
-
+        const update = { $set: {} };
+        if (updates.name !== undefined) update.$set.name = updates.name;
+        if (updates.profile) {
+            for (const [field, value] of Object.entries(updates.profile)) {
+                update.$set[`profile.${field}`] = value;
+            }
+        }
         const user = await User.findByIdAndUpdate(
                 req.user.id,
-                updates, {
+                update, {
                     new: true,
                     runValidators: true
                 }
@@ -348,7 +379,13 @@ const updateCurrentUser = async(req, res) => {
 
         return res.json({
             success: true,
-            user
+            user: {
+                ...user.toObject(),
+                university: String(user.university || ""),
+                hasProfilePhoto: Boolean(user.profilePhoto?.filename),
+                profilePhotoUrl: user.profilePhoto?.filename ? "/api/users/me/photo" : null,
+                profilePhotoUpdatedAt: user.profilePhoto?.uploadedAt || null
+            }
         });
     } catch (error) {
         return res.status(500).json({
@@ -488,7 +525,7 @@ const requestPasswordReset = async(req, res) => {
         if (!validatePassword(password)) {
             return res.status(400).json({
                 success: false,
-                message: "Password must contain at least 8 characters, including uppercase, lowercase, number, and special character."
+                message: "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, and a number."
             });
         }
 

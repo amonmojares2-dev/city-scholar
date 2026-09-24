@@ -20,9 +20,14 @@ export interface SessionUser {
   role: 'student' | 'barangay_admin' | 'barangay_staff' | 'city_admin' | 'admin_staff' | 'super_admin' | 'superadmin';
   scholarType?: ScholarType;
   scholarVerificationStatus?: ScholarVerificationStatus;
+  university?: string;
   barangay?: { _id: string; name: string };
+  hasProfilePhoto?: boolean;
+  profilePhotoUrl?: string | null;
+  profilePhotoUpdatedAt?: string | null;
 }
 
+export const SESSION_UPDATED_EVENT = 'city-scholar-session-updated';
 const KEY = 'city-scholar-session';
 
 // Friendly names for each portal, used in "this account belongs to the X portal" messages.
@@ -48,6 +53,7 @@ export function portalForRole(role: SessionUser['role']): PortalRole {
 
 export function saveSession(token: string, user: SessionUser) {
   localStorage.setItem(KEY, JSON.stringify({ token, user }));
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
 export function getSession(): { token: string; user: SessionUser } | null {
@@ -55,6 +61,12 @@ export function getSession(): { token: string; user: SessionUser } | null {
 }
 
 export function clearSession() { localStorage.removeItem(KEY); }
+
+export function updateSessionUser(updates: Partial<SessionUser>) {
+  const session = getSession();
+  if (!session) return;
+  saveSession(session.token, { ...session.user, ...updates });
+}
 
 export function getSessionUser(): SessionUser | null {
   const session = getSession();

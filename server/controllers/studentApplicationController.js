@@ -1,42 +1,112 @@
 const Application = require('../models/Application');
 const Document = require('../models/Document');
 const User = require('../models/User');
+const { missingRequiredApplicationDocuments } = require('./studentDocController');
 
-// Submission rules — checked when an application leaves draft status, so
-// in-progress drafts may still have empty fields (see Application model).
-// Address (street name) + Lot No. + Course / Strand are required for new
-// applicants; students on the existing-scholar renewal path skip the address
-// rules so the renewal flow keeps working unchanged.
-// NOTE: `program` (Scholarship Program / Program Selection section) was
-// removed from the Application form — it is no longer collected or required.
-function submissionError(application, isRenewalFlow) {
-  if (!application.school || !application.school.trim()) {
-    return 'Please fill in your School Name before submitting.';
-  }
-  if (!isRenewalFlow && !String(application.applicant?.address || '').trim()) {
-    return 'Please fill in your Address (Street Name) before submitting.';
-  }
-  if (!isRenewalFlow && !String(application.applicant?.lotNo || '').trim()) {
-    return 'Please fill in your Lot No. before submitting.';
-  }
-  if (!String(application.applicant?.course || '').trim()) {
-    return 'Please select your Course / Strand before submitting.';
-  }
-  return null;
+const VALID_COURSES = new Set([
+  'BS Information Technology', 'BS Computer Science', 'BS Business Administration',
+  'BS Accountancy', 'BS Nursing', 'BS Education', 'BS Criminology',
+  'BS Psychology', 'BA Communication', 'BEEd / BSEd',
+  'BS Hospitality Management', 'BS Tourism Management'
+]);
+const VALID_YEAR_LEVELS = new Set(['1st Year', '2nd Year', '3rd Year', '4th Year']);
+const STUDENT_ID_PATTERN = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MOBILE_PATTERN = /^(?:09\d{9}|\+639\d{9})$/;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function fieldError(errors, field, reason) {
+  errors[field] = reason;
 }
 
-// DB-stage helpers — fields the Application form no longer collects.
-// `stripRemovedApplicantFields` drops them from any client write so nothing
-// new lands in the DB; values already stored on previously submitted
-// applications are left untouched (they stay readable historical data).
-// `nationality`, `city` and `zipCode` were removed from the Application form;
-// `program` (Scholarship Program / Program Selection section) was removed too.
-const REMOVED_APPLICANT_FIELDS = ['nationality', 'city', 'zipCode'];
-function stripRemovedApplicantFields(applicant) {
-  if (!applicant || typeof applicant !== 'object') return applicant;
-  const copy = { ...applicant };
-  for (const key of REMOVED_APPLICANT_FIELDS) delete copy[key];
+function submissionErrors(application, isRenewalFlow, studentName, accountEmail) {
+  const errors = {};
+  if (!String(studentName || '').trim()) {
+    fieldError(errors, 'fullName', 'Full Name is required.');
+  }
+  if (accountEmail && !EMAIL_PATTERN.test(String(accountEmail).trim().toLowerCase())) {
+    fieldError(errors, 'email', 'Enter a valid email address.');
+  }
+  if (!application.university || !application.university.trim()) {
+    fieldError(errors, 'university', 'No university found on your account. Please contact the scholarship office to have it corrected.');
+  }
+  const applicant = application.applicant || {};
+  if (!isRenewalFlow && !String(applicant.houseNo || '').trim()) {
+    fieldError(errors, 'houseNo', 'House No. is required.');
+  }
+  if (!isRenewalFlow && !String(applicant.streetName || '').trim()) {
+    fieldError(errors, 'streetName', 'Street Name is required.');
+  }
+  if (!String(applicant.course || '').trim()) {
+    fieldError(errors, 'course', 'Course is required.');
+  } else if (!VALID_COURSES.has(String(applicant.course).trim())) {
+    fieldError(errors, 'course', 'Select a valid Course.');
+  }
+  if (!String(applicant.yearLevel || '').trim()) {
+    fieldError(errors, 'yearLevel', 'Year Level is required.');
+  } else if (!VALID_YEAR_LEVELS.has(String(applicant.yearLevel).trim())) {
+    fieldError(errors, 'yearLevel', 'Select a valid college Year Level.');
+  }
+  if (!String(applicant.academicTerm || '').trim()) {
+    fieldError(errors, 'academicTerm', 'Academic Term is required.');
+  } else if (!['1st Semester', '2nd Semester', 'Summer'].includes(String(applicant.academicTerm).trim())) {
+    fieldError(errors, 'academicTerm', 'Select a valid Academic Term.');
+  }
+  if (!String(applicant.studentId || '').trim()) {
+    fieldError(errors, 'studentId', 'Student Number is required.');
+  } else if (!STUDENT_ID_PATTERN.test(String(applicant.studentId).replace(/\s+/g, ''))) {
+    fieldError(errors, 'studentId', 'Student Number must use the format XX-XX-XXXX-XXXXXX.');
+  }
+  if (!String(applicant.mobileNumber || '').trim()) {
+    fieldError(errors, 'mobileNumber', 'Mobile Number is required.');
+  } else if (!MOBILE_PATTERN.test(String(applicant.mobileNumber).replace(/[\s-]/g, ''))) {
+    fieldError(errors, 'mobileNumber', 'Mobile Number must be 09XXXXXXXXX or +639XXXXXXXXX.');
+  }
+  if (applicant.dateOfBirth && !DATE_PATTERN.test(String(applicant.dateOfBirth).trim())) {
+    fieldError(errors, 'dateOfBirth', 'Birth Date is invalid.');
+  }
+  if (applicant.gwa && (!Number.isFinite(Number(applicant.gwa)) || Number(applicant.gwa) < 1 || Number(applicant.gwa) > 5)) {
+    fieldError(errors, 'gwa', 'Current GWA must be between 1.00 and 5.00.');
+  }
+  if (applicant.unitsEnrolled && (!Number.isInteger(Number(applicant.unitsEnrolled)) || Number(applicant.unitsEnrolled) <= 0)) {
+    fieldError(errors, 'unitsEnrolled', 'Units Enrolled must be a positive whole number.');
+  }
+  return errors;
+}
+
+function sendValidationError(res, errors, message = 'Please correct the highlighted fields.') {
+  console.error('Application validation failed:', { message, errors });
+  return res.status(400).json({ success: false, message, errors });
+}
+
+// Application submissions use one controller-owned field contract. The
+// frontend sends the current form fields only; `address`, schoolAddress, and
+// strand remain readable for historical applications but are not accepted as
+// new client writes.
+const CURRENT_APPLICANT_FIELDS = [
+  'dateOfBirth', 'sex', 'civilStatus', 'mobileNumber', 'studentId',
+  'parentName', 'parentRelationship', 'parentMobile', 'course', 'yearLevel',
+  'academicTerm', 'gwa', 'unitsEnrolled', 'schoolType', 'schoolYear',
+  'houseNo', 'streetName'
+];
+
+const REMOVED_APPLICANT_FIELDS = ['nationality', 'city', 'zipCode', 'schoolAddress', 'strand', 'address'];
+function normalizeApplicantInput(applicant) {
+  if (!applicant || typeof applicant !== 'object' || Array.isArray(applicant)) return {};
+  const copy = {};
+  for (const key of CURRENT_APPLICANT_FIELDS) {
+      if (typeof applicant[key] === 'string' || (key === 'gwa' || key === 'unitsEnrolled') && typeof applicant[key] === 'number') {
+        const value = String(applicant[key]).trim();
+        if (value) copy[key] = key === 'mobileNumber' ? value.replace(/[\s-]/g, '') : key === 'studentId' ? value.replace(/\s+/g, '') : value;
+      }
+  }
+  if (copy.yearLevel && ['grade 11', 'grade 12'].includes(copy.yearLevel.toLowerCase())) delete copy.yearLevel;
   return copy;
+}
+
+async function getUniversity(userId) {
+  const owner = await User.findById(userId).select('university').lean();
+  return String(owner?.university || '');
 }
 
 // Residency link — application.barangay mirrors the student's registered
@@ -67,12 +137,16 @@ const getStudentApplication = async (req, res, next) => {
 const createStudentApplication = async (req, res, next) => {
   try {
     const existing = await Application.findOne({ student: req.user.id, status: 'draft' }).sort({ createdAt: -1 });
-    if (existing) return res.status(400).json({ success: false, message: 'You already have a draft application.' });
+    if (existing) return res.status(409).json({ success: false, message: 'You already have a draft application.', errors: { application: 'A draft application already exists.' } });
     // Residency link: copy the student's registered barangay (User.barangay,
     // chosen at registration) onto the application so the Barangay review
     // queue and City views can scope on application.barangay.
+    const university = await getUniversity(req.user.id);
+    if (!university) {
+      return sendValidationError(res, { university: 'No university found on your account. Please contact the scholarship office to have it corrected.' });
+    }
     const registrar = await User.findById(req.user.id).select('barangay').lean();
-    const application = await Application.create({ student: req.user.id, school: req.body.school || '', applicant: stripRemovedApplicantFields(req.body.applicant) || {}, barangay: registrar?.barangay || null, status: 'draft' });
+    const application = await Application.create({ student: req.user.id, university, school: university, applicant: normalizeApplicantInput(req.body.applicant), barangay: registrar?.barangay || null, status: 'draft' });
     await application.populate('student', 'name email');
     return res.status(201).json({ success: true, application });
   } catch (err) { next(err); }
@@ -87,18 +161,33 @@ const updateStudentApplication = async (req, res, next) => {
     if (typeof req.body.fullName === 'string' && req.body.fullName.trim()) {
       await User.findByIdAndUpdate(req.user.id, { name: req.body.fullName.trim() });
     }
-    if (req.body.applicant) application.applicant = { ...application.applicant, ...stripRemovedApplicantFields(req.body.applicant) };
-    if (req.body.school !== undefined) application.school = req.body.school;
+    if (req.body.applicant) application.applicant = { ...application.applicant, ...normalizeApplicantInput(req.body.applicant) };
+    const registrar = await User.findById(req.user.id).select('barangay').lean();
+    if (registrar?.barangay) application.barangay = registrar.barangay;
+    const university = await getUniversity(req.user.id);
+    if (!university) {
+      return sendValidationError(res, { university: 'No university found on your account. Please contact the scholarship office to have it corrected.' });
+    }
+    // Ignore any client school/university payload: MongoDB User is authoritative.
+    application.university = university;
+    application.school = university;
     // Support submitting through PATCH (draft -> submitted only).
-    if (req.body.status === 'submitted' && application.status === 'draft') {
+    if (req.body.status === 'submitted') {
+      if (application.status !== 'draft') {
+        return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
+      }
       // Required fields are validated here rather than at the schema level
-      // so in-progress drafts may stay incomplete (see Application model).
-      const school = (req.body.school || application.school || '').trim();
-      application.school = school;
+      // so drafts may stay incomplete. The university was refreshed above.
       const isRenewalFlow = req.user.account?.scholarType === 'existing_scholar';
-      const error = submissionError(application, isRenewalFlow);
-      if (error) {
-        return res.status(400).json({ success: false, message: error });
+      if (!isRenewalFlow) {
+        const missingDocuments = await missingRequiredApplicationDocuments(application._id);
+        if (missingDocuments.length) {
+          return sendValidationError(res, { documents: 'Please upload all required documents before submitting.' }, 'Please upload all required documents before submitting.');
+        }
+      }
+      const errors = submissionErrors(application, isRenewalFlow, req.body.fullName || req.user.name, req.user.email);
+      if (Object.keys(errors).length) {
+        return sendValidationError(res, errors);
       }
       if (!isRenewalFlow) await linkBarangay(application);
       application.status = 'submitted';
@@ -115,15 +204,27 @@ const submitStudentApplication = async (req, res, next) => {
   try {
     const application = await Application.findOne({ student: req.user.id }).sort({ createdAt: -1 });
     if (!application) return res.status(404).json({ success: false, message: 'No application found.' });
-        if (application.status !== 'draft') return res.status(400).json({ success: false, message: 'Cannot submit.' });
-    // school, course, address and lot no. are required at submission time
-    // (enforced here rather than at the schema level so drafts with empty
-    // values are allowed). Renewal-path accounts skip the address rules so
-    // the existing-scholar renewal flow keeps working unchanged.
+    if (application.status !== 'draft') return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
+    const registrar = await User.findById(req.user.id).select('barangay').lean();
+    if (registrar?.barangay) application.barangay = registrar.barangay;
+    const university = await getUniversity(req.user.id);
+    if (!university) {
+      return sendValidationError(res, { university: 'No university found on your account. Please contact the scholarship office to have it corrected.' });
+    }
+    application.university = university;
+    application.school = university;
+    // University, course, year level, and (for new applicants) House No./Street
+    // Name are required. These checks intentionally run only on submission.
     const isRenewalFlow = req.user.account?.scholarType === 'existing_scholar';
-    const error = submissionError(application, isRenewalFlow);
-    if (error) {
-        return res.status(400).json({ success: false, message: error });
+    if (!isRenewalFlow) {
+      const missingDocuments = await missingRequiredApplicationDocuments(application._id);
+      if (missingDocuments.length) {
+        return sendValidationError(res, { documents: 'Please upload all required documents before submitting.' }, 'Please upload all required documents before submitting.');
+      }
+    }
+    const errors = submissionErrors(application, isRenewalFlow, req.user.name, req.user.email);
+    if (Object.keys(errors).length) {
+        return sendValidationError(res, errors);
     }
     if (!isRenewalFlow) await linkBarangay(application);
     application.status = 'submitted';

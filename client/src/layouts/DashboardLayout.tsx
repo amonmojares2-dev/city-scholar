@@ -1,8 +1,11 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Icon from '../components/Icon';
 import type { SidebarItem } from '../data/sidebarItems';
 import { clearSession, getSession } from '../lib/auth';
+import { api } from '../lib/api';
+import ConfirmDialog from '../components/ConfirmDialog';
+import SessionAvatar from '../components/SessionAvatar';
 
 interface DashboardLayoutProps {
   role: 'student' | 'barangay' | 'city' | 'superadmin';
@@ -27,12 +30,20 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<{ _id: string; title: string; message: string; readAt?: string; createdAt: string; link?: string }[]>([]);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+
+  useEffect(() => {
+    api<{ notifications: typeof notifications }>('/notifications')
+      .then(result => setNotifications(result.notifications || []))
+      .catch(() => setNotifications([]));
+  }, []);
 
   const colors = roleColors[role];
   const sessionUser = getSession()?.user;
   const displayName = sessionUser?.name || userName;
-  const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2);
   const signOut = () => { clearSession(); navigate('/login'); };
+  const requestSignOut = () => { setProfileOpen(false); setSignOutOpen(true); };
 
   const groupedItems: { group?: string; items: SidebarItem[] }[] = [];
   for (const item of sidebarItems) {
@@ -119,7 +130,7 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
 
       <div className="p-4 border-t border-white/10">
         <button
-          onClick={signOut}
+          onClick={requestSignOut}
           className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-white/60 hover:text-white hover:bg-white/8 transition-colors"
         >
           <Icon name="log-out" size={16} />
@@ -166,42 +177,27 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
                 className="relative w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F6F7F9] text-[#6B7280]"
               >
                 <Icon name="bell" size={18} />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#DC2626] rounded-full" />
+                {notifications.filter(notification => !notification.readAt).length > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#DC2626] rounded-full" />}
               </button>
 
               {notifOpen && (
                 <div className="absolute right-0 top-full mt-1 w-80 bg-white border border-[#E5E7EB] rounded-2xl shadow-xl overflow-hidden z-50">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
                     <span className="font-700 text-sm text-[#1F2937]" style={{ fontWeight: 700 }}>Notifications</span>
-                    <span className="text-xs px-2 py-0.5 bg-red-50 text-red-600 font-600 rounded-full" style={{ fontWeight: 600 }}>3 new</span>
+                    <span className="text-xs px-2 py-0.5 bg-red-50 text-red-600 font-600 rounded-full" style={{ fontWeight: 600 }}>{notifications.filter(notification => !notification.readAt).length} new</span>
                   </div>
                   <div className="divide-y divide-[#E5E7EB] max-h-72 overflow-y-auto">
-                    {[
-                      { icon: 'file-text', color: 'bg-blue-50 text-[#2563EB]', title: 'Document submission received', desc: 'Your Transcript of Records has been logged.', time: '2h ago', unread: true },
-                      { icon: 'alert-circle', color: 'bg-amber-50 text-[#D97706]', title: 'Action required', desc: 'Certificate of Enrollment is missing from your file.', time: '5h ago', unread: true },
-                      { icon: 'bell', color: 'bg-purple-50 text-[#7C3AED]', title: 'Renewal period opens', desc: 'Scholarship renewal is now open until July 31.', time: 'Yesterday', unread: true },
-                      { icon: 'check-circle', color: 'bg-green-50 text-[#22A06B]', title: 'Application approved', desc: 'Congratulations! Your application has been approved.', time: '3 days ago', unread: false },
-                      { icon: 'message-square', color: 'bg-[#F6F7F9] text-[#6B7280]', title: 'New message', desc: 'City Scholarship Office sent you a message.', time: '4 days ago', unread: false },
-                    ].map((n, i) => (
-                      <button key={i} onClick={() => setNotifOpen(false)}
-                        className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-[#F6F7F9] transition-colors ${n.unread ? 'bg-blue-50/30' : ''}`}>
-                        <div className={`w-8 h-8 rounded-xl ${n.color} flex items-center justify-center flex-shrink-0 mt-0.5`}>
-                          <Icon name={n.icon} size={14} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className={`text-xs ${n.unread ? 'font-700 text-[#1F2937]' : 'font-500 text-[#1F2937]'}`} style={{ fontWeight: n.unread ? 700 : 500 }}>{n.title}</span>
-                            {n.unread && <span className="w-1.5 h-1.5 bg-[#2563EB] rounded-full flex-shrink-0" />}
-                          </div>
-                          <p className="text-xs text-[#6B7280] mt-0.5 leading-relaxed">{n.desc}</p>
-                          <p className="text-[10px] text-[#9CA3AF] mt-1">{n.time}</p>
-                        </div>
+                    {notifications.length === 0 ? <div className="px-4 py-8 text-center text-sm text-[#6B7280]">No notifications yet.</div> : notifications.map(notification => (
+                      <button key={notification._id} onClick={async () => { await api(`/notifications/${notification._id}/read`, { method: 'PATCH' }).catch(() => undefined); setNotifications(current => current.map(item => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item)); if (notification.link) navigate(notification.link); }}
+                        className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-[#F6F7F9] transition-colors ${!notification.readAt ? 'bg-blue-50/30' : ''}`}>
+                        <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center flex-shrink-0 mt-0.5"><Icon name="bell" size={14} /></div>
+                        <div className="flex-1 min-w-0"><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-[#1F2937]">{notification.title}</span>{!notification.readAt && <span className="w-1.5 h-1.5 bg-[#2563EB] rounded-full flex-shrink-0" />}</div><p className="text-xs text-[#6B7280] mt-0.5 leading-relaxed">{notification.message}</p><p className="text-[10px] text-[#9CA3AF] mt-1">{new Date(notification.createdAt).toLocaleString()}</p></div>
                       </button>
                     ))}
                   </div>
                   <div className="px-4 py-2.5 border-t border-[#E5E7EB]">
                     <button
-                      onClick={() => setNotifOpen(false)}
+                      onClick={async () => { await Promise.all(notifications.filter(notification => !notification.readAt).map(notification => api(`/notifications/${notification._id}/read`, { method: 'PATCH' }).catch(() => undefined))); setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt || new Date().toISOString() }))); }}
                       className="w-full text-xs font-600 text-[#163A63] hover:text-[#0B1F3A] text-center"
                       style={{ fontWeight: 600 }}
                     >
@@ -217,8 +213,8 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
                 onClick={() => { setProfileOpen(o => !o); setNotifOpen(false); }}
                 className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-lg hover:bg-[#F6F7F9] transition-colors"
               >
-                <div className="w-7 h-7 rounded-full bg-[#163A63] flex items-center justify-center text-white text-xs font-700" style={{ fontWeight: 700 }}>
-                  {initials}
+                <div className="w-7 h-7 rounded-full bg-[#163A63] flex items-center justify-center text-white text-xs font-700 overflow-hidden" style={{ fontWeight: 700 }}>
+                  <SessionAvatar name={displayName} className="w-full h-full" />
                 </div>
                 <div className="hidden sm:block text-left">
                   <div className="text-xs font-600 text-[#1F2937] leading-tight" style={{ fontWeight: 600 }}>{displayName}</div>
@@ -242,7 +238,7 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
                       </Link>
                     )}
                     <button
-                      onClick={() => { setProfileOpen(false); signOut(); }}
+                      onClick={requestSignOut}
                       className="flex items-center gap-2 px-4 py-2 text-sm text-[#DC2626] hover:bg-[#F6F7F9] w-full text-left"
                     >
                       <Icon name="log-out" size={14} />Sign Out
@@ -261,6 +257,16 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
           </div>
         </main>
       </div>
+      <ConfirmDialog
+        open={signOutOpen}
+        title="Sign out?"
+        message="Do you want to sign out of the City Scholar portal?"
+        confirmLabel="Sign Out"
+        cancelLabel="Stay signed in"
+        danger
+        onCancel={() => setSignOutOpen(false)}
+        onConfirm={() => { setSignOutOpen(false); signOut(); }}
+      />
     </div>
   );
 }

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
+import { PrivateFileLink } from '../../components/PrivateFile';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { getSessionUser } from '../../lib/auth';
 
 /* ============================================================
@@ -41,10 +43,12 @@ interface Application {
   barangayReviewedAt?: string | null;
   barangay?: { _id?: string; name: string } | null;
   school: string;
+  university?: string;
   // `program` was removed from the Application form but older submitted
   // applications may still carry it — kept optional for historical reads.
   program?: string;
-  applicant?: { address?: string; lotNo?: string; city?: string };
+  rejectionReason?: string;
+  applicant?: { houseNo?: string; streetName?: string; studentId?: string; course?: string; yearLevel?: string; address?: string; lotNo?: string; city?: string };
   student?: { _id?: string; name: string; email: string } | null;
   submittedAt?: string | null;
   createdAt: string;
@@ -64,11 +68,15 @@ const VERIFY_CONFIG: Record<VerificationStatus, { label: string; bg: string; tex
 };
 
 const verificationOf = (application: Application): VerificationStatus =>
-  application.barangayVerificationStatus === 'approved'
+  application.status === 'barangay_approved' || application.status === 'approved'
     ? 'approved'
-    : application.barangayVerificationStatus === 'rejected'
+    : application.status === 'barangay_rejected' || application.status === 'rejected'
       ? 'rejected'
-      : 'pending';
+      : application.barangayVerificationStatus === 'approved'
+        ? 'approved'
+        : application.barangayVerificationStatus === 'rejected'
+          ? 'rejected'
+          : 'pending';
 
 const initials = (name: string) =>
   name.split(' ').map(word => word[0]).join('').slice(0, 2).toUpperCase();
@@ -79,9 +87,11 @@ export default function BarangayApplicants() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Application | null>(null);
+  const [selectedDocuments, setSelectedDocuments] = useState<{ _id: string; type: string; originalName: string }[]>([]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState('');
+  const [confirmDecision, setConfirmDecision] = useState<'approved' | 'rejected' | null>(null);
 
   const barangayId = getSessionUser()?.barangay?._id || '';
   const barangayName = getSessionUser()?.barangay?.name || '';
@@ -114,21 +124,20 @@ export default function BarangayApplicants() {
   const filtered = applications.filter((application) =>
     ((application.student?.name || '') + ' ' + application.school).toLowerCase().includes(query));
 
-  // Approve / Reject writes barangayVerificationStatus on the
-  // application: approved rows become visible to the City Office;
-  // rejected rows never do. Rejections require notes.
+  // Approve / Reject uses the canonical atomic barangay endpoints.
   const decide = async (status: 'approved' | 'rejected') => {
     if (!selected) return;
-    if (status === 'rejected' && !notes.trim()) {
-      setModalError('Please add a reason for the rejection.');
+    const reason = notes.trim();
+    if (status === 'rejected' && (reason.length < 10 || reason.length > 500)) {
+      setModalError('Rejection reason must be between 10 and 500 characters.');
       return;
     }
     setSaving(true);
     setModalError('');
     try {
-      await api(`/barangays/applications/${selected._id}/verification`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status, notes: notes.trim() }),
+      await api(`/barangays/applications/${selected._id}/${status === 'approved' ? 'approve' : 'reject'}`, {
+        method: 'POST',
+        body: JSON.stringify(status === 'rejected' ? { reason } : {}),
       });
       setSelected(null);
       setNotes('');
@@ -142,8 +151,12 @@ export default function BarangayApplicants() {
 
   const openReview = (application: Application) => {
     setSelected(application);
+    setSelectedDocuments([]);
     setNotes('');
     setModalError('');
+    api<{ documents: { _id: string; type: string; originalName: string }[] }>(`/barangays/applications/${application._id}`)
+      .then(result => setSelectedDocuments(result.documents || []))
+      .catch(() => setSelectedDocuments([]));
   };
 
   if (!barangayId) {
@@ -163,10 +176,13 @@ export default function BarangayApplicants() {
   const selectedConfig = VERIFY_CONFIG[selectedStatus];
   const selectedDetails = selected ? [
     { label: 'Name', value: selected.student?.name || 'Unknown student' },
-    { label: 'School', value: selected.school || '—' },
+    { label: 'Student Number', value: selected.applicant?.studentId || '—' },
+    { label: 'University', value: selected.university || selected.school || '—' },
+    { label: 'Course', value: selected.applicant?.course || '—' },
+    { label: 'Year Level', value: selected.applicant?.yearLevel || '—' },
+    { label: 'House No.', value: selected.applicant?.houseNo || '—' },
+    { label: 'Street Name', value: selected.applicant?.streetName || '—' },
     { label: 'Barangay', value: selected.barangay?.name || barangayName || '—' },
-    { label: 'City', value: selected.applicant?.city || '—' },
-    { label: 'Address', value: [selected.applicant?.lotNo, selected.applicant?.address].filter(Boolean).join(', ') || '—' },
   ] : [];
 
   return (
@@ -256,6 +272,7 @@ export default function BarangayApplicants() {
 
             <ReviewBody
               selected={selected}
+              selectedDocuments={selectedDocuments}
               barangayName={barangayName}
               details={selectedDetails}
               status={selectedStatus}
@@ -265,19 +282,30 @@ export default function BarangayApplicants() {
               modalError={modalError}
               saving={saving}
               onClose={() => setSelected(null)}
-              onDecide={decide}
+              onDecide={(decision) => setConfirmDecision(decision)}
             />
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDecision !== null}
+        title={confirmDecision === 'approved' ? 'Approve residency?' : 'Reject residency?'}
+        message={confirmDecision === 'approved' ? 'Do you want to approve this applicant and send the application to the City Scholarship Office?' : 'Do you want to reject this applicant? The application will not be sent to the City Scholarship Office.'}
+        confirmLabel={confirmDecision === 'approved' ? 'Approve' : 'Reject'}
+        danger={confirmDecision === 'rejected'}
+        loading={saving}
+        onCancel={() => setConfirmDecision(null)}
+        onConfirm={() => { const decision = confirmDecision; return decision ? decide(decision).finally(() => setConfirmDecision(null)) : undefined; }}
+      />
     </div>
   );
 }
 
 // Popup body kept as a module-scope component so typing in the notes
 // textarea never remounts the modal (stable component identity).
-function ReviewBody({ selected, barangayName, details, status, config, notes, setNotes, modalError, saving, onClose, onDecide }: {
+function ReviewBody({ selected, selectedDocuments, barangayName, details, status, config, notes, setNotes, modalError, saving, onClose, onDecide }: {
   selected: Application;
+  selectedDocuments: { _id: string; type: string; originalName: string }[];
   barangayName: string;
   details: { label: string; value: string }[];
   status: VerificationStatus;
@@ -305,6 +333,9 @@ function ReviewBody({ selected, barangayName, details, status, config, notes, se
                   {config.label}
                 </span>
               </div>
+
+              {selectedDocuments.length > 0 && <div><div className="mb-1 text-[11px] uppercase tracking-wide text-[#9CA3AF]" style={{ fontWeight: 600 }}>Documents</div><div className="space-y-1">{selectedDocuments.map(document => <div key={document._id} className="flex items-center justify-between gap-2"><span className="truncate text-xs text-[#1F2937]">{document.originalName}</span><PrivateFileLink documentId={document._id} className="text-xs text-[#163A63]">View</PrivateFileLink></div>)}</div></div>}
+
 
               <div className="bg-[#F6F7F9] border border-[#E5E7EB] rounded-xl divide-y divide-[#E5E7EB]">
                 {details.map((item) => (

@@ -29,4 +29,12 @@ const documentSchema = new mongoose.Schema({
     remarks: { type: String, default: "" }
 }, { timestamps: true });
 
+// One stored file per document slot and portal flow. This supports replacement
+// through findOneAndUpdate/upsert and prevents concurrent first uploads from
+// creating duplicate rows.
+documentSchema.index(
+    { application: 1, context: 1, type: 1 },
+    { unique: true, name: "application_context_type_unique" }
+);
+
 module.exports = mongoose.model("Document", documentSchema);

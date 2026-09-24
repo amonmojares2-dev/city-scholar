@@ -1,7 +1,7 @@
-import { createBrowserRouter, Navigate, Outlet, useNavigate } from 'react-router';
+import { createBrowserRouter, isRouteErrorResponse, Navigate, Outlet, useNavigate, useRouteError } from 'react-router';
 import { useEffect, useState } from 'react';
 import { api } from './lib/api';
-import { clearSession, getSessionUser, portalForRole, roleLabel, type PortalRole, type SessionUser } from './lib/auth';
+import { clearSession, getSessionUser, portalForRole, roleLabel, updateSessionUser, type PortalRole, type SessionUser } from './lib/auth';
 import PublicLayout from './layouts/PublicLayout';
 import DashboardLayout from './layouts/DashboardLayout';
 import RequireAuth from './components/RequireAuth';
@@ -110,6 +110,7 @@ function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) 
         // Read-only: the local session comes from the login response, which
         // already carries the account type. This call only adds the City
         // Office's application decision.
+        updateSessionUser(result.user);
         setStudentAccess(buildStudentAccess(result.user, result.latestApplication?.status ?? null));
       })
       .catch(() => {
@@ -141,7 +142,10 @@ function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) 
     if (!user || confirmedUser || verified) return;
 
     api<{ user: SessionUser }>('/auth/me')
-      .then(result => setConfirmedUser(result.user))
+      .then(result => {
+        updateSessionUser(result.user);
+        setConfirmedUser(result.user);
+      })
       .catch(() => {
         clearSession();
         setConfirmedUser(null);
@@ -181,10 +185,34 @@ function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) 
   );
 }
 
+function RouteErrorPage() {
+  const error = useRouteError();
+  const message = isRouteErrorResponse(error)
+    ? error.statusText || 'The requested page could not be loaded.'
+    : 'The page ran into an unexpected problem.';
+
+  return (
+    <main className="min-h-screen bg-[#F6F7F9] flex items-center justify-center px-6">
+      <div className="w-full max-w-md rounded-2xl border border-[#E5E7EB] bg-white p-8 text-center shadow-sm">
+        <h1 className="text-2xl font-bold text-[#0B1F3A]">Something went wrong</h1>
+        <p className="mt-3 text-sm text-[#6B7280]">{message}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-6 rounded-xl bg-[#0B1F3A] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#163A63]"
+        >
+          Reload
+        </button>
+      </div>
+    </main>
+  );
+}
+
 export const router = createBrowserRouter([
   {
     path: '/',
     Component: PublicLayout,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, Component: HomePage },
       { path: 'eligibility', Component: EligibilityPage },
@@ -193,12 +221,17 @@ export const router = createBrowserRouter([
       { path: 'ai-assistant', Component: AIAssistantPage },
     ],
   },
-  { path: '/login', Component: LoginRoute },
+  {
+    path: '/login',
+    Component: LoginRoute,
+    errorElement: <RouteErrorPage />,
+  },
 
   // ---------------- Student ----------------
   {
     path: '/student',
     element: <RequireAuth portal="student" />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <Shell role="student" sidebarItems={studentSidebarItems} />,
@@ -228,6 +261,7 @@ export const router = createBrowserRouter([
   {
     path: '/barangay',
     element: <RequireAuth portal="barangay" />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <Shell role="barangay" sidebarItems={barangaySidebarItems} />,
@@ -247,6 +281,7 @@ export const router = createBrowserRouter([
   {
     path: '/city',
     element: <RequireAuth portal="city" />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <Shell role="city" sidebarItems={citySidebarItems} />,
@@ -274,6 +309,7 @@ export const router = createBrowserRouter([
   {
     path: '/superadmin',
     element: <RequireAuth portal="superadmin" />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <Shell role="superadmin" sidebarItems={superAdminSidebarItems} />,
@@ -295,5 +331,5 @@ export const router = createBrowserRouter([
   },
 
   // Anything else goes home.
-  { path: '*', element: <Navigate to="/" replace /> },
+  { path: '*', element: <Navigate to="/" replace />, errorElement: <RouteErrorPage /> },
 ]);

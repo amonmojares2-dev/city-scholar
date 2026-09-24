@@ -23,9 +23,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import Icon from '../../components/Icon';
 import { api } from '../../lib/api';
-import { docFileUrl, isImageMime } from '../../lib/docUrl';
+import { isImageMime } from '../../lib/docUrl';
 import { applicationDisplayId } from '../../lib/applicationId';
 import { APPLICATION_DOCUMENT_TYPES } from '../../data/documentTypes';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { PrivateDocumentImage, PrivateFileLink } from '../../components/PrivateFile';
+
+function displayYearLevel(value?: string): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'grade 11' || normalized === 'grade 12' ? '' : String(value || '');
+}
 
 interface ApplicantProfile {
   dateOfBirth?: string;
@@ -44,7 +51,9 @@ interface ApplicantProfile {
   academicTerm?: string;
   gwa?: string;
   unitsEnrolled?: string;
+  // Optional historical field retained so old applications still load.
   schoolAddress?: string;
+  strand?: string;
   schoolType?: string;
   schoolYear?: string;
   parentName?: string;
@@ -60,6 +69,7 @@ interface Application {
   // historical reads — older submitted applications may still carry it).
   program?: string;
   school: string;
+  university?: string;
   applicant?: ApplicantProfile;
   status: string;
   remarks?: string;
@@ -172,6 +182,7 @@ const documentViewStatus = (document: DocumentRecord | null): DocViewStatus => {
 // other (legacy uploads use short labels like "residency" or "birth
 // certificate"). Anything left over is still listed, never hidden.
 const namesMatch = (slot: string, documentType: string) => {
+  if (slot === 'Report Card' && documentType === 'Report Card (Grade 12)') return true;
   const slotName = normalizeText(slot);
   const docName = normalizeText(documentType);
   if (!slotName || !docName) return false;
@@ -264,6 +275,7 @@ export default function CityApplicationDetail() {
   const [modalError, setModalError] = useState('');
   // Decision modal (Approve / Reject / Request Docs)
   const [decision, setDecision] = useState<Decision | null>(null);
+  const [confirmDecisionOpen, setConfirmDecisionOpen] = useState(false);
   const [remarkText, setRemarkText] = useState('');
   const [flagged, setFlagged] = useState<string[]>([]);
   // Document preview + review modal
@@ -324,6 +336,7 @@ export default function CityApplicationDetail() {
   const checks = useMemo<EligibilityCheck[]>(() => {
     if (!application) return [];
     const profile = application.applicant || {};
+    const yearLevel = displayYearLevel(profile.yearLevel);
     const gwaValue = Number.parseFloat(String(profile.gwa ?? ''));
     const hasGwa = !Number.isNaN(gwaValue);
     const minGwa = programConfig ? programConfig.minGwa : null;
@@ -360,10 +373,10 @@ export default function CityApplicationDetail() {
       {
         key: 'academics',
         label: 'Course and year level declared',
-        detail: profile.course || profile.yearLevel
-          ? `${profile.course || 'Course not set'} · ${profile.yearLevel || 'Year level not set'}`
+        detail: profile.course || yearLevel
+          ? `${profile.course || 'Course not set'} · ${yearLevel || 'Year level not set'}`
           : 'No academic details declared.',
-        state: stateFrom(Boolean(profile.course && profile.yearLevel)),
+        state: stateFrom(Boolean(profile.course && yearLevel)),
       },
       {
         key: 'gwa',
@@ -581,9 +594,9 @@ export default function CityApplicationDetail() {
   ];
 
   const academicRows = [
-    { label: 'School', value: application.school || '' },
+    { label: 'University', value: application.university || application.school || '' },
     { label: 'Course', value: application.applicant?.course || '' },
-    { label: 'Year Level', value: application.applicant?.yearLevel || '' },
+    { label: 'Year Level', value: displayYearLevel(application.applicant?.yearLevel) },
     { label: 'GWA', value: application.applicant?.gwa || '' },
   ];
 
@@ -897,7 +910,7 @@ export default function CityApplicationDetail() {
                   Cancel
                 </button>
                 <button
-                  onClick={submitDecision}
+                  onClick={() => setConfirmDecisionOpen(true)}
                   disabled={saving}
                   className={`px-4 py-2.5 rounded-xl text-sm text-white disabled:opacity-40 ${
                     decision === 'approved' ? 'bg-[#22A06B] hover:bg-[#1B8457]'
@@ -934,14 +947,12 @@ export default function CityApplicationDetail() {
             </div>
 
             <div className="p-6 space-y-4">
-              {isImageMime(preview.document.mimeType) && docFileUrl(preview.document._id) ? (
-                <a href={docFileUrl(preview.document._id) as string} target="_blank" rel="noreferrer" title="Open the full-size image">
-                  <img
-                    src={docFileUrl(preview.document._id) as string}
-                    alt={preview.document.originalName}
-                    className="w-full max-h-[30vh] object-contain rounded-xl border border-[#E5E7EB] bg-[#F6F7F9]"
-                  />
-                </a>
+              {isImageMime(preview.document.mimeType) ? (
+                <PrivateDocumentImage
+                  documentId={preview.document._id}
+                  alt={preview.document.originalName}
+                  className="w-full max-h-[30vh] object-contain rounded-xl border border-[#E5E7EB] bg-[#F6F7F9]"
+                />
               ) : (
                 <div className="rounded-xl border border-[#E5E7EB] bg-[#F6F7F9] p-8 text-center">
                   <Icon name="file-text" size={26} className="mx-auto text-[#9CA3AF]" />
@@ -949,16 +960,12 @@ export default function CityApplicationDetail() {
                 </div>
               )}
 
-              {docFileUrl(preview.document._id) && (
-                <a
-                  href={docFileUrl(preview.document._id) as string}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 text-sm text-[#163A63] hover:underline"
-                >
-                  <Icon name="external-link" size={14} /> Open the uploaded file in a new tab
-                </a>
-              )}
+              <PrivateFileLink
+                documentId={preview.document._id}
+                className="inline-flex items-center gap-2 text-sm text-[#163A63] hover:underline"
+              >
+                <Icon name="external-link" size={14} /> Open the uploaded file in a new tab
+              </PrivateFileLink>
 
               <div>
                 <label className="block text-xs text-[#6B7280] mb-1.5">Remarks for the student</label>
@@ -999,6 +1006,16 @@ export default function CityApplicationDetail() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDecisionOpen && decision !== null}
+        title={decision === 'approved' ? 'Approve application?' : decision === 'rejected' ? 'Reject application?' : 'Request additional documents?'}
+        message={decision === 'approved' ? 'Do you want to approve this application and notify the student?' : decision === 'rejected' ? 'Do you want to reject this application? The student will receive the reason you entered.' : 'Do you want to send this request to the student?'}
+        confirmLabel={decision === 'approved' ? 'Approve' : decision === 'rejected' ? 'Reject' : 'Send Request'}
+        danger={decision === 'rejected'}
+        loading={saving}
+        onCancel={() => setConfirmDecisionOpen(false)}
+        onConfirm={() => { setConfirmDecisionOpen(false); return submitDecision(); }}
+      />
     </div>
   );
 }

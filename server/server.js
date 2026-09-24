@@ -5,6 +5,7 @@ require("dotenv").config();
 
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
+const universityRoutes = require("./routes/universityRoutes");
 const applicationRoutes = require("./routes/applicationRoutes");
 const documentRoutes = require("./routes/documentRoutes");
 const messageRoutes = require("./routes/messageRoutes");
@@ -17,13 +18,13 @@ const superAdminRoutes = require("./routes/superAdminRoutes");
 const scholarApprovalRoutes = require("./routes/scholarApprovalRoutes");
 const scholarsRoutes = require("./routes/scholarsRoutes");
 const userRoutes = require("./routes/userRoutes");
+const Document = require("./models/Document");
 const programRoutes = require("./routes/programRoutes");
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const { authLimiter, apiLimiter } = require("./middleware/rateLimiter");
 
 const app = express();
 
-const mongoose = require("mongoose");
 const requireDatabase = require("./middleware/requireDatabase");
 
 // [ADDED] Environment flag used by Helmet and CORS below
@@ -54,10 +55,9 @@ app.use(helmet({
             formAction: ["'none'"]
         }
     },
-    // Helmet's default "same-origin" would block the frontend (different origin)
-    // from loading files served by this API via <img>, <embed>, etc.
-    // Use "same-site" if frontend and API share the same registrable domain.
-    crossOriginResourcePolicy: { policy: process.env.CORP_POLICY || "cross-origin" },
+    // Keep Helmet's same-origin default globally; only the authenticated
+    // document/profile file routes override CORP for their blob responses.
+    crossOriginResourcePolicy: { policy: "same-origin" },
     referrerPolicy: { policy: "no-referrer" },
     // HSTS only makes sense over HTTPS, so enable in production only.
     strictTransportSecurity: isProduction ? { maxAge: 15552000, includeSubDomains: true } : false,
@@ -90,11 +90,16 @@ app.use(cors({
         if (!origin) return callback(null, true);
         return callback(null, allowedOrigins.has(origin) || isDevelopmentOrigin(origin) ? origin : false);
     },
-    optionsSuccessStatus: 204
+    optionsSuccessStatus: 204,
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Authorization", "Content-Type"]
 }));
 
 app.use(express.json());
 
+// Uploaded files are private. Profile photos use the authenticated
+// GET /api/users/me/photo route; application documents use
+// GET /api/documents/:id/file. Never expose the uploads directory statically.
 // Test route
 app.get("/", (req, res) => {
     res.json({
@@ -102,6 +107,10 @@ app.get("/", (req, res) => {
         message: "City Scholar API is running"
     });
 });
+
+// Public static registration metadata must not depend on MongoDB or consume
+// either API/auth rate-limit buckets. Keep this before the guards below.
+app.use("/api/universities", universityRoutes);
 
 app.use("/api", requireDatabase);
 app.use("/api", apiLimiter);
@@ -128,32 +137,55 @@ app.use("/api/programs", programRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
+process.on("unhandledRejection", (reason) => {
+    console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+    console.error("Uncaught exception:", error);
+});
+
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
-    console.log('STARTING_SERVER');
-    console.log('MONGO_URI_SET', Boolean(process.env.MONGO_URI));
-
-    const connected = await connectDB();
-    if (!connected) {
-        console.error('DATABASE_NOT_CONNECTED');
-        await mongoose.disconnect();
-        process.exitCode = 1;
-        return;
-    }
-
-    console.log('DATABASE_CONNECTED');
-
+    // Bind first so health checks receive a response even while MongoDB is
+    // reconnecting. API routes are guarded by requireDatabase and return 503
+    // until the connection is ready, instead of causing ERR_CONNECTION_REFUSED.
     const server = app.listen(PORT, () => {
         console.log(`City Scholar server running on port ${PORT}`);
     });
+    server.on("error", (error) => {
+        if (error.code === "EADDRINUSE") {
+            console.error(`Port ${PORT} is already in use. Stop the other server process and restart this one.`);
+        } else {
+            console.error("HTTP server error:", error);
+        }
+    });
+
+    const connect = async () => {
+        const connected = await connectDB();
+        if (connected) {
+            try {
+                // Materialize the upload-slot uniqueness rule even when the
+                // runtime disables Mongoose automatic background index creation.
+                await Document.createIndexes();
+            } catch (error) {
+                console.error("Document index initialization failed:", error.message);
+            }
+            console.log('DATABASE_CONNECTED');
+            return;
+        }
+        console.error('DATABASE_NOT_CONNECTED; API requests will return 503. Retrying in 10 seconds.');
+        setTimeout(connect, 10000);
+    };
+    connect();
 
     return server;
 }
 
 if (require.main === module) {
     startServer().catch((error) => {
-        console.error('Server startup failed:', error.message);
+        console.error('Server startup failed:', error.stack || error.message);
         process.exitCode = 1;
     });
 }

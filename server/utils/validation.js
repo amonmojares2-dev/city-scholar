@@ -2,6 +2,8 @@
 // City Scholar - Validation Utilities
 // ==========================================
 
+const { UNIVERSITIES, UNIVERSITY_SET } = require("../config/universities");
+
 // ------------------------------------------
 // Email validation
 // ------------------------------------------
@@ -26,20 +28,33 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // O'Connor       ✅
 // José           ✅
 // ------------------------------------------
-const NAME_PATTERN = /^[\p{L}]+(?:[ .'-][\p{L}]+)*$/u;
+const NAME_PATTERN = /^\p{L}[\p{L}\s.'-]*$/u;
+const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/;
+const MOBILE_PATTERN = /^09\d{9}$/;
+
+function normalizeName(value) {
+    return String(value || "")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function validateName(value, label) {
+    const normalized = normalizeName(value);
+    if (!normalized) return `${label} is required.`;
+    if (
+        normalized.length > 50 ||
+        !NAME_PATTERN.test(normalized) ||
+        (normalized.match(/\p{L}/gu) || []).length < 2
+    ) {
+        return `${label} must start with a letter, contain at least 2 letters, and use only letters, spaces, periods, hyphens, or apostrophes.`;
+    }
+    return null;
+}
 
 
-// ------------------------------------------
-// Allowed schools / universities
-// ------------------------------------------
-const SCHOOLS = new Set([
-    "PHINMA University of Pangasinan",
-    "University of Luzon",
-    "Lyceum Northwestern University",
-    "Universidad de Dagupan",
-    "Systems Technology Institute College"
-]);
 
+// University options are defined in config/universities.js and shared by
+// the public registration endpoint and validation below.
 
 // ------------------------------------------
 // Student account types
@@ -133,18 +148,9 @@ function normalizeEmail(value) {
 // - At least 1 uppercase
 // - At least 1 lowercase
 // - At least 1 number
-// - At least 1 special character
 // ==========================================
 function validatePassword(password) {
-    return (
-        typeof password === "string" &&
-        password.length >= 8 &&
-        password.length <= 72 &&
-        /[A-Z]/.test(password) &&
-        /[a-z]/.test(password) &&
-        /\d/.test(password) &&
-        /[^A-Za-z\d]/.test(password)
-    );
+    return typeof password === "string" && PASSWORD_PATTERN.test(password);
 }
 
 
@@ -156,8 +162,8 @@ function validateRegistration(data, validBarangayNames) {
     // --------------------------------------
     // Get and clean input values
     // --------------------------------------
-    const firstName = String(data.firstName || "").trim();
-    const lastName = String(data.lastName || "").trim();
+    const firstName = normalizeName(data.firstName);
+    const lastName = normalizeName(data.lastName);
 
     const email = normalizeEmail(data.email);
 
@@ -181,32 +187,22 @@ function validateRegistration(data, validBarangayNames) {
     // --------------------------------------
     // Validate first name
     // --------------------------------------
-    if (
-        firstName.length < 2 ||
-        firstName.length > 50 ||
-        !NAME_PATTERN.test(firstName)
-    ) {
-        return "First name must be 2-50 characters and contain a valid name.";
-    }
+    const firstNameError = validateName(firstName, "First name");
+    if (firstNameError) return firstNameError;
 
 
     // --------------------------------------
     // Validate last name
     // --------------------------------------
-    if (
-        lastName.length < 2 ||
-        lastName.length > 50 ||
-        !NAME_PATTERN.test(lastName)
-    ) {
-        return "Last name must be 2-50 characters and contain a valid name.";
-    }
+    const lastNameError = validateName(lastName, "Last name");
+    if (lastNameError) return lastNameError;
 
 
     // --------------------------------------
     // Validate email
     // --------------------------------------
-    if (!EMAIL_PATTERN.test(email) || !email.endsWith("@gmail.com")) {
-        return "Please enter a valid Gmail address ending in @gmail.com.";
+    if (!EMAIL_PATTERN.test(email)) {
+        return "Please enter a valid email address.";
     }
 
 
@@ -214,7 +210,7 @@ function validateRegistration(data, validBarangayNames) {
     // Validate password
     // --------------------------------------
             if (!validatePassword(password)) {
-        return "Password must contain at least 8 characters, including uppercase, lowercase, number, and special character.";
+        return "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, and a number.";
     }
 
 
@@ -235,17 +231,17 @@ function validateRegistration(data, validBarangayNames) {
 
 
     // --------------------------------------
-    // Validate school
-    //
-    // Only students need a school.
+    // Validate University. Create Account sends the canonical `university`
+    // key; only exact names from the shared public allowlist are accepted.
     // --------------------------------------
     if (
         role === "student" &&
-        !SCHOOLS.has(
-            String(data.school || "").trim()
+        (
+            typeof data.university !== "string" ||
+            !UNIVERSITY_SET.has(data.university.trim())
         )
     ) {
-        return "Please select a valid school or university.";
+        return "Please select a valid University.";
     }
 
 
@@ -333,7 +329,7 @@ function validateNewPassword(data) {
     const { newPassword, confirmNewPassword } = data;
 
     if (!validatePassword(newPassword)) {
-        return "Password must contain at least 8 characters, including uppercase, lowercase, number, and special character.";
+        return "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, and a number.";
     }
 
     if (newPassword !== confirmNewPassword) {
@@ -398,6 +394,10 @@ module.exports = {
     validateStaffAccountCreation,
     EMAIL_PATTERN,
     NAME_PATTERN,
+    PASSWORD_PATTERN,
+    MOBILE_PATTERN,
+    normalizeName,
+    validateName,
     SCHOLAR_TYPES,
     SELF_REGISTERABLE_ROLES,
     SUPER_ADMIN_ROLE,

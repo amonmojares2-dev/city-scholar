@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
-import { api } from "../../lib/api";
-import { docFileUrl, isImageMime, friendlyErrorMessage } from "../../lib/docUrl";
+import { ApiError, api, uploadWithProgress, validateDocumentFile } from "../../lib/api";
+import { isImageMime, friendlyErrorMessage } from "../../lib/docUrl";
 import { APPLICATION_DOCUMENT_TYPES } from "../../data/documentTypes";
+import ConfirmDialog from "../../components/ConfirmDialog";
+import UploadModal from "../../components/UploadModal";
+import { PrivateDocumentImage, PrivateFileLink } from "../../components/PrivateFile";
+import { validateGwa, validateMobile as validateMobileNumber, validateOptionalEmail, validateStudentNumber, validateUnitsEnrolled } from "../../lib/validation";
+import { studentApplicationStatus } from "../../lib/applicationStatus";
 
 // Document slots come from the shared list (Certificates of Residency /
 // Indigency were removed from the application flow — see documentTypes.ts).
@@ -22,7 +27,10 @@ interface AppDoc {
 interface App {
     _id: string;
     status: string;
+    rejectionReason?: string;
+    barangayVerificationStatus?: string;
     school: string;
+    university?: string;
     // NOTE: `program` was removed from the Application form but is kept here
     // (optional, historical) so previously submitted applications still read.
     program?: string;
@@ -39,6 +47,8 @@ interface App {
         nationality?: string;
         mobileNumber?: string;
         address?: string;
+        houseNo?: string;
+        streetName?: string;
         city?: string;
         zipCode?: string;
         course?: string;
@@ -46,7 +56,9 @@ interface App {
         academicTerm?: string;
         gwa?: string;
         unitsEnrolled?: string;
+        // Optional historical field retained so old applications still load.
         schoolAddress?: string;
+        strand?: string;
         schoolType?: string;
         schoolYear?: string;
     };
@@ -75,27 +87,38 @@ const labelCls = "block text-sm font-medium text-[#374151] mb-1.5";
 
 const errorCls = "mt-1.5 text-xs text-[#DC2626] flex items-center gap-1";
 
+const FIELD_LABELS: Record<string, string> = {
+    fullName: "Full Name", studentId: "Student Number", mobileNumber: "Mobile Number",
+    email: "Email", dateOfBirth: "Birth Date", houseNo: "House No.", streetName: "Street Name",
+    course: "Course", yearLevel: "Year Level", academicTerm: "Academic Term",
+    gwa: "GWA", unitsEnrolled: "Units Enrolled", documents: "Required Documents", university: "University",
+};
+
+function formatErrorBanner(errors: Record<string, string>, fallback: string): string {
+    const renderedFields = new Set([
+        "fullName", "studentId", "mobileNumber", "email", "dateOfBirth", "houseNo", "streetName",
+        "course", "yearLevel", "academicTerm", "gwa", "unitsEnrolled", "university", "documents",
+    ]);
+    const unknownReason = Object.entries(errors).find(([field]) => !renderedFields.has(field))?.[1];
+    if (unknownReason) return unknownReason;
+    const names = Object.keys(errors).map(field => FIELD_LABELS[field] || field).filter(Boolean);
+    return names.length ? `Please fix: ${names.join(", ")}` : fallback;
+}
+
 const inputErrorCls = " border-[#DC2626] focus:ring-[#DC2626] focus:border-[#DC2626]";
 
 // Student Number: two digits - two digits - four digits - six digits,
 // e.g. "03-01-2425-041702". Digits and dashes only.
 const STUDENT_NO_RE = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
 // PH mobile: 11 digits starting with 09, e.g. 09XXXXXXXXX.
-const MOBILE_RE = /^09\d{9}$/;
+const MOBILE_RE = /^(?:09\d{9}|\+639\d{9})$/;
 
 function validateStudentId(v: string): string {
-    const t = (v || "").trim();
-    if (!t) return "Student Number is required.";
-    if (!STUDENT_NO_RE.test(t)) return "Format must be XX-XX-XXXX-XXXXXX (e.g. 03-01-2425-041702).";
-    return "";
+    return validateStudentNumber(v) || "";
 }
 
 function validateMobile(v: string): string {
-    const t = (v || "").trim();
-    if (!t) return "Mobile Number is required.";
-    if (!/^\d+$/.test(t)) return "Mobile Number must contain numbers only.";
-    if (!MOBILE_RE.test(t)) return "Mobile Number must be 11 digits starting with 09 (e.g. 09XXXXXXXXX).";
-    return "";
+    return validateMobileNumber(v) || "";
 }
 
 // Strip anything that is not a digit. Used for mobile onChange so letters /
@@ -139,6 +162,60 @@ function Grid({ children }: { children: ReactNode }) {
     return <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">{children}</div>;
 }
 
+function applicationPayload(form: Record<string, string>, extra: Record<string, unknown> = {}) {
+    const value = (field: string) => {
+        const trimmed = (form[field] || '').trim();
+        if (!trimmed) return undefined;
+        if (field === 'mobile') return trimmed.replace(/[\s-]/g, '');
+        if (field === 'gwa' || field === 'unitsEnrolled') return trimmed;
+        return trimmed;
+    };
+    return {
+        fullName: value('fullName'),
+        applicant: {
+            studentId: value('studentId'),
+            dateOfBirth: value('birthDate'),
+            sex: value('sex'),
+            civilStatus: value('civilStatus'),
+            mobileNumber: value('mobile'),
+            houseNo: value('houseNo'),
+            streetName: value('streetName'),
+            course: value('course'),
+            yearLevel: value('yearLevel'),
+            academicTerm: value('academicTerm'),
+            gwa: value('gwa'),
+            unitsEnrolled: value('unitsEnrolled'),
+            schoolType: value('schoolType'),
+            schoolYear: value('schoolYear'),
+        },
+        ...extra,
+    };
+}
+
+function getClientSubmitErrors(form: Record<string, string>): Record<string, string> {
+    const errors: Record<string, string> = {};
+    const add = (field: string, message: string) => { if (message) errors[field] = message; };
+    add("fullName", (form.fullName || "").trim() ? "" : "Full Name is required.");
+    add("studentId", validateStudentId(form.studentId || ""));
+    add("mobileNumber", validateMobile(form.mobile || ""));
+    add("course", (form.course || "").trim() ? "" : "Course is required.");
+    add("yearLevel", (form.yearLevel || "").trim() ? "" : "Year Level is required.");
+    add("academicTerm", (form.academicTerm || "").trim() ? "" : "Academic Term is required.");
+    add("houseNo", (form.houseNo || "").trim() ? "" : "House No. is required.");
+    add("streetName", (form.streetName || "").trim() ? "" : "Street Name is required.");
+    add("gwa", validateGwa(form.gwa || "") || "");
+    add("unitsEnrolled", validateUnitsEnrolled(form.unitsEnrolled || "") || "");
+    add("email", validateOptionalEmail(form.email || "") || "");
+    return errors;
+}
+
+function documentMatchesSlot(documentType: string, slotKey: string): boolean {
+    if (documentType === slotKey) return true;
+    // Historical Grade 12 report-card rows remain visible/required for old
+    // applications, but the removed label is no longer offered to new users.
+    return slotKey === "Report Card" && documentType === "Report Card (Grade 12)";
+}
+
 function DocStatus({ doc }: { doc: AppDoc }) {
     const style =
         doc.status === "verified"
@@ -162,13 +239,14 @@ export default function StudentApplication() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [savedMsg, setSavedMsg] = useState("");
-    const [uploadFor, setUploadFor] = useState<string | null>(null);
-    const [uploadError, setUploadError] = useState("");
+    const [uploadMessage, setUploadMessage] = useState("");
+    const [openModalFor, setOpenModalFor] = useState<string | null>(null);
     // Tracks which fields the user has interacted with so live (as-you-type)
     // errors never flash on initial load — only after the first keystroke /
     // blur, or after a submit attempt.
     const [touched, setTouched] = useState<Record<string, boolean>>({});
     const [submitAttempted, setSubmitAttempted] = useState(false);
+    const [confirmSubmit, setConfirmSubmit] = useState(false);
     // Transient "blocked keystroke" errors: shown IMMEDIATELY when the user
     // types (or pastes) a disallowed character that we refuse to store, e.g.
     // a letter in a numbers-only field. Rendered directly below the field
@@ -176,6 +254,8 @@ export default function StudentApplication() {
     // and how to fix it.
     const [studentIdBlockedErr, setStudentIdBlockedErr] = useState("");
     const [mobileBlockedErr, setMobileBlockedErr] = useState("");
+    const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+    const [university, setUniversity] = useState("");
 
     
 
@@ -183,9 +263,14 @@ export default function StudentApplication() {
         setLoading(true);
         setErr("");
         try {
-            const data = await api<{ success: boolean; application: App | null; documents: AppDoc[] }>("/student/application/documents");
+            const [data, currentUser] = await Promise.all([
+                api<{ success: boolean; application: App | null; documents: AppDoc[] }>("/student/application/documents?context=application"),
+                api<{ user: { university?: string; name: string; email: string } }>("/auth/me"),
+            ]);
             setApp(data.application ?? null);
             setDocs(data.documents ?? []);
+            const savedUniversity = currentUser.user.university || "";
+            setUniversity(savedUniversity);
             if (data.application) {
                 const p = data.application.applicant ?? {};
                 setForm({
@@ -193,15 +278,15 @@ export default function StudentApplication() {
                     parentName: p.parentName ?? "",
                     parentRelationship: p.parentRelationship ?? "",
                     parentMobile: p.parentMobile ?? "",
-                    fullName: data.application.student?.name ?? "",
-                    email: data.application.student?.email ?? "",
+                    fullName: currentUser.user.name || data.application.student?.name || "",
+                    email: currentUser.user.email || data.application.student?.email || "",
                     mobile: p.mobileNumber ?? "",
                     birthDate: p.dateOfBirth ?? "",
                     sex: p.sex ?? "",
                     civilStatus: p.civilStatus ?? "",
-                    address: p.address ?? "",
-                    schoolName: data.application.school ?? "",
-                    schoolAddress: p.schoolAddress ?? "",
+                    houseNo: p.houseNo ?? "",
+                    streetName: p.streetName ?? "",
+                    university: savedUniversity,
                     schoolType: p.schoolType ?? "",
                     course: p.course ?? "",
                     yearLevel: p.yearLevel ?? "",
@@ -211,28 +296,24 @@ export default function StudentApplication() {
                     unitsEnrolled: p.unitsEnrolled ?? "",
                 });
             } else {
-                setForm({});
-                // No application yet: auto-create an empty draft so the student
-                // can start uploading documents immediately without first having
-                // to fill in the School. School is only enforced at submission
-                // time, not for drafts (see Application model).
-                try {
-                    const created = await api<{ success: boolean; application: App }>("/student/application", {
-                        method: "POST",
-                        body: JSON.stringify({}),
-                    });
-                    setApp(created.application);
-                } catch (createErr) {
-                    const msg = createErr instanceof Error ? createErr.message : "Unable to create application.";
-                    // If the server already reports a draft exists (race condition),
-                    // that's fine — retry the fetch.
-                    if (msg.includes("already have a draft")) {
-                        await refresh();
-                        return;
+                setForm({ university: savedUniversity });
+                if (savedUniversity) {
+                    try {
+                        const created = await api<{ success: boolean; application: App }>("/student/application", {
+                            method: "POST",
+                            body: JSON.stringify({}),
+                        });
+                        setApp(created.application);
+                    } catch (createErr) {
+                        const msg = createErr instanceof Error ? createErr.message : "Unable to create application.";
+                        if (msg.includes("already have a draft")) {
+                            await refresh();
+                            return;
+                        }
+                        setErr(friendlyErrorMessage(msg));
+                        setApp(null);
+                        setDocs([]);
                     }
-                    setErr(friendlyErrorMessage(msg));
-                    setApp(null);
-                    setDocs([]);
                 }
             }
         } catch (e) {
@@ -247,7 +328,16 @@ export default function StudentApplication() {
 
     useEffect(() => { refresh(); }, [refresh]);
 
-    const set = (f: string, v: string) => { setForm(p => ({ ...p, [f]: v })); setSaved(false); };
+    const set = (f: string, v: string) => {
+        setForm(p => ({ ...p, [f]: v }));
+        setSaved(false);
+        setServerErrors(current => {
+            if (!current[f]) return current;
+            const next = { ...current };
+            delete next[f];
+            return next;
+        });
+    };
 
     const touch = (f: string) => setTouched(p => (p[f] ? p : { ...p, [f]: true }));
 
@@ -269,13 +359,13 @@ export default function StudentApplication() {
 
     const onMobileChange = (raw: string) => {
         touch("mobile");
-        if (/[^0-9]/.test(raw)) {
-            setMobileBlockedErr("Numbers only.");
+        const normalized = String(raw || '').replace(/[^\d+]/g, '').slice(0, 13);
+        if (normalized && !/^\+?[\d\s-]+$/.test(raw)) {
+            setMobileBlockedErr("Use a Philippine mobile number beginning with 09 or +639.");
         } else {
             setMobileBlockedErr("");
         }
-        // Strip letters/symbols so they can never appear; cap at 11 digits.
-        set("mobile", digitsOnly(raw).slice(0, 11));
+        set("mobile", normalized);
     };
 
     // Derived live errors: shown once the field is touched (first keystroke)
@@ -289,57 +379,57 @@ export default function StudentApplication() {
     // the student sees the expected XX-XX-XXXX-XXXXXX format break/fix live.
     const studentIdFormatErr = !studentIdValue
         ? (submitAttempted ? "Student Number is required." : "")
-        : (!STUDENT_NO_RE.test(studentIdValue.trim())
-            ? "Format must be XX-XX-XXXX-XXXXXX (e.g. 03-01-2425-041702)."
-            : "");
+        : validateStudentId(studentIdValue);
     const mobileFormatErr = !mobileValue
         ? (submitAttempted ? "Mobile Number is required." : "")
-        : (!MOBILE_RE.test(mobileValue.trim())
-            ? "Mobile Number must be 11 digits starting with 09 (e.g. 09XXXXXXXXX)."
+        : (!MOBILE_RE.test(mobileValue.replace(/[\s-]/g, ''))
+            ? "Mobile Number must be 09XXXXXXXXX or +639XXXXXXXXX."
             : "");
-    const studentIdErr = studentIdBlockedErr || (showStudentIdErr ? studentIdFormatErr : "");
-    const mobileErr = mobileBlockedErr || (showMobileErr ? mobileFormatErr : "");
+    const studentIdErr = studentIdBlockedErr || serverErrors.studentId || (showStudentIdErr ? studentIdFormatErr : "");
+    const mobileErr = mobileBlockedErr || serverErrors.mobileNumber || (showMobileErr ? mobileFormatErr : "");
+    const emailErr = serverErrors.email || validateOptionalEmail(form.email || "") || "";
+    const gwaErr = serverErrors.gwa || validateGwa(form.gwa || "") || "";
+    const unitsErr = serverErrors.unitsEnrolled || validateUnitsEnrolled(form.unitsEnrolled || "") || "";
 
     const requiredDocs = DOC_TYPES.filter(d => d.required);
-    const allRequiredPresent = requiredDocs.every(d => docs.some(doc => doc.type === d.key));
-    // Course / Strand is required client-side too (server enforces it as
-    // well) so the submit button stays disabled until a value is picked.
-    const coursePresent = Boolean((form.course || "").trim());
-    const canSubmit = allRequiredPresent && coursePresent;
+    const missingRequiredDocs = requiredDocs.filter(d => !docs.some(doc => documentMatchesSlot(doc.type, d.key)));
     const submitted = app && app.status !== "draft";
+
+    const requestSubmit = () => {
+        setSubmitAttempted(true);
+        if (missingRequiredDocs.length) {
+            setConfirmSubmit(false);
+            setSaved(false);
+            setSavedMsg("Please upload all required documents before submitting.");
+            requestAnimationFrame(() => {
+                document.getElementById(`${documentInputId(missingRequiredDocs[0].key)}-row`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+            });
+            return;
+        }
+        setConfirmSubmit(true);
+    };
 
     const doSave = useCallback(async () => {
         if (!app) return;
+        setServerErrors({});
         setSaving(true);
         setSaved(false);
         setSavedMsg("");
         try {
-            const body = {
-                fullName: form.fullName || undefined,
-                applicant: {
-                                        studentId: form.studentId || undefined,
-                    dateOfBirth: form.birthDate || undefined,
-                    sex: form.sex || undefined,
-                    civilStatus: form.civilStatus || undefined,
-                    mobileNumber: form.mobile || undefined,
-                    address: form.address || undefined,
-                    course: form.course || undefined,
-                    yearLevel: form.yearLevel || undefined,
-                    academicTerm: form.academicTerm || undefined,
-                    gwa: form.gwa || undefined,
-                    unitsEnrolled: form.unitsEnrolled || undefined,
-                    schoolAddress: form.schoolAddress || undefined,
-                    schoolType: form.schoolType || undefined,
-                    schoolYear: form.schoolYear || undefined,
-                },
-                school: form.schoolName || undefined,
-            };
+            const body = applicationPayload(form);
                         const data = await api<{ success: boolean; application: App }>("/student/application", { method: "PATCH", body: JSON.stringify(body) });
             setApp(data.application);
             setSaved(true);
             setSavedMsg("Application saved.");
         } catch (e) {
-            setSavedMsg(e instanceof Error ? e.message : "Unable to save.");
+            if (e instanceof ApiError) {
+                setServerErrors(e.errors || {});
+                setSavedMsg(e.message);
+                const firstField = Object.keys(e.errors || {})[0];
+                if (firstField) requestAnimationFrame(() => document.getElementById(`application-${firstField}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+            } else {
+                setSavedMsg(e instanceof Error ? e.message : "Unable to save.");
+            }
         } finally {
             setSaving(false);
         }
@@ -347,41 +437,60 @@ export default function StudentApplication() {
 
     const doSubmit = useCallback(async () => {
         if (!app) return;
+        if (missingRequiredDocs.length) {
+            setConfirmSubmit(false);
+            setSubmitAttempted(true);
+            setSaved(false);
+            setSavedMsg("Please upload all required documents before submitting.");
+            return;
+        }
         // Mark all validated fields touched so submit also reveals any
         // outstanding inline errors directly below each field.
         setSubmitAttempted(true);
         setTouched(p => ({ ...p, studentId: true, mobile: true, course: true }));
-        const sidErr = validateStudentId(form.studentId || "");
-        const mobErr = validateMobile(form.mobile || "");
-        const courseErr = (form.course || "").trim() ? "" : "Course / Strand is required.";
-        if (sidErr || mobErr || courseErr) {
+        const clientErrors = getClientSubmitErrors(form);
+        if (Object.keys(clientErrors).length) {
             setStudentIdBlockedErr("");
             setMobileBlockedErr("");
             setSaved(false);
-            setSavedMsg([sidErr, mobErr, courseErr].filter(Boolean).join(" "));
+            setServerErrors(clientErrors);
+            setSavedMsg(formatErrorBanner(clientErrors, "Please correct the highlighted fields before submitting."));
+            const firstField = Object.keys(clientErrors)[0];
+            requestAnimationFrame(() => document.getElementById(`application-${firstField}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
             return;
         }
+        setServerErrors({});
         setSaving(true);
         setSaved(false);
         setSavedMsg("");
         try {
-                        const data = await api<{ success: boolean; application: App }>("/student/application", {
+            const data = await api<{ success: boolean; application: App }>("/student/application", {
                 method: "PATCH",
-                body: JSON.stringify({ status: "submitted", submittedAt: new Date().toISOString() }),
+                body: JSON.stringify(applicationPayload(form, { status: "submitted", submittedAt: new Date().toISOString() })),
             });
             setApp(data.application);
             setSaved(true);
             setSavedMsg("Your application has been submitted for review.");
         } catch (e) {
-            setSavedMsg(e instanceof Error ? e.message : "Unable to submit.");
+            if (e instanceof ApiError) {
+                setServerErrors(e.errors || {});
+                setSavedMsg(formatErrorBanner(e.errors || {}, e.status === 409 ? e.message : "Please correct the highlighted fields before submitting."));
+                const firstField = Object.keys(e.errors || {})[0];
+                if (firstField) requestAnimationFrame(() => document.getElementById(`application-${firstField}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+            } else {
+                setSavedMsg(e instanceof Error ? e.message : "Unable to submit.");
+            }
         } finally {
             setSaving(false);
         }
         }, [app, form]);
 
-    const doc = (key: string) => docs.find(d => d.type === key);
+    const doc = (key: string) => docs.find(d => documentMatchesSlot(d.type, key));
 
-    if (submitted && app) {
+  const studentStatus = studentApplicationStatus(app);
+  const isRejected = studentStatus.badgeKey === 'rejected';
+  const isBarangayApproved = studentStatus.badgeKey === 'barangay-approved';
+  if (submitted && app) {
         return (
             <div className="max-w-4xl mx-auto p-6" style={{ minHeight: "100vh", background: "#F6F7F9" }}>
                 <PageHeader title="Application" subtitle="City Scholarship Program Application" breadcrumb={["Student Portal", "Application"]} />
@@ -390,15 +499,15 @@ export default function StudentApplication() {
                     <div className="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-5">
                         <Icon name="check-circle" size={40} className="text-[#22A06B]" />
                     </div>
-                    <h2 className="text-xl font-800 text-[#0B1F3A] mb-2" style={{ fontWeight: 800 }}>Application Submitted</h2>
+                    <h2 className="text-xl font-800 text-[#0B1F3A] mb-2" style={{ fontWeight: 800 }}>{isRejected ? 'Application Rejected' : isBarangayApproved ? 'Approved by Barangay' : 'Application Submitted'}</h2>
                     <p className="text-sm text-[#6B7280] max-w-sm mb-6">
-                        Your application has been received. The City Scholarship Office will review your documents and notify you of the outcome.
+                        {isRejected ? 'Your application was rejected during the Barangay review.' : isBarangayApproved ? 'Your Barangay approved your application and forwarded it to the City Scholarship Office for review.' : 'Your application has been received and is pending Barangay review.'}
                     </p>
 
                     <div className="bg-white rounded-2xl border border-[#E5E7EB] p-6 text-left max-w-lg w-full shadow-sm">
                         <div className="flex items-center justify-between mb-4">
                             <span className="text-xs font-600 text-[#6B7280] uppercase tracking-wide">Summary</span>
-                            <span className="text-xs text-[#22A06B] font-semibold">{app.status}</span>
+                            <span className="text-xs text-[#22A06B] font-semibold">{studentStatus.label}</span>
                         </div>
                         <div className="space-y-3 text-sm">
                             <div>
@@ -407,11 +516,11 @@ export default function StudentApplication() {
                                 <p className="text-[#6B7280]">{app.student?.email}</p>
                             </div>
                             <div>
-                                <span className="text-[#6B7280]">Course / Strand</span>
+                                <span className="text-[#6B7280]">Course</span>
                                 <p className="font-semibold text-[#1F2937]">{app.applicant?.course || "\u2014"}</p>
                             </div>
                             <div>
-                                <span className="text-[#6B7280]">School</span>
+                                <span className="text-[#6B7280]">University</span>
                                 <p className="font-semibold text-[#1F2937]">{app.school || "\u2014"}</p>
                             </div>
                             <div>
@@ -420,6 +529,7 @@ export default function StudentApplication() {
                             </div>
                         </div>
                         <div className="mt-5 border-t border-[#E5E7EB] pt-4">
+                            {isRejected && app.rejectionReason && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"><strong>Reason:</strong> {app.rejectionReason}</div>}
                             <p className="text-xs text-[#6B7280] mb-2">Uploaded documents ({docs.length})</p>
                             {docs.length === 0 ? (
                                 <p className="text-xs text-[#9CA3AF]">No documents uploaded yet.</p>
@@ -465,101 +575,29 @@ export default function StudentApplication() {
 // component identity stays stable while typing (see note there).
 // ============================================================
 
-function UploadModal({
-    isOpen,
-    docType,
-    onClose,
-    onUploaded,
+function documentInputId(type: string): string {
+    return `application-document-${type.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function DocumentUploadButton({
+    existing,
+    onOpen,
 }: {
-    isOpen: boolean;
-    docType: string | null;
-    onClose: () => void;
-    onUploaded: () => void;
+    existing?: AppDoc;
+    onOpen: () => void;
 }) {
-    const fileRef = useRef<HTMLInputElement>(null);
-    const [file, setFile] = useState<File | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [error, setError] = useState("");
-
-    useEffect(() => {
-        if (!isOpen) {
-            setFile(null);
-            setError("");
-        }
-    }, [isOpen]);
-
-    const handleSubmit = async (e: FormEvent) => {
-        e.preventDefault();
-        if (!file || !docType) return;
-        setUploading(true);
-        setError("");
-        try {
-            const form = new FormData();
-            form.append("file", file);
-            form.append("docType", docType);
-            form.append("originalName", docType);
-            form.append("context", "application");
-            await api<{ success: boolean; message: string; document: AppDoc }>(
-                "/student/application/documents",
-                { method: "POST", body: form }
-            );
-            onUploaded();
-            onClose();
-        } catch (err) {
-            setError(friendlyErrorMessage(err instanceof Error ? err.message : "Upload failed."));
-            setUploading(false);
-        }
-    };
-
-    if (!isOpen || !docType) return null;
-
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
-                <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold text-[#0B1F3A]">Upload: {docType}</h3>
-                    <button onClick={onClose} className="text-[#9CA3AF] hover:text-[#374151]">
-                        <Icon name="x" size={20} />
-                    </button>
-                </div>
-
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div
-                        onClick={() => fileRef.current?.click()}
-                        className="border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition border-[#D1D5DB] hover:border-[#163A63] hover:bg-[#F0F4FA]"
-                    >
-                        <input
-                            ref={fileRef}
-                            type="file"
-                            accept=".jpg,.jpeg,.png"
-                            hidden
-                            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                            required
-                        />
-                        <Icon name="upload" size={28} className="mx-auto text-[#9CA3AF]" />
-                        <p className="mt-2 text-sm text-[#6B7280]">
-                            {file ? file.name : "Click to select (JPG or PNG)"}
-                        </p>
-                    </div>
-
-                    {error && (
-                        <div className="text-sm text-red-600 flex items-center gap-2">
-                            <Icon name="alert-circle" size={14} />
-                            {error}
-                        </div>
-                    )}
-
-                    <div className="flex gap-3">
-                        <button type="button" onClick={onClose} className={outlineBtnCls}>
-                            Cancel
-                        </button>
-                        <button type="submit" disabled={!file || uploading} className={primaryBtnCls}>
-                            {uploading ? "Uploading…" : "Upload"}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
+        <button
+            type="button"
+            onClick={event => {
+                event.stopPropagation();
+                onOpen();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#E5E7EB] px-3 py-1.5 text-xs font-medium text-[#163A63] transition-colors hover:bg-[#F0F4FA]"
+        >
+            <Icon name="upload" size={13} />
+            {existing ? "Replace" : "Upload"}
+        </button>
     );
 }
 
@@ -608,6 +646,12 @@ function UploadModal({
                 breadcrumb={["Student Portal", "Application"]}
             />
 
+            {uploadMessage && (
+                <div className="mb-5 rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700" role="status">
+                    {uploadMessage}
+                </div>
+            )}
+
             {/* Save / Submit status banner */}
             {savedMsg && (
                 <div
@@ -635,11 +679,12 @@ function UploadModal({
                 <section>
                     <h3 className="text-lg font-bold text-[#0B1F3A] mb-4">Personal Information</h3>
                     <Grid>
-                        <Field label="Full Name">
-                            <input className={inputCls} value={form.fullName || ""} onChange={(e) => set("fullName", e.target.value)} placeholder="e.g. Juan Dela Cruz" required />
+                        <Field label="Full Name" required error={serverErrors.fullName}>
+                            <input id="application-fullName" className={inputCls + (serverErrors.fullName ? inputErrorCls : "")} value={form.fullName || ""} onChange={(e) => set("fullName", e.target.value)} placeholder="e.g. Juan Dela Cruz" aria-invalid={Boolean(serverErrors.fullName)} required />
                         </Field>
                         <Field label="Student Number / ID" required error={studentIdErr}>
                             <input
+                                id="application-studentId"
                                 className={inputCls + (studentIdErr ? inputErrorCls : "")}
                                 value={form.studentId || ""}
                                 onChange={(e) => onStudentIdChange(e.target.value)}
@@ -650,11 +695,12 @@ function UploadModal({
                                 required
                             />
                         </Field>
-                        <Field label="Email Address">
-                            <input className={inputCls} type="email" value={form.email || ""} readOnly required />
+        <Field label="Email Address" error={emailErr}>
+                            <input id="application-email" className={inputCls + (emailErr ? inputErrorCls : "")} type="email" value={form.email || ""} readOnly aria-invalid={Boolean(emailErr)} />
                         </Field>
                         <Field label="Mobile Number" required error={mobileErr}>
                             <input
+                                id="application-mobileNumber"
                                 className={inputCls + (mobileErr ? inputErrorCls : "")}
                                 value={form.mobile || ""}
                                 onChange={(e) => onMobileChange(e.target.value)}
@@ -664,8 +710,8 @@ function UploadModal({
                                 aria-invalid={Boolean(mobileErr)}
                             />
                         </Field>
-                        <Field label="Birth Date">
-                            <input className={inputCls} type="date" value={form.birthDate || ""} onChange={(e) => set("birthDate", e.target.value)} />
+                        <Field label="Birth Date" error={serverErrors.dateOfBirth}>
+                            <input id="application-dateOfBirth" className={inputCls + (serverErrors.dateOfBirth ? inputErrorCls : "")} type="date" value={form.birthDate || ""} onChange={(e) => set("birthDate", e.target.value)} aria-invalid={Boolean(serverErrors.dateOfBirth)} />
                         </Field>
                         <Field label="Sex">
                             <select className={inputCls} value={form.sex || ""} onChange={(e) => set("sex", e.target.value)}>
@@ -684,8 +730,11 @@ function UploadModal({
                                 <option value="Divorced">Divorced</option>
                             </select>
                         </Field>
-                        <Field label="Complete Address">
-                            <input className={inputCls} value={form.address || ""} onChange={(e) => set("address", e.target.value)} placeholder="House no., street, barangay" />
+                        <Field label="House No." required error={serverErrors.houseNo}>
+                            <input id="application-houseNo" className={inputCls + (serverErrors.houseNo ? inputErrorCls : "")} value={form.houseNo || ""} onChange={(e) => set("houseNo", e.target.value)} placeholder="e.g. 123" aria-invalid={Boolean(serverErrors.houseNo)} required />
+                        </Field>
+                        <Field label="Street Name" required error={serverErrors.streetName}>
+                            <input id="application-streetName" className={inputCls + (serverErrors.streetName ? inputErrorCls : "")} value={form.streetName || ""} onChange={(e) => set("streetName", e.target.value)} placeholder="e.g. Rizal Street" aria-invalid={Boolean(serverErrors.streetName)} required />
                         </Field>
                     </Grid>
                 </section>
@@ -694,11 +743,20 @@ function UploadModal({
                 <section>
                     <h3 className="text-lg font-bold text-[#0B1F3A] mb-4">School Information</h3>
                     <Grid>
-                        <Field label="School Name">
-                            <input className={inputCls} value={form.schoolName || ""} onChange={(e) => set("schoolName", e.target.value)} required />
-                        </Field>
-                        <Field label="School Address">
-                            <input className={inputCls} value={form.schoolAddress || ""} onChange={(e) => set("schoolAddress", e.target.value)} />
+                        <Field label="University" error={serverErrors.university}>
+                            <input
+                                id="application-university"
+                                className={`${inputCls} bg-[#F3F4F6] text-[#4B5563] cursor-not-allowed`}
+                                value={university}
+                                readOnly
+                                aria-readonly="true"
+                                tabIndex={-1}
+                            />
+                            <p className={`text-xs mt-1 ${university ? 'text-[#6B7280]' : 'text-amber-700'}`}>
+                                {university
+                                    ? 'Auto-filled from your student account.'
+                                    : 'No university found on your account. Please contact the scholarship office to have it corrected.'}
+                            </p>
                         </Field>
                         <Field label="School Type">
                             <select className={inputCls} value={form.schoolType || ""} onChange={(e) => set("schoolType", e.target.value)}>
@@ -708,23 +766,17 @@ function UploadModal({
                                 <option value="State University">State University</option>
                             </select>
                         </Field>
-                        <Field label="Course / Strand" required>
+                        <Field label="Course" required error={serverErrors.course}>
                             <select
-                                className={inputCls + (submitAttempted && !form.course ? inputErrorCls : "")}
+                                id="application-course"
+                                className={inputCls + (serverErrors.course || (submitAttempted && !form.course) ? inputErrorCls : "")}
                                 value={form.course || ""}
                                 onChange={(e) => set("course", e.target.value)}
                                 onBlur={() => touch("course")}
-                                aria-invalid={Boolean(submitAttempted && !form.course)}
+                                aria-invalid={Boolean(serverErrors.course || (submitAttempted && !form.course))}
                                 required
                             >
                                 <option value="">Select…</option>
-                                {/* Senior High strands */}
-                                <option value="STEM">STEM</option>
-                                <option value="HUMSS">HUMSS</option>
-                                <option value="ABM">ABM</option>
-                                <option value="GAS">GAS</option>
-                                <option value="TVL">TVL</option>
-                                {/* College courses */}
                                 <option value="BS Information Technology">BS Information Technology</option>
                                 <option value="BS Computer Science">BS Computer Science</option>
                                 <option value="BS Business Administration">BS Business Administration</option>
@@ -738,25 +790,23 @@ function UploadModal({
                                 <option value="BS Hospitality Management">BS Hospitality Management</option>
                                 <option value="BS Tourism Management">BS Tourism Management</option>
                             </select>
-                            {submitAttempted && !form.course && (
+                            {!serverErrors.course && submitAttempted && !form.course && (
                                 <p className={errorCls} role="alert">
-                                    <span aria-hidden="true">⚠</span> Course / Strand is required.
+                                    <span aria-hidden="true">⚠</span> Course is required.
                                 </p>
                             )}
                         </Field>
-                        <Field label="Year Level">
-                            <select className={inputCls} value={form.yearLevel || ""} onChange={(e) => set("yearLevel", e.target.value)}>
+                        <Field label="Year Level" required error={serverErrors.yearLevel}>
+                            <select id="application-yearLevel" className={inputCls + (serverErrors.yearLevel ? inputErrorCls : "")} value={form.yearLevel || ""} onChange={(e) => set("yearLevel", e.target.value)} aria-invalid={Boolean(serverErrors.yearLevel)} required>
                                 <option value="">Select…</option>
-                                <option value="Grade 11">Grade 11</option>
-                                <option value="Grade 12">Grade 12</option>
                                 <option value="1st Year">1st Year</option>
                                 <option value="2nd Year">2nd Year</option>
                                 <option value="3rd Year">3rd Year</option>
                                 <option value="4th Year">4th Year</option>
                             </select>
                         </Field>
-                        <Field label="Academic Term">
-                            <select className={inputCls} value={form.academicTerm || ""} onChange={(e) => set("academicTerm", e.target.value)}>
+                        <Field label="Academic Term" required error={serverErrors.academicTerm || (submitAttempted && !form.academicTerm ? "Academic Term is required." : "")}>
+                            <select id="application-academicTerm" className={inputCls + (serverErrors.academicTerm || (submitAttempted && !form.academicTerm) ? inputErrorCls : "")} value={form.academicTerm || ""} onChange={(e) => set("academicTerm", e.target.value)} aria-invalid={Boolean(serverErrors.academicTerm || (submitAttempted && !form.academicTerm))} required>
                                 <option value="">Select…</option>
                                 <option value="1st Semester">1st Semester</option>
                                 <option value="2nd Semester">2nd Semester</option>
@@ -766,11 +816,11 @@ function UploadModal({
                         <Field label="School Year">
                             <input className={inputCls} value={form.schoolYear || ""} onChange={(e) => set("schoolYear", e.target.value)} placeholder="e.g. 2024-2025" />
                         </Field>
-                        <Field label="Current GWA">
-                            <input className={inputCls} type="number" min="0" max="4" step="0.01" value={form.gwa || ""} onChange={(e) => set("gwa", e.target.value)} placeholder="e.g. 1.75" />
+                        <Field label="Current GWA" error={gwaErr}>
+                            <input id="application-gwa" className={inputCls + (gwaErr ? inputErrorCls : "")} type="number" min="1" max="5" step="0.01" value={form.gwa || ""} onChange={(e) => set("gwa", e.target.value)} placeholder="e.g. 1.75" aria-invalid={Boolean(gwaErr)} />
                         </Field>
-                        <Field label="Units Enrolled">
-                            <input className={inputCls} type="number" min="0" value={form.unitsEnrolled || ""} onChange={(e) => set("unitsEnrolled", e.target.value)} placeholder="e.g. 24" />
+                        <Field label="Units Enrolled" error={unitsErr}>
+                            <input id="application-unitsEnrolled" className={inputCls + (unitsErr ? inputErrorCls : "")} type="number" min="1" step="1" value={form.unitsEnrolled || ""} onChange={(e) => set("unitsEnrolled", e.target.value)} placeholder="e.g. 24" aria-invalid={Boolean(unitsErr)} />
                         </Field>
                     </Grid>
                 </section>
@@ -786,7 +836,11 @@ function UploadModal({
                         {DOC_TYPES.map((d) => {
                             const existing = doc(d.key);
                             return (
-                                <div key={d.key} className="flex items-center justify-between p-4 rounded-lg border border-[#E5E7EB]">
+                            <div
+                                key={d.key}
+                                id={`${documentInputId(d.key)}-row`}
+                                className="flex flex-col gap-3 p-4 rounded-lg border border-[#E5E7EB] sm:flex-row sm:items-center sm:justify-between"
+                            >
                                     <div className="flex items-center gap-3">
                                         <Icon name="file-text" size={18} className="text-[#9CA3AF]" />
                                         <div>
@@ -795,35 +849,29 @@ function UploadModal({
                                         </div>
                                     </div>
 
-                                    {existing ? (
-                                        <div className="flex items-center gap-3">
-                                            {isImageMime(existing.mimeType) && docFileUrl(existing._id) && (
-                                                <a href={docFileUrl(existing._id) as string} target="_blank" rel="noreferrer" title="Open full image">
-                                                    <img
-                                                        src={docFileUrl(existing._id) as string}
+                                    <div className="flex items-center gap-3">
+                                        {existing && (
+                                            <>
+                                                {isImageMime(existing.mimeType) && (
+                                                    <PrivateDocumentImage
+                                                        documentId={existing._id}
                                                         alt={existing.originalName}
                                                         className="w-12 h-12 rounded-lg object-cover border border-[#E5E7EB]"
                                                     />
-                                                </a>
-                                            )}
-                                            <span className="text-xs text-[#6B7280] truncate max-w-[180px]">{existing.originalName}</span>
-                                            <DocStatus doc={existing} />
-                                            <button
-                                                onClick={() => setUploadFor(d.key)}
-                                                className="text-xs text-[#163A63] font-medium hover:underline"
-                                            >
-                                                Replace
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <button
-                                            onClick={() => setUploadFor(d.key)}
-                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-[#E5E7EB] text-[#163A63] hover:bg-[#F0F4FA] transition"
-                                        >
-                                            <Icon name="upload" size={13} />
-                                            Upload
-                                        </button>
-                                    )}
+                                                )}
+                                                <span className="text-xs text-[#6B7280] truncate max-w-[180px]">{existing.originalName}</span>
+                                                <DocStatus doc={existing} />
+                                            </>
+                                        )}
+                                        {submitAttempted && d.required && !existing && (
+                                            <p className="text-xs text-[#DC2626]" role="alert">Please upload {d.label}.</p>
+                                        )}
+                                    </div>
+
+                                    <DocumentUploadButton
+                                        existing={existing}
+                                        onOpen={() => setOpenModalFor(d.key)}
+                                    />
                                 </div>
                             );
                         })}
@@ -837,14 +885,14 @@ function UploadModal({
                             {saved && <span className="text-green-600 font-medium">Saved</span>}
                         </div>
                         <div className="flex gap-3">
-                            <button onClick={doSave} disabled={saving} className={outlineBtnCls}>
+                            <button type="button" onClick={doSave} disabled={saving || !app || !university} className={outlineBtnCls}>
                                 {saving ? "Saving…" : "Save Draft"}
                             </button>
                             <button
-                                onClick={doSubmit}
-                                disabled={saving || !canSubmit}
+                                type="button"
+                                onClick={requestSubmit}
+                                disabled={saving || !app}
                                 className={primaryBtnCls}
-                                style={{ backgroundColor: !canSubmit ? "#9CA3AF" : "#163A63" }}
                             >
                                 {saving ? "Submitting…" : "Submit Application"}
                             </button>
@@ -853,12 +901,45 @@ function UploadModal({
                 </section>
             </div>
 
-            {/* Upload Modal */}
-            <UploadModal
-                isOpen={uploadFor !== null}
-                docType={uploadFor}
-                onClose={() => setUploadFor(null)}
-                onUploaded={refresh}
+            {openModalFor && (() => {
+                const slot = DOC_TYPES.find(documentType => documentType.key === openModalFor);
+                if (!slot) return null;
+                return (
+                    <UploadModal
+                        isOpen
+                        documentName={slot.label}
+                        validateFile={validateDocumentFile}
+                        onClose={() => setOpenModalFor(null)}
+                        onUpload={async (file, onProgress, signal) => {
+                            const body = new FormData();
+                            body.append("file", file);
+                            body.append("docType", slot.key);
+                            body.append("context", "application");
+                            try {
+                                const result = await uploadWithProgress<{ success: boolean; message: string; documents: AppDoc[] }>(
+                                    "/student/application/documents",
+                                    body,
+                                    onProgress,
+                                    signal,
+                                );
+                                setUploadMessage(result.message || `${slot.label} uploaded successfully.`);
+                                setDocs(result.documents || []);
+                                setSubmitAttempted(false);
+                            } catch (requestError) {
+                                throw new Error(friendlyErrorMessage(requestError instanceof Error ? requestError.message : "Upload failed."));
+                            }
+                        }}
+                    />
+                );
+            })()}
+
+            <ConfirmDialog
+                open={confirmSubmit}
+                title="Submit application?"
+                message="Do you want to submit this application for review? You will not be able to edit it after submission."
+                confirmLabel="Submit Application"
+                onCancel={() => setConfirmSubmit(false)}
+                onConfirm={() => doSubmit()}
             />
         </div>
     );

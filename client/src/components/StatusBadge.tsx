@@ -7,6 +7,8 @@ const statusConfig: Record<string, { label: string; bg: string; text: string; do
   // Application statuses
   draft: { label: 'Draft', bg: 'bg-gray-100', text: 'text-gray-600', dot: 'bg-gray-400' },
   submitted: { label: 'Submitted', bg: 'bg-blue-50', text: 'text-blue-700', dot: 'bg-blue-500' },
+  'barangay-approved': { label: 'Approved by Barangay', bg: 'bg-blue-50', text: 'text-blue-700', dot: 'bg-blue-500' },
+  'barangay-rejected': { label: 'Rejected', bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
   'under-review': { label: 'Under Review', bg: 'bg-amber-50', text: 'text-amber-700', dot: 'bg-amber-500' },
   'additional-requirements': { label: 'Additional Req.', bg: 'bg-orange-50', text: 'text-orange-700', dot: 'bg-orange-500' },
   approved: { label: 'Approved', bg: 'bg-green-50', text: 'text-green-700', dot: 'bg-green-500' },

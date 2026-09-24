@@ -2,6 +2,7 @@ const Application = require("../models/Application");
 const Document = require("../models/Document");
 const User = require("../models/User");
 const { removeStoredFile, removeStoredFileByFilename } = require("../config/storage");
+const { APPLICATION_DOCUMENT_TYPES, matchesRequiredDocument } = require("../config/applicationDocuments");
 
 // Strip the deprecated raw filesystem path before a Document leaves the
 // server — clients must never see the server's directory structure.
@@ -56,13 +57,14 @@ const listStudentDocuments = async(req, res, next) => {
     }
 };
 
-const ALLOWED_MIME = new Set(["image/jpeg", "image/png"]);
-const MAX_BYTES = 5 * 1024 * 1024;
-
 /** Student: upload one document file and attach it to the application. */
 const uploadStudentDocument = async(req, res, next) => {
     const sendError = (status, message) =>
         res.status(status).json({ success: false, message });
+
+    // Set only after MongoDB has committed the new record. If a later query
+    // fails, the new file must remain because the database already references it.
+    let uploadCommitted = false;
 
     try {
         if (!req.file) {
@@ -70,103 +72,129 @@ const uploadStudentDocument = async(req, res, next) => {
         }
 
         const mimeType = (req.file.mimetype || "").toLowerCase();
-        if (!ALLOWED_MIME.has(mimeType)) {
-            removeStoredFileByFilename(req.file.filename);
-            return sendError(400, "Only JPG and PNG image files are accepted.");
-        }
+        const rawContext = String(req.body.context || "").trim().toLowerCase();
+        const context = rawContext === "renewal" ? "renewal" : "application";
 
-        if ((req.file.size || 0) > MAX_BYTES) {
-            removeStoredFileByFilename(req.file.filename);
-            return sendError(400, "File is too large. Maximum size is 5 MB.");
+        // Application uploads target a draft explicitly. If a student has no
+        // draft but does have a locked application, return the useful 409 rather
+        // than a misleading 404. Renewal uploads keep their existing latest-
+        // application behavior.
+        let application;
+        if (context === "application") {
+            application = await Application.findOne({ student: req.user.id, status: "draft" })
+                .sort({ createdAt: -1 });
+            if (!application) {
+                const lockedApplication = await Application.findOne({ student: req.user.id })
+                    .sort({ createdAt: -1 });
+                removeStoredFileByFilename(req.file.filename);
+                if (lockedApplication) {
+                    console.warn(`Document upload rejected for application ${lockedApplication._id}: status=${lockedApplication.status}`);
+                    return sendError(409, "Documents can no longer be changed because your application was already submitted.");
+                }
+                return sendError(404, "No application found. Please create your application first, then upload documents.");
+            }
+        } else {
+            application = await Application.findOne({ student: req.user.id })
+                .sort({ createdAt: -1 });
         }
-
-        // One candidate, one application at a time. The upload must attach to
-        // the student's EXISTING application — never create or re-validate
-        // the parent Application here (Application requires school + program,
-        // which an upload cannot invent).
-        const application = await Application.findOne({ student: req.user.id })
-            .sort({ createdAt: -1 });
 
         if (!application) {
             removeStoredFileByFilename(req.file.filename);
             return sendError(404, "No application found. Please create your application first, then upload documents.");
         }
 
-        if (req.user.role === "student" && application.student.toString() !== req.user.id) {
+        const ownsApplication = application.student &&
+            application.student.toString() === req.user.id;
+        if (!ownsApplication) {
             removeStoredFileByFilename(req.file.filename);
             return sendError(403, "You can only upload documents for your own application.");
         }
 
-        // The document slot the student picked in the UI wins; the filename is
-        // only a fallback for clients that don't send a docType field.
-        // `context` distinguishes the Renewal page ("renewal") from the
-        // Application page ("application", the default) so the two flows
-        // never share document rows for the same application record.
+        if (context === "application" && application.status !== "draft") {
+            console.warn(`Document upload rejected for application ${application._id}: status=${application.status}`);
+            removeStoredFileByFilename(req.file.filename);
+            return sendError(409, "Documents can no longer be changed because your application was already submitted.");
+        }
+
         const requestedType = String(req.body.docType || req.body.type || "").trim();
         const originalName = String(req.body.originalName || req.file.originalname || "").trim();
         const documentType = requestedType || guessDocumentType(originalName);
-        const rawContext = String(req.body.context || "").trim().toLowerCase();
-        const context = rawContext === "renewal" ? "renewal" : "application";
+        if (!documentType) {
+            removeStoredFileByFilename(req.file.filename);
+            return sendError(400, "Please select a document type.");
+        }
+        if (context === "application" && !APPLICATION_DOCUMENT_TYPES.includes(documentType)) {
+            removeStoredFileByFilename(req.file.filename);
+            return sendError(400, "Please select a valid Application document type.");
+        }
 
-        // Match the same (application, context, type) triple the list endpoint
-        // returns, so an upload from the Renewal page never overwrites an
-        // Application-page row (and vice versa).
-        const existing = await Document.findOne({
+        const filter = {
             application: application._id,
             context,
             type: documentType
-        });
+        };
+        const replacement = {
+            student: req.user.id,
+            originalName: req.file.originalname,
+            filename: req.file.filename,
+            mimeType,
+            status: "pending",
+            remarks: ""
+        };
 
-        if (existing) {
-            // Replace: remove the old file and update the record. Only the
-            // hashed filename is stored — never the raw absolute path.
-            removeStoredFile(existing);
-            existing.filename = req.file.filename;
-            existing.originalName = req.file.originalname;
-            existing.mimeType = mimeType;
-            existing.status = "pending";
-            existing.remarks = "";
-            existing.context = context;
-            await existing.save();
-        } else {
-            await Document.create({
-                application: application._id,
-                student: req.user.id,
-                context,
-                type: documentType,
-                originalName: req.file.originalname,
-                filename: req.file.filename,
-                mimeType
+        let previousDocument;
+        try {
+            // Return the pre-update document so replacement cleanup is safe even
+            // when two uploads for the same slot overlap. The unique compound
+            // index makes simultaneous first upserts converge on one row.
+            previousDocument = await Document.findOneAndUpdate(filter, {
+                $set: replacement,
+                $setOnInsert: {
+                    application: application._id,
+                    context,
+                    type: documentType
+                }
+            }, {
+                new: false,
+                upsert: true,
+                runValidators: true,
+                setDefaultsOnInsert: true
+            });
+        } catch (error) {
+            if (error?.code !== 11000) throw error;
+
+            // A parallel request created the same slot first. Re-run without
+            // upsert so this legitimate re-upload becomes a replacement, never 409.
+            previousDocument = await Document.findOneAndUpdate(filter, { $set: replacement }, {
+                new: false,
+                runValidators: true
             });
         }
 
-                // The application stays in whatever status it has. A draft with
-        // uploaded documents is still a draft until the student submits.
+        const document = await Document.findOne(filter);
+        uploadCommitted = true;
+        const replacedFilename = String(previousDocument?.filename || "");
+        if (replacedFilename && replacedFilename !== req.file.filename) {
+            removeStoredFile({ filename: replacedFilename });
+        }
+
         const freshApplication = await Application.findById(application._id)
             .populate("student", "name email");
-        const documents = await Document.find({ application: application._id, context }).sort({ createdAt: 1 });
+        const documents = await Document.find({ application: application._id, context })
+            .sort({ createdAt: 1 });
 
-        res.status(201).json({
+        return res.status(200).json({
             success: true,
             applicationId: application._id.toString(),
             application: freshApplication,
-            document: {
-                id: (existing || documents[documents.length - 1])._id.toString(),
-                type: documentType,
-                context,
-                originalName: req.file.originalname,
-                filename: req.file.filename,
-                mimeType,
-                status: "pending"
-            },
+            document: publicDocument(document),
             documents: publicDocuments(documents),
-            message: existing
-                ? "Document replaced."
-                : "Document uploaded."
+            message: "Document uploaded successfully."
         });
     } catch (error) {
-        // Best-effort cleanup of an orphaned upload on failure.
-        removeStoredFileByFilename(req.file && req.file.filename);
+        // An uncommitted upload is orphaned. Once the DB write succeeds, retain
+        // the file even if a later response-building query fails.
+        if (!uploadCommitted) removeStoredFileByFilename(req.file && req.file.filename);
         next(error);
     }
 };
@@ -175,9 +203,19 @@ const uploadStudentDocument = async(req, res, next) => {
 // The Certificates of Residency / Indigency (student and parent/guardian) were
 // dropped from the application flow, so they are no longer recognised here —
 // such a file falls through to "Other" instead of being filed in a removed slot.
+
+async function missingRequiredApplicationDocuments(applicationId) {
+    const uploaded = await Document.find({ application: applicationId, context: "application" })
+        .select("type")
+        .lean();
+    return APPLICATION_DOCUMENT_TYPES.filter((requiredType) =>
+        !uploaded.some((document) => matchesRequiredDocument(document.type, requiredType))
+    );
+}
+
 const KNOWN_DOC_TYPES = [
     "Certificate of Matriculation",
-    "Report Card (Grade 12)",
+    "Report Card",
     "School ID (Current)",
     "Parent Valid ID",
     "Barangay Clearance",
@@ -189,7 +227,7 @@ const KNOWN_DOC_TYPES = [
 function guessDocumentType(originalName) {
     const lower = originalName.toLowerCase();
     if (/matriculation/i.test(lower)) return KNOWN_DOC_TYPES[0];
-    if (/report card/i.test(lower) || /grade 12/i.test(lower) || /reportcard/i.test(lower)) return KNOWN_DOC_TYPES[1];
+    if (/report card/i.test(lower) || /reportcard/i.test(lower)) return KNOWN_DOC_TYPES[1];
     if (/school id/i.test(lower)) return KNOWN_DOC_TYPES[2];
     if (/valid id/i.test(lower) && /parent/i.test(lower)) return KNOWN_DOC_TYPES[3];
     if (/clearance/i.test(lower)) return KNOWN_DOC_TYPES[4];
@@ -198,4 +236,4 @@ function guessDocumentType(originalName) {
     return KNOWN_DOC_TYPES[7];
 }
 
-module.exports = { listStudentDocuments, uploadStudentDocument };
+module.exports = { listStudentDocuments, uploadStudentDocument, missingRequiredApplicationDocuments };

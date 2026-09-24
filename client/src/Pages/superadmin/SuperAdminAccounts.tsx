@@ -5,6 +5,7 @@ import StatusBadge from "../../components/StatusBadge";
 import { api } from "../../lib/api";
 // Same barangay list the student sign-up / Application flow uses.
 import { BARANGAYS } from "../../data/barangays";
+import ConfirmDialog from "../../components/ConfirmDialog";
 
 type AccountStatus = "pending" | "approved" | "rejected";
 type AccountType = "city" | "barangay";
@@ -58,6 +59,7 @@ function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }
   const [notes, setNotes] = useState(account.reviewNotes ?? "");
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
+  const [confirmDecision, setConfirmDecision] = useState<"approved" | "rejected" | null>(null);
   // Barangay assignment edit — usable for every status so the Super Admin
   // can fix accounts created without one or reassign a transferred official.
   const [editBarangay, setEditBarangay] = useState(
@@ -117,6 +119,7 @@ function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }
   };
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/50"
@@ -288,7 +291,7 @@ function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }
                   Cancel
                 </button>
                 <button
-                  onClick={handleReject}
+                  onClick={() => setConfirmDecision("rejected")}
                   disabled={saving}
                   className="px-4 py-2 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                   style={{ backgroundColor: "#dc2626" }}
@@ -296,7 +299,7 @@ function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }
                   {saving ? "Rejecting…" : "Reject Account"}
                 </button>
                 <button
-                  onClick={handleApprove}
+                  onClick={() => setConfirmDecision("approved")}
                   disabled={saving}
                   className="px-4 py-2 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                   style={{ backgroundColor: "#16a34a" }}
@@ -322,6 +325,17 @@ function ReviewModal({ account, onClose, onApprove, onReject, onBarangayChange }
         </div>
       </div>
     </div>
+      <ConfirmDialog
+        open={confirmDecision !== null}
+        title={confirmDecision === "approved" ? "Approve account?" : "Reject account?"}
+        message={confirmDecision === "approved" ? "Do you want to approve this account?" : "Do you want to reject this account? The reviewer notes will be saved."}
+        confirmLabel={confirmDecision === "approved" ? "Approve" : "Reject"}
+        danger={confirmDecision === "rejected"}
+        loading={saving}
+        onCancel={() => setConfirmDecision(null)}
+        onConfirm={() => { if (confirmDecision === "approved") return handleApprove(); if (confirmDecision === "rejected") return handleReject(); }}
+      />
+    </>
   );
 }
 

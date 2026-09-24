@@ -9,12 +9,18 @@ const applicationSchema = new mongoose.Schema({
     // field — the draft is created empty and populated later.
     program: { type: String, trim: true, default: "" },
     school: { type: String, trim: true, default: "" },
+    // Canonical source copied from User.university when the student creates,
+    // saves, or submits an application. `school` remains as a compatibility
+    // alias for existing views and historical records.
+    university: { type: String, trim: true, default: "" },
     applicant: {
         dateOfBirth: String,
         sex: String,
         civilStatus: String,
         mobileNumber: String,
         address: String,
+        houseNo: { type: String, trim: true },
+        streetName: { type: String, trim: true },
         // DEPRECATED (kept for historical reads only): `nationality`, `city`
         // and `zipCode` were removed from the Application form. The server no
         // longer writes them (see stripRemovedApplicantFields in
@@ -33,14 +39,14 @@ const applicationSchema = new mongoose.Schema({
         academicTerm: String,
         gwa: String,
         unitsEnrolled: String,
+        // Historical data only. New requests are filtered by
+        // studentApplicationController so old applications still load.
+        strand: String,
         schoolAddress: String,
         schoolType: String,
         schoolYear: String,
-        // Home address captured on the student Application form. `address` is
-        // the street name (labelled "Address (Street Name)" on the form) and
-        // `lotNo` is the lot number. Both are required at submission time —
-        // enforced in studentApplicationController so in-progress drafts may
-        // still be incomplete (same rule as program / school).
+        // Historical lot number, retained so old applications still load.
+        // Current submissions store the full address in `address`.
         lotNo: String
     },
     // "additional_requirements" is set by the City Office (PATCH
@@ -48,9 +54,12 @@ const applicationSchema = new mongoose.Schema({
     // replace documents before the application can be processed.
     status: {
         type: String,
-        enum: ["draft", "submitted", "under_review", "additional_requirements", "approved", "rejected", "renewal"],
+        enum: ["draft", "submitted", "barangay_approved", "barangay_rejected", "under_review", "additional_requirements", "approved", "rejected", "renewal"],
         default: "draft"
     },
+    decision: { type: String, enum: ["barangay_approved", "barangay_rejected", "approved", "rejected", "additional_requirements"], default: null },
+    rejectionReason: { type: String, trim: true, maxlength: 500, default: "" },
+    barangayDecision: { type: String, enum: ["approved", "rejected"], default: null },
     remarks: { type: String, trim: true, default: "" },
     submittedAt: Date,
     // Decision trail written by the City Office review endpoint. Kept on the

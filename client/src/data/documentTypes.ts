@@ -17,7 +17,7 @@ export interface DocumentTypeSlot {
 // Status), so those uploads are no longer required or listed anywhere.
 export const APPLICATION_DOCUMENT_TYPES: DocumentTypeSlot[] = [
   { key: 'Certificate of Matriculation', label: 'Certificate of Matriculation', required: true },
-  { key: 'Report Card (Grade 12)', label: 'Grade 12 Report Card', required: true },
+  { key: 'Report Card', label: 'Latest Report Card', required: true },
   { key: 'School ID (Current)', label: 'Current School ID', required: true },
   { key: 'Parent Valid ID', label: "Parent's Valid ID", required: true },
 ];

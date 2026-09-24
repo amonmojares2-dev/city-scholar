@@ -1,5 +1,6 @@
 const Document = require("../models/Document");
 const Application = require("../models/Application");
+const User = require("../models/User");
 const fs = require("fs");
 const { resolveStoredFile, removeStoredFileByFilename } = require("../config/storage");
 const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES, BARANGAY_ADMIN_ROLES } = require("../utils/validation");
@@ -75,8 +76,12 @@ const serveDocumentFile = async(req, res, next) => {
         if (!document) return res.status(404).json({ success: false, message: "Document not found" });
 
         const isOwner = document.student && document.student.toString() === req.user.id;
-        const isStaff = [...CITY_ADMIN_ROLES, ...BARANGAY_ADMIN_ROLES, ...SUPER_ADMIN_ROLES].includes(req.user.role);
-        if (!isOwner && !isStaff) {
+        const application = await Application.findById(document.application).select("barangay student");
+        const owner = application?.student ? await User.findById(application.student).select("barangay").lean() : null;
+        const isBarangayReviewer = [...BARANGAY_ADMIN_ROLES].includes(req.user.role) &&
+            [application?.barangay, owner?.barangay].some(value => value && String(value) === String(req.user.barangay?._id || req.user.barangay));
+        const isStaff = [...CITY_ADMIN_ROLES, ...SUPER_ADMIN_ROLES].includes(req.user.role);
+        if (!isOwner && !isBarangayReviewer && !isStaff) {
             return res.status(403).json({ success: false, message: "Access denied" });
         }
 
@@ -85,6 +90,10 @@ const serveDocumentFile = async(req, res, next) => {
             return res.status(404).json({ success: false, message: "File not found on the server." });
         }
 
+        // Fetch and display through an authenticated Blob URL; a raw URL
+        // would require putting the JWT in the query string.
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Cache-Control", "private, no-store");
         res.setHeader("Content-Type", document.mimeType || "application/octet-stream");
         // Display the human-readable name, not the hashed stored name.
         res.setHeader("Content-Disposition", `inline; filename="${String(document.originalName || "file").replace(/"/g, "")}"`);

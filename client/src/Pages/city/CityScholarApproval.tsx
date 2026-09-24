@@ -43,6 +43,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
+import ConfirmDialog from '../../components/ConfirmDialog';
 
 type ApprovalStatus = 'pending' | 'approved' | 'rejected';
 
@@ -89,6 +90,7 @@ export default function CityScholarApproval() {
   const [accounts, setAccounts] = useState<ScholarAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [confirmDecision, setConfirmDecision] = useState<'approved' | 'rejected' | null>(null);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<'all' | ApprovalStatus>('all');
   const [search, setSearch] = useState('');
@@ -396,7 +398,7 @@ export default function CityScholarApproval() {
               {selected.status === 'pending' ? (
                 <div className="flex gap-3">
                   <button
-                    onClick={() => applyDecision('rejected')}
+                    onClick={() => setConfirmDecision('rejected')}
                     disabled={saving}
                     className="flex-1 py-2.5 flex items-center justify-center gap-2 border border-[#DC2626] text-[#DC2626] rounded-xl text-sm font-600 hover:bg-red-50 transition-colors disabled:opacity-50"
                     style={{ fontWeight: 600 }}
@@ -404,7 +406,7 @@ export default function CityScholarApproval() {
                     <Icon name="x-circle" size={15} /> {saving ? 'Saving…' : 'Reject'}
                   </button>
                   <button
-                    onClick={() => applyDecision('approved')}
+                    onClick={() => setConfirmDecision('approved')}
                     disabled={saving}
                     className="flex-1 py-2.5 flex items-center justify-center gap-2 bg-[#22A06B] text-white rounded-xl text-sm font-700 hover:bg-green-700 transition-colors disabled:opacity-50"
                     style={{ fontWeight: 700 }}
@@ -432,6 +434,16 @@ export default function CityScholarApproval() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDecision !== null}
+        title={confirmDecision === 'approved' ? 'Approve scholar?' : 'Reject scholar?'}
+        message={confirmDecision === 'approved' ? 'Do you want to confirm this student as an existing scholar and unlock Renewal?' : 'Do you want to reject this student and move the account back to New Applicant access?'}
+        confirmLabel={confirmDecision === 'approved' ? 'Approve' : 'Reject'}
+        danger={confirmDecision === 'rejected'}
+        loading={saving}
+        onCancel={() => setConfirmDecision(null)}
+        onConfirm={() => { const decision = confirmDecision; return decision ? applyDecision(decision).finally(() => setConfirmDecision(null)) : undefined; }}
+      />
     </div>
   );
 }
