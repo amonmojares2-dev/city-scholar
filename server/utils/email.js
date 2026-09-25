@@ -1,4 +1,4 @@
-const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 
 class EmailDeliveryError extends Error {
     constructor(message = "Unable to send verification email.") {
@@ -8,14 +8,16 @@ class EmailDeliveryError extends Error {
 }
 
 function getEmailConfiguration() {
-    const apiKey = String(process.env.RESEND_API_KEY || "").trim();
-    const from = String(process.env.EMAIL_FROM || "").trim();
+    const user = String(process.env.EMAIL_USER || "").trim();
+    const password = String(process.env.EMAIL_PASSWORD || "").trim();
+    const from =
+        String(process.env.EMAIL_FROM || "").trim() || user;
 
-    if (!apiKey || !from) {
+    if (!user || !password) {
         throw new EmailDeliveryError();
     }
 
-    return { apiKey, from };
+    return { user, password, from };
 }
 
 function getProviderErrorDetails(error) {
@@ -29,10 +31,10 @@ function getProviderErrorDetails(error) {
         "Email provider request failed.";
 
     // Provider errors are logged without the full request object. Redact the
-    // configured key defensively in case a client includes it in an error.
-    const apiKey = String(process.env.RESEND_API_KEY || "").trim();
-    const redact = (value) => apiKey ?
-        value.split(apiKey).join("[REDACTED]") :
+    // configured password defensively in case a client includes it in an error.
+    const password = String(process.env.EMAIL_PASSWORD || "").trim();
+    const redact = (value) => password ?
+        value.split(password).join("[REDACTED]") :
         value;
 
     return {
@@ -43,11 +45,14 @@ function getProviderErrorDetails(error) {
 
 async function sendOtpEmail(email, otp) {
     const recipient = String(email || "").trim().toLowerCase();
-    const { apiKey, from } = getEmailConfiguration();
+    const { user, password, from } = getEmailConfiguration();
 
     try {
-        const resend = new Resend(apiKey);
-        const { data, error } = await resend.emails.send({
+        const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: { user, pass: password }
+        });
+        const result = await transporter.sendMail({
         from: from,
         to: [recipient],
         subject: "City Scholar - Email Verification Code",
@@ -143,16 +148,8 @@ If you did not request this verification code, you can ignore this email.
         `
     });
 
-            if (error) {
-                console.error(
-                    "OTP email delivery failed:",
-                    getProviderErrorDetails(error)
-                );
-                throw new EmailDeliveryError();
-            }
-
             console.log(`OTP email sent successfully to ${recipient}`);
-            return data;
+            return result;
         } catch (error) {
             if (error instanceof EmailDeliveryError) {
                 throw error;

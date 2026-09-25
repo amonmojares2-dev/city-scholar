@@ -1,29 +1,32 @@
-jest.mock("resend", () => ({
-    Resend: jest.fn()
+jest.mock("nodemailer", () => ({
+    createTransport: jest.fn()
 }));
 
-const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 const {
     EmailDeliveryError,
     sendOtpEmail
 } = require("../utils/email");
 
 
-describe("Resend OTP email delivery", () => {
-    const originalApiKey = process.env.RESEND_API_KEY;
+describe("Gmail SMTP OTP email delivery", () => {
+    const originalUser = process.env.EMAIL_USER;
+    const originalPassword = process.env.EMAIL_PASSWORD;
     const originalFrom = process.env.EMAIL_FROM;
-    const send = jest.fn();
+    const sendMail = jest.fn();
     const log = jest.spyOn(console, "log").mockImplementation(() => {});
     const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
 
     beforeEach(() => {
         jest.clearAllMocks();
-        process.env.RESEND_API_KEY = "re_test_secret";
-        process.env.EMAIL_FROM = "City Scholar <otp@verified.example>";
-        Resend.mockImplementation(() => ({ emails: { send } }));
-        send.mockResolvedValue({
-            data: { id: "email_123" },
-            error: null
+        process.env.EMAIL_USER = "sender@gmail.com";
+        process.env.EMAIL_PASSWORD = "gmail_app_password";
+        process.env.EMAIL_FROM = "City Scholar <sender@gmail.com>";
+        nodemailer.createTransport.mockReturnValue({
+            sendMail
+        });
+        sendMail.mockResolvedValue({
+            messageId: "message_123"
         });
     });
 
@@ -31,10 +34,16 @@ describe("Resend OTP email delivery", () => {
         log.mockRestore();
         errorLog.mockRestore();
 
-        if (originalApiKey === undefined) {
-            delete process.env.RESEND_API_KEY;
+        if (originalUser === undefined) {
+            delete process.env.EMAIL_USER;
         } else {
-            process.env.RESEND_API_KEY = originalApiKey;
+            process.env.EMAIL_USER = originalUser;
+        }
+
+        if (originalPassword === undefined) {
+            delete process.env.EMAIL_PASSWORD;
+        } else {
+            process.env.EMAIL_PASSWORD = originalPassword;
         }
 
         if (originalFrom === undefined) {
@@ -44,45 +53,62 @@ describe("Resend OTP email delivery", () => {
         }
     });
 
-    it("sends the OTP through the Resend HTTP API", async() => {
+    it("sends the OTP to any address through Gmail SMTP", async() => {
         const result = await sendOtpEmail(" Student@Example.EDU ", "123456");
 
-        expect(Resend).toHaveBeenCalledWith("re_test_secret");
-        expect(send).toHaveBeenCalledWith(expect.objectContaining({
-            from: "City Scholar <otp@verified.example>",
+        expect(nodemailer.createTransport).toHaveBeenCalledWith({
+            service: "gmail",
+            auth: {
+                user: "sender@gmail.com",
+                pass: "gmail_app_password"
+            }
+        });
+        expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+            from: "City Scholar <sender@gmail.com>",
             to: ["student@example.edu"],
             subject: "City Scholar - Email Verification Code",
             text: expect.stringContaining("123456"),
             html: expect.stringContaining("123456")
         }));
-        expect(result).toEqual({ id: "email_123" });
+        expect(result).toEqual({ messageId: "message_123" });
     });
 
-    it("requires both Resend environment variables", async() => {
-        delete process.env.RESEND_API_KEY;
+    it.each([
+        ["EMAIL_USER", "EMAIL_PASSWORD"],
+        ["EMAIL_PASSWORD", "EMAIL_USER"]
+    ])("requires %s", async(missingVariable, presentVariable) => {
+        process.env[presentVariable] = presentVariable === "EMAIL_USER" ?
+            "sender@gmail.com" :
+            "gmail_app_password";
+        delete process.env[missingVariable];
 
         await expect(sendOtpEmail("student@example.edu", "123456"))
             .rejects.toBeInstanceOf(EmailDeliveryError);
-        expect(Resend).not.toHaveBeenCalled();
-        expect(send).not.toHaveBeenCalled();
-
-        process.env.RESEND_API_KEY = "re_test_secret";
-        delete process.env.EMAIL_FROM;
-
-        await expect(sendOtpEmail("student@example.edu", "123456"))
-            .rejects.toBeInstanceOf(EmailDeliveryError);
-        expect(Resend).not.toHaveBeenCalled();
-        expect(send).not.toHaveBeenCalled();
+        expect(nodemailer.createTransport).not.toHaveBeenCalled();
+        expect(sendMail).not.toHaveBeenCalled();
     });
 
-    it("converts a provider response error into a safe delivery error", async() => {
-        send.mockResolvedValue({
-            data: null,
-            error: {
-                name: "validation_error",
-                message: "Invalid sender re_test_secret"
+    it.each([undefined, "   "])(
+        "uses EMAIL_USER as the sender when EMAIL_FROM is %p",
+        async(emptyFrom) => {
+            if (emptyFrom === undefined) {
+                delete process.env.EMAIL_FROM;
+            } else {
+                process.env.EMAIL_FROM = emptyFrom;
             }
-        });
+
+            await sendOtpEmail("student@example.edu", "123456");
+
+            expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+                from: "sender@gmail.com"
+            }));
+        }
+    );
+
+    it("converts an SMTP error into a safe delivery error", async() => {
+        sendMail.mockRejectedValue(
+            new Error("SMTP password gmail_app_password was rejected")
+        );
 
         await expect(sendOtpEmail("student@example.edu", "123456"))
             .rejects.toMatchObject({
@@ -90,24 +116,10 @@ describe("Resend OTP email delivery", () => {
                 message: "Unable to send verification email."
             });
         expect(errorLog).toHaveBeenCalledWith(
-            "OTP email delivery failed:",
-            {
-                name: "validation_error",
-                message: "Invalid sender [REDACTED]"
-            }
-        );
-    });
-
-    it("converts a thrown API request error into a safe delivery error", async() => {
-        send.mockRejectedValue(new Error("network unavailable"));
-
-        await expect(sendOtpEmail("student@example.edu", "123456"))
-            .rejects.toBeInstanceOf(EmailDeliveryError);
-        expect(errorLog).toHaveBeenCalledWith(
             "OTP email delivery request failed:",
             {
                 name: "Error",
-                message: "network unavailable"
+                message: "SMTP password [REDACTED] was rejected"
             }
         );
     });
