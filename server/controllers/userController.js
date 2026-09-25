@@ -14,7 +14,7 @@ const {
     normalizeName,
     EMAIL_PATTERN
 } = require("../utils/validation");
-const { sendOtpEmail } = require("../utils/email");
+const { sendOtpEmail, EmailDeliveryError } = require("../utils/email");
 const { logAudit } = require("../utils/audit");
 
 const OTP_TTL_MS = 30 * 1000; // 30 seconds - for registration / password reset
@@ -266,7 +266,9 @@ const registerUser = async(req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Server error during registration"
+            message: error instanceof EmailDeliveryError ?
+                "Unable to send verification code. Please try again." :
+                "Server error during registration"
         });
     }
 };
@@ -494,7 +496,9 @@ const loginUser = async(req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Server error during login"
+            message: error instanceof EmailDeliveryError ?
+                "Unable to send verification code. Please try again." :
+                "Server error during login"
         });
     }
 };
@@ -566,7 +570,7 @@ const requestPasswordReset = async(req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Unable to send the password-reset code."
+            message: "Unable to send the password-reset code. Please try again."
         });
     }
 };
@@ -661,7 +665,9 @@ const setInitialPassword = async(req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Unable to save your new password."
+            message: error instanceof EmailDeliveryError ?
+                "Unable to send verification code. Please try again." :
+                "Unable to save your new password."
         });
     }
 };
@@ -972,7 +978,7 @@ const resendOtp = async(req, res) => {
 
         return res.status(500).json({
             success: false,
-            message: "Unable to send a new verification code."
+            message: "Unable to send a new verification code. Please try again."
         });
     }
 };

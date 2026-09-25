@@ -1,34 +1,53 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
-function getTransporter() {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-        throw new Error("Gmail SMTP is not configured");
+class EmailDeliveryError extends Error {
+    constructor(message = "Unable to send verification email.") {
+        super(message);
+        this.name = "EmailDeliveryError";
+    }
+}
+
+function getEmailConfiguration() {
+    const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+    const from = String(process.env.EMAIL_FROM || "").trim();
+
+    if (!apiKey || !from) {
+        throw new EmailDeliveryError();
     }
 
-    return nodemailer.createTransport({
-        host: "smtp.gmail.com",
-        port: 587,
-        secure: false,
-        requireTLS: true,
-        auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASSWORD
-        }
-    });
+    return { apiKey, from };
+}
+
+function getProviderErrorDetails(error) {
+    if (!error) {
+        return "Email provider returned an unknown error.";
+    }
+
+    const rawName = typeof error.name === "string" ? error.name : "Error";
+    const rawMessage = typeof error.message === "string" ?
+        error.message :
+        "Email provider request failed.";
+
+    // Provider errors are logged without the full request object. Redact the
+    // configured key defensively in case a client includes it in an error.
+    const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+    const redact = (value) => apiKey ?
+        value.split(apiKey).join("[REDACTED]") :
+        value;
+
+    return {
+        name: redact(rawName),
+        message: redact(rawMessage)
+    };
 }
 
 async function sendOtpEmail(email, otp) {
     const recipient = String(email || "").trim().toLowerCase();
+    const { apiKey, from } = getEmailConfiguration();
 
-    if (!recipient.endsWith("@gmail.com")) {
-        throw new Error("OTP emails can only be sent to Gmail addresses");
-    }
-
-    const from =
-        process.env.EMAIL_FROM ||
-        `City Scholar <${process.env.EMAIL_USER}>`;
-
-    const result = await getTransporter().sendMail({
+    try {
+        const resend = new Resend(apiKey);
+        const { data, error } = await resend.emails.send({
         from: from,
         to: [recipient],
         subject: "City Scholar - Email Verification Code",
@@ -38,7 +57,7 @@ City Scholarship Management System
 
 Your verification code is: ${otp}
 
-This code will expire in 5 minutes.
+This code will expire shortly.
 
 If you did not request this verification code, you can ignore this email.
         `.trim(),
@@ -98,8 +117,8 @@ If you did not request this verification code, you can ignore this email.
         </div>
 
         <p>
-            This verification code will expire in
-            <strong>5 minutes</strong>.
+            This verification code will
+            <strong>expire shortly</strong>.
         </p>
 
         <p>
@@ -124,13 +143,30 @@ If you did not request this verification code, you can ignore this email.
         `
     });
 
-    console.log(
-        `OTP email sent successfully to ${recipient}`
-    );
+            if (error) {
+                console.error(
+                    "OTP email delivery failed:",
+                    getProviderErrorDetails(error)
+                );
+                throw new EmailDeliveryError();
+            }
 
-    return result;
+            console.log(`OTP email sent successfully to ${recipient}`);
+            return data;
+        } catch (error) {
+            if (error instanceof EmailDeliveryError) {
+                throw error;
+            }
+
+            console.error(
+                "OTP email delivery request failed:",
+                getProviderErrorDetails(error)
+            );
+            throw new EmailDeliveryError();
+        }
 }
 
 module.exports = {
+    EmailDeliveryError,
     sendOtpEmail
 };
