@@ -1,32 +1,31 @@
-jest.mock("nodemailer", () => ({
-    createTransport: jest.fn()
+jest.mock("@getbrevo/brevo", () => ({
+    BrevoClient: jest.fn()
 }));
 
-const nodemailer = require("nodemailer");
+const { BrevoClient } = require("@getbrevo/brevo");
 const {
     EmailDeliveryError,
     sendOtpEmail
 } = require("../utils/email");
 
-
-describe("Gmail SMTP OTP email delivery", () => {
-    const originalUser = process.env.EMAIL_USER;
-    const originalPassword = process.env.EMAIL_PASSWORD;
+describe("Brevo HTTPS OTP email delivery", () => {
+    const originalApiKey = process.env.BREVO_API_KEY;
     const originalFrom = process.env.EMAIL_FROM;
-    const sendMail = jest.fn();
+    const sendTransacEmail = jest.fn();
     const log = jest.spyOn(console, "log").mockImplementation(() => {});
     const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
 
     beforeEach(() => {
         jest.clearAllMocks();
-        process.env.EMAIL_USER = "sender@gmail.com";
-        process.env.EMAIL_PASSWORD = "gmail_app_password";
-        process.env.EMAIL_FROM = "City Scholar <sender@gmail.com>";
-        nodemailer.createTransport.mockReturnValue({
-            sendMail
-        });
-        sendMail.mockResolvedValue({
-            messageId: "message_123"
+        process.env.BREVO_API_KEY = "brevo_test_key";
+        process.env.EMAIL_FROM = "City Scholar <sender@example.com>";
+        BrevoClient.mockImplementation(() => ({
+            transactionalEmails: {
+                sendTransacEmail
+            }
+        }));
+        sendTransacEmail.mockResolvedValue({
+            data: { messageId: "message_123" }
         });
     });
 
@@ -34,16 +33,10 @@ describe("Gmail SMTP OTP email delivery", () => {
         log.mockRestore();
         errorLog.mockRestore();
 
-        if (originalUser === undefined) {
-            delete process.env.EMAIL_USER;
+        if (originalApiKey === undefined) {
+            delete process.env.BREVO_API_KEY;
         } else {
-            process.env.EMAIL_USER = originalUser;
-        }
-
-        if (originalPassword === undefined) {
-            delete process.env.EMAIL_PASSWORD;
-        } else {
-            process.env.EMAIL_PASSWORD = originalPassword;
+            process.env.BREVO_API_KEY = originalApiKey;
         }
 
         if (originalFrom === undefined) {
@@ -53,65 +46,52 @@ describe("Gmail SMTP OTP email delivery", () => {
         }
     });
 
-    it("sends the OTP to any address through Gmail SMTP", async() => {
+    it("sends the OTP to any address through the Brevo HTTPS API", async() => {
         const result = await sendOtpEmail(" Student@Example.EDU ", "123456");
 
-        expect(nodemailer.createTransport).toHaveBeenCalledWith({
-            host: "smtp.gmail.com",
-            port: 465,
-            secure: true,
-            auth: {
-                user: "sender@gmail.com",
-                pass: "gmail_app_password"
-            },
-            family: 4
+        expect(BrevoClient).toHaveBeenCalledWith({
+            apiKey: "brevo_test_key"
         });
-        expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
-            from: "City Scholar <sender@gmail.com>",
-            to: ["student@example.edu"],
+        expect(sendTransacEmail).toHaveBeenCalledWith({
+            sender: {
+                name: "City Scholar",
+                email: "sender@example.com"
+            },
+            to: [{ email: "student@example.edu" }],
             subject: "City Scholar - Email Verification Code",
-            text: expect.stringContaining("123456"),
-            html: expect.stringContaining("123456")
-        }));
-        expect(result).toEqual({ messageId: "message_123" });
+            textContent: expect.stringContaining("123456"),
+            htmlContent: expect.stringContaining("123456")
+        });
+        expect(result).toEqual({ data: { messageId: "message_123" } });
     });
 
-    it.each([
-        ["EMAIL_USER", "EMAIL_PASSWORD"],
-        ["EMAIL_PASSWORD", "EMAIL_USER"]
-    ])("requires %s", async(missingVariable, presentVariable) => {
-        process.env[presentVariable] = presentVariable === "EMAIL_USER" ?
-            "sender@gmail.com" :
-            "gmail_app_password";
-        delete process.env[missingVariable];
+    it("accepts a sender address without a display name", async() => {
+        process.env.EMAIL_FROM = "sender@example.com";
+
+        await sendOtpEmail("student@example.edu", "123456");
+
+        expect(sendTransacEmail).toHaveBeenCalledWith(expect.objectContaining({
+            sender: {
+                name: "City Scholar",
+                email: "sender@example.com"
+            }
+        }));
+    });
+
+    it.each(["BREVO_API_KEY", "EMAIL_FROM"])("requires %s", async(variable) => {
+        delete process.env[variable];
 
         await expect(sendOtpEmail("student@example.edu", "123456"))
             .rejects.toBeInstanceOf(EmailDeliveryError);
-        expect(nodemailer.createTransport).not.toHaveBeenCalled();
-        expect(sendMail).not.toHaveBeenCalled();
+        expect(BrevoClient).not.toHaveBeenCalled();
+        expect(sendTransacEmail).not.toHaveBeenCalled();
     });
 
-    it.each([undefined, "   "])(
-        "uses EMAIL_USER as the sender when EMAIL_FROM is %p",
-        async(emptyFrom) => {
-            if (emptyFrom === undefined) {
-                delete process.env.EMAIL_FROM;
-            } else {
-                process.env.EMAIL_FROM = emptyFrom;
-            }
-
-            await sendOtpEmail("student@example.edu", "123456");
-
-            expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
-                from: "sender@gmail.com"
-            }));
-        }
-    );
-
-    it("converts an SMTP error into a safe delivery error", async() => {
-        sendMail.mockRejectedValue(
-            new Error("SMTP password gmail_app_password was rejected")
-        );
+    it("logs the Brevo HTTP status and response message", async() => {
+        const apiError = new Error("Request failed");
+        apiError.statusCode = 400;
+        apiError.body = { message: "Invalid sender address" };
+        sendTransacEmail.mockRejectedValue(apiError);
 
         await expect(sendOtpEmail("student@example.edu", "123456"))
             .rejects.toMatchObject({
@@ -122,7 +102,8 @@ describe("Gmail SMTP OTP email delivery", () => {
             "OTP email delivery request failed:",
             {
                 name: "Error",
-                message: "SMTP password [REDACTED] was rejected"
+                message: "Invalid sender address",
+                statusCode: 400
             }
         );
     });

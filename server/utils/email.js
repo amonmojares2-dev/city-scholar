@@ -1,4 +1,4 @@
-const nodemailer = require("nodemailer");
+const { BrevoClient } = require("@getbrevo/brevo");
 
 class EmailDeliveryError extends Error {
     constructor(message = "Unable to send verification email.") {
@@ -8,16 +8,33 @@ class EmailDeliveryError extends Error {
 }
 
 function getEmailConfiguration() {
-    const user = String(process.env.EMAIL_USER || "").trim();
-    const password = String(process.env.EMAIL_PASSWORD || "").trim();
-    const from =
-        String(process.env.EMAIL_FROM || "").trim() || user;
+    const apiKey = String(process.env.BREVO_API_KEY || "").trim();
+    const emailFrom = String(process.env.EMAIL_FROM || "").trim();
 
-    if (!user || !password) {
+    if (!apiKey || !emailFrom) {
         throw new EmailDeliveryError();
     }
 
-    return { user, password, from };
+    return {
+        apiKey,
+        sender: parseSender(emailFrom)
+    };
+}
+
+function parseSender(value) {
+    const namedSender = String(value || "").match(/^\s*(.*?)\s*<([^<>]+)>\s*$/);
+
+    if (namedSender) {
+        return {
+            name: namedSender[1].trim() || "City Scholar",
+            email: namedSender[2].trim()
+        };
+    }
+
+    return {
+        name: "City Scholar",
+        email: String(value || "").trim()
+    };
 }
 
 function getProviderErrorDetails(error) {
@@ -30,37 +47,31 @@ function getProviderErrorDetails(error) {
         error.message :
         "Email provider request failed.";
 
-    // Provider errors are logged without the full request object. Redact the
-    // configured password defensively in case a client includes it in an error.
-    const password = String(process.env.EMAIL_PASSWORD || "").trim();
-    const redact = (value) => password ?
-        value.split(password).join("[REDACTED]") :
-        value;
+    const responseBody = error?.body || error?.response?.body;
+    const statusCode = error?.statusCode ||
+        error?.response?.status ||
+        error?.rawResponse?.status;
 
     return {
-        name: redact(rawName),
-        message: redact(rawMessage)
+        name: rawName,
+        message: responseBody?.message ||
+            responseBody?.error?.message ||
+            (typeof responseBody === "string" ? responseBody : rawMessage),
+        statusCode: statusCode || "unknown"
     };
 }
 
 async function sendOtpEmail(email, otp) {
     const recipient = String(email || "").trim().toLowerCase();
-    const { user, password, from } = getEmailConfiguration();
+    const { apiKey, sender } = getEmailConfiguration();
 
     try {
-        const transporter = nodemailer.createTransport({
-            host: "smtp.gmail.com",
-            port: 465,
-            secure: true,
-            auth: { user, pass: password },
-            family: 4
-        });
-        const result = await transporter.sendMail({
-        from: from,
-        to: [recipient],
+        const brevo = new BrevoClient({ apiKey });
+        const result = await brevo.transactionalEmails.sendTransacEmail({
+        sender,
+        to: [{ email: recipient }],
         subject: "City Scholar - Email Verification Code",
-
-        text: `
+        textContent: `
 City Scholarship Management System
 
 Your verification code is: ${otp}
@@ -70,7 +81,7 @@ This code will expire shortly.
 If you did not request this verification code, you can ignore this email.
         `.trim(),
 
-        html: `
+        htmlContent: `
 <!DOCTYPE html>
 <html>
 <head>
