@@ -57,11 +57,14 @@ describe("Gmail SMTP OTP email delivery", () => {
         const result = await sendOtpEmail(" Student@Example.EDU ", "123456");
 
         expect(nodemailer.createTransport).toHaveBeenCalledWith({
-            service: "gmail",
+            host: "smtp.gmail.com",
+            port: 465,
+            secure: true,
             auth: {
                 user: "sender@gmail.com",
                 pass: "gmail_app_password"
-            }
+            },
+            family: 4
         });
         expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
             from: "City Scholar <sender@gmail.com>",
