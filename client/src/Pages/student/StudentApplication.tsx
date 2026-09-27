@@ -5,6 +5,7 @@ import PageHeader from "../../components/PageHeader";
 import { ApiError, api, uploadWithProgress, validateDocumentFile } from "../../lib/api";
 import { isImageMime, friendlyErrorMessage } from "../../lib/docUrl";
 import { APPLICATION_DOCUMENT_TYPES } from "../../data/documentTypes";
+import { useDocumentSlots } from "../../lib/publicContent";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import UploadModal from "../../components/UploadModal";
 import { PrivateDocumentImage, PrivateFileLink } from "../../components/PrivateFile";
@@ -257,6 +258,14 @@ export default function StudentApplication() {
     const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
     const [university, setUniversity] = useState("");
 
+    // Document slots are owned by the City Office (City Office > Program
+    // Settings), so the uploaded docType always matches a configured slot. The
+    // static list is only a fallback for when the settings cannot be read.
+    const liveSlots = useDocumentSlots("application");
+    const docSlots = liveSlots.length
+        ? liveSlots.map(slot => ({ key: slot.key, label: slot.label || slot.key, required: slot.required !== false, note: slot.note || "" }))
+        : DOC_TYPES.map(slot => ({ ...slot, note: "" }));
+
     
 
     const refresh = useCallback(async () => {
@@ -391,7 +400,7 @@ export default function StudentApplication() {
     const gwaErr = serverErrors.gwa || validateGwa(form.gwa || "") || "";
     const unitsErr = serverErrors.unitsEnrolled || validateUnitsEnrolled(form.unitsEnrolled || "") || "";
 
-    const requiredDocs = DOC_TYPES.filter(d => d.required);
+    const requiredDocs = docSlots.filter(d => d.required);
     const missingRequiredDocs = requiredDocs.filter(d => !docs.some(doc => documentMatchesSlot(doc.type, d.key)));
     const submitted = app && app.status !== "draft";
 
@@ -833,7 +842,7 @@ function DocumentUploadButton({
                     </p>
 
                     <div className="space-y-3">
-                        {DOC_TYPES.map((d) => {
+                        {docSlots.map((d) => {
                             const existing = doc(d.key);
                             return (
                             <div
@@ -846,6 +855,7 @@ function DocumentUploadButton({
                                         <div>
                                             <p className="font-500 text-[#0B1F3A]" style={{ fontWeight: 500 }}>{d.label}</p>
                                             <p className="text-xs text-[#6B7280]">{d.required ? "Required" : "Optional"}</p>
+                                            {d.note && <p className="text-xs text-[#9CA3AF]">{d.note}</p>}
                                         </div>
                                     </div>
 
@@ -902,7 +912,7 @@ function DocumentUploadButton({
             </div>
 
             {openModalFor && (() => {
-                const slot = DOC_TYPES.find(documentType => documentType.key === openModalFor);
+                const slot = docSlots.find(documentType => documentType.key === openModalFor);
                 if (!slot) return null;
                 return (
                     <UploadModal

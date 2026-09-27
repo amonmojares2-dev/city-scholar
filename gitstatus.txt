@@ -1,0 +1,38 @@
+ M client/src/Pages/city/CitySystemSettings.tsx
+ M client/src/Pages/public/EligibilityPage.tsx
+ M client/src/Pages/public/GuidelinesPage.tsx
+ M client/src/Pages/public/HowToApplyPage.tsx
+ M client/src/Pages/student/StudentApplication.tsx
+ M client/src/Pages/student/StudentRenewal.tsx
+ M client/src/Pages/superadmin/SuperAdminProgramConfig.tsx
+ M client/src/components/Icon.tsx
+ M client/src/data/sidebarItems.tsx
+ M client/src/routes.tsx
+ M server/controllers/studentApplicationController.js
+ M server/controllers/studentDocController.js
+ M server/server.js
+?? check.log
+?? client/src/Pages/city/CityProgramSettings.tsx
+?? client/src/lib/publicContent.ts
+?? clientfiles.txt
+?? gitstatus.txt
+?? jestcheck.txt
+?? loadcheck.txt
+?? run-check.cmd
+?? run-test.cmd
+?? run-tsc.cmd
+?? server/config/cityProgramDefaults.js
+?? server/config/publicPageDefaults.js
+?? server/controllers/citySettingsController.js
+?? server/models/CityProgramSettings.js
+?? server/models/PublicPageContent.js
+?? server/routes/citySettingsRoutes.js
+?? server/routes/publicContentRoutes.js
+?? server/tests/citySettings.test.js
+?? server/utils/cityProgramSettings.js
+?? server/utils/publicPageContent.js
+?? test.log
+?? testlist.txt
+?? tmp-settings-check.js
+?? tsc.done
+?? tsc.log

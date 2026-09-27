@@ -1,77 +1,44 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState, useRef } from "react";
 import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
-import { api } from "../../lib/api";
 
-// ─── Types (match server superAdminController.serializeProgram) ───────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface ProgramDto {
+interface DocItem {
   id: string;
-  programName: string;
-  description: string;
-  academicYear: string;
-  semester: string;
-  minGwa: number;
-  requiredUnits: number;
-  grantAmount: number;
-  slotsAvailable: number;
-  applicationOpenAt: string | null;
-  applicationCloseAt: string | null;
-  requiredDocuments: string[];
-  eligibleSchools: string[];
-  active: boolean;
-  updatedAt: string;
+  name: string;
+  note: string;
+  enabled: boolean;
 }
 
-interface ProgramListResponse {
-  success: boolean;
-  programs: ProgramDto[];
-  academicYears: string[];
-  schools: { _id: string; name: string }[];
-  requiredDocumentOptions: string[];
-}
-
-interface ProgramForm {
-  id: string;
-  programName: string;
-  description: string;
-  academicYear: string;
-  semester: string;
-  minGwa: string;
-  requiredUnits: string;
-  grantAmount: string;
-  slotsAvailable: string;
-  openAt: string; // datetime-local value
-  closeAt: string;
-  requiredDocuments: string[];
-  eligibleSchools: string[];
+interface SemesterPeriod {
+  openDate: string;
+  closeDate: string;
+  ay: string;
   active: boolean;
 }
 
-const BLANK_FORM: ProgramForm = {
-  id: "",
-  programName: "",
-  description: "",
-  academicYear: "2025-2026",
-  semester: "1st Semester",
-  minGwa: "2.00",
-  requiredUnits: "15",
-  grantAmount: "5000",
-  slotsAvailable: "100",
-  openAt: "",
-  closeAt: "",
-  requiredDocuments: [],
-  eligibleSchools: [],
-  active: true,
-};
+// ─── Toggle Switch ─────────────────────────────────────────────────────────────
 
-interface SaveProgramResponse {
-  success: boolean;
-  message: string;
-  program: ProgramDto;
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:ring-offset-1"
+      style={{ backgroundColor: checked ? "#163A63" : "#D1D5DB" }}
+    >
+      <span
+        className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200"
+        style={{ transform: checked ? "translateX(16px)" : "translateX(0)" }}
+      />
+    </button>
+  );
 }
 
-const SEMESTERS = ["1st Semester", "2nd Semester", "Summer"];
+// ─── SavedBadge ────────────────────────────────────────────────────────────────
 
 function SavedBadge({ show }: { show: boolean }) {
   if (!show) return null;
@@ -83,402 +50,549 @@ function SavedBadge({ show }: { show: boolean }) {
   );
 }
 
-// ISO date -> datetime-local input value (yyyy-MM-ddTHH:mm, local time)
-function toInputValue(iso: string | null): string {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+// ─── Section wrapper ───────────────────────────────────────────────────────────
+
+function Section({ id, title, icon, children }: { id: string; title: string; icon: string; children: React.ReactNode }) {
+  return (
+    <section id={id} className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
+      <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
+        <span className="text-[#163A63]">
+          <Icon name={icon} size={18} />
+        </span>
+        <h2 className="font-600 text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>{title}</h2>
+      </div>
+      <div className="p-6">{children}</div>
+    </section>
+  );
 }
 
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "Not set";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "Not set";
-  return date.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
-}
+// ─── Label / Input helpers ─────────────────────────────────────────────────────
 
 function Label({ children }: { children: React.ReactNode }) {
-  return <label className="block text-sm text-[#374151] mb-1" style={{ fontWeight: 500 }}>{children}</label>;
+  return <label className="block text-sm font-500 text-[#374151] mb-1" style={{ fontWeight: 500 }}>{children}</label>;
 }
 
 function inputCls() {
   return "w-full rounded-lg border border-[#E5E7EB] bg-white px-3 py-2 text-sm text-[#0B1F3A] focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:border-[#163A63] transition";
 }
 
-function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+function SaveButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-[#163A63] focus:ring-offset-1 disabled:opacity-50"
-      style={{ backgroundColor: checked ? "#163A63" : "#D1D5DB" }}
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-600 text-white transition hover:opacity-90 active:scale-95"
+      style={{ backgroundColor: "#0B1F3A", fontWeight: 600 }}
     >
-      <span
-        className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200"
-        style={{ transform: checked ? "translateX(16px)" : "translateX(0)" }}
-      />
+      <Icon name="check" size={14} />
+      Save Changes
     </button>
   );
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
+// ─── Section 1 — Eligibility Criteria ─────────────────────────────────────────
+
+function EligibilitySection() {
+  const [residency, setResidency] = useState(2);
+  const [income, setIncome] = useState("below-5000");
+  const [maxAge, setMaxAge] = useState(30);
+  const [noOtherScholarship, setNoOtherScholarship] = useState(true);
+  const [accreditedSchool, setAccreditedSchool] = useState(true);
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  return (
+    <Section id="eligibility" title="Eligibility Criteria" icon="user-check">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div>
+          <Label>Minimum Residency (years)</Label>
+          <input
+            type="number"
+            min="0"
+            value={residency}
+            onChange={(e) => setResidency(Number(e.target.value))}
+            className={inputCls()}
+          />
+        </div>
+        <div>
+          <Label>Monthly Family Income Threshold</Label>
+          <select
+            value={income}
+            onChange={(e) => setIncome(e.target.value)}
+            className={inputCls()}
+          >
+            <option value="below-5000">Below ₱5,000</option>
+            <option value="5000-10000">₱5,000 – ₱10,000</option>
+            <option value="10001-15000">₱10,001 – ₱15,000</option>
+            <option value="15001-20000">₱15,001 – ₱20,000</option>
+          </select>
+        </div>
+        <div>
+          <Label>Maximum Age</Label>
+          <input
+            type="number"
+            min="1"
+            value={maxAge}
+            onChange={(e) => setMaxAge(Number(e.target.value))}
+            className={inputCls()}
+          />
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-3">
+        <div className="flex items-center justify-between rounded-lg border border-[#E5E7EB] px-4 py-3">
+          <span className="text-sm text-[#374151]">Must not be recipient of other government scholarship</span>
+          <Toggle checked={noOtherScholarship} onChange={setNoOtherScholarship} />
+        </div>
+        <div className="flex items-center justify-between rounded-lg border border-[#E5E7EB] px-4 py-3">
+          <span className="text-sm text-[#374151]">Must be enrolled in an accredited school</span>
+          <Toggle checked={accreditedSchool} onChange={setAccreditedSchool} />
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center gap-3">
+        <SaveButton onClick={handleSave} />
+        <SavedBadge show={saved} />
+      </div>
+    </Section>
+  );
+}
+
+// ─── Section 2 — Required Documents ──────────────────────────────────────────
+
+const DEFAULT_NEW_DOCS: DocItem[] = [
+  { id: "n1", name: "Certificate of Matriculation", note: "Stamped & dry sealed", enabled: true },
+  { id: "n2", name: "Student's Current School ID", note: "", enabled: true },
+  { id: "n3", name: "Parent's Valid ID", note: "", enabled: true },
+  { id: "n4", name: "Copy of Grades", note: "Official copy from school registrar", enabled: true },
+];
+
+const DEFAULT_RENEWAL_DOCS: DocItem[] = [
+  { id: "r1", name: "Copy of Grades", note: "Official copy from school registrar", enabled: true },
+  { id: "r2", name: "Certificate of Matriculation", note: "Stamped & dry sealed", enabled: true },
+];
+
+function DocRow({ doc, onToggle }: { doc: DocItem; onToggle: () => void }) {
+  return (
+    <div className="flex items-center gap-3 py-2.5 border-b border-[#E5E7EB] last:border-b-0">
+      <span className="text-[#163A63] flex-shrink-0">
+        <Icon name="file-text" size={16} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-500 text-[#0B1F3A]" style={{ fontWeight: 500 }}>{doc.name}</p>
+        {doc.note && <p className="text-xs text-[#6B7280] mt-0.5">{doc.note}</p>}
+      </div>
+      <Toggle checked={doc.enabled} onChange={onToggle} />
+    </div>
+  );
+}
+
+function DocumentsSection() {
+  const [activeTab, setActiveTab] = useState<"new" | "renewal">("new");
+  const [newDocs, setNewDocs] = useState<DocItem[]>(DEFAULT_NEW_DOCS);
+  const [renewalDocs, setRenewalDocs] = useState<DocItem[]>(DEFAULT_RENEWAL_DOCS);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newDocName, setNewDocName] = useState("");
+  const [newDocNote, setNewDocNote] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const docs = activeTab === "new" ? newDocs : renewalDocs;
+  const setDocs = activeTab === "new" ? setNewDocs : setRenewalDocs;
+
+  function toggleDoc(id: string) {
+    setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, enabled: !d.enabled } : d)));
+  }
+
+  function addDoc() {
+    if (!newDocName.trim()) return;
+    const id = `custom-${Date.now()}`;
+    setDocs((prev) => [...prev, { id, name: newDocName.trim(), note: newDocNote.trim(), enabled: true }]);
+    setNewDocName("");
+    setNewDocNote("");
+    setShowAddForm(false);
+  }
+
+  function handleSave() {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  return (
+    <Section id="documents" title="Required Documents" icon="clipboard">
+      {/* Sub-tabs */}
+      <div className="flex gap-1 mb-4 border-b border-[#E5E7EB]">
+        {(["new", "renewal"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => { setActiveTab(tab); setShowAddForm(false); }}
+            className="px-4 py-2 text-sm font-500 border-b-2 -mb-px transition"
+            style={{
+              fontWeight: 500,
+              borderBottomColor: activeTab === tab ? "#163A63" : "transparent",
+              color: activeTab === tab ? "#163A63" : "#6B7280",
+            }}
+          >
+            {tab === "new" ? "New Applicant" : "Renewal"}
+          </button>
+        ))}
+      </div>
+
+      {/* Doc list */}
+      <div className="rounded-lg border border-[#E5E7EB] px-4 divide-y divide-transparent">
+        {docs.map((doc) => (
+          <DocRow key={doc.id} doc={doc} onToggle={() => toggleDoc(doc.id)} />
+        ))}
+      </div>
+
+      {/* Add document inline form */}
+      {showAddForm ? (
+        <div className="mt-4 rounded-lg border border-[#D4A72C] bg-amber-50 p-4 space-y-3">
+          <p className="text-sm font-600 text-[#0B1F3A]" style={{ fontWeight: 600 }}>Add New Document</p>
+          <div>
+            <Label>Document Name</Label>
+            <input
+              type="text"
+              value={newDocName}
+              onChange={(e) => setNewDocName(e.target.value)}
+              placeholder="e.g. Barangay Clearance"
+              className={inputCls()}
+            />
+          </div>
+          <div>
+            <Label>Note / Description (optional)</Label>
+            <input
+              type="text"
+              value={newDocNote}
+              onChange={(e) => setNewDocNote(e.target.value)}
+              placeholder="e.g. Stamped & dry sealed"
+              className={inputCls()}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={addDoc}
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-600 text-white transition hover:opacity-90"
+              style={{ backgroundColor: "#163A63", fontWeight: 600 }}
+            >
+              <Icon name="plus" size={13} />
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddForm(false)}
+              className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-[#6B7280] border border-[#E5E7EB] hover:bg-[#F6F7F9] transition"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowAddForm(true)}
+          className="mt-3 inline-flex items-center gap-1.5 text-sm text-[#163A63] hover:underline"
+        >
+          <Icon name="plus" size={14} />
+          Add Document
+        </button>
+      )}
+
+      <div className="mt-5 flex items-center gap-3">
+        <SaveButton onClick={handleSave} />
+        <SavedBadge show={saved} />
+      </div>
+    </Section>
+  );
+}
+
+// ─── Section 3 — Application Periods ─────────────────────────────────────────
+
+function SemesterCard({
+  label,
+  value,
+  onChange,
+  onSave,
+  saved,
+}: {
+  label: string;
+  value: SemesterPeriod;
+  onChange: (v: SemesterPeriod) => void;
+  onSave: () => void;
+  saved: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-[#E5E7EB] p-5 flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-600 text-[#0B1F3A] text-sm" style={{ fontWeight: 600 }}>{label}</h3>
+        <Toggle checked={value.active} onChange={(v) => onChange({ ...value, active: v })} />
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <Label>Academic Year</Label>
+          <input
+            type="text"
+            value={value.ay}
+            onChange={(e) => onChange({ ...value, ay: e.target.value })}
+            placeholder="e.g. 2025–2026"
+            className={inputCls()}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Open Date</Label>
+            <input
+              type="date"
+              value={value.openDate}
+              onChange={(e) => onChange({ ...value, openDate: e.target.value })}
+              className={inputCls()}
+            />
+          </div>
+          <div>
+            <Label>Close Date</Label>
+            <input
+              type="date"
+              value={value.closeDate}
+              onChange={(e) => onChange({ ...value, closeDate: e.target.value })}
+              className={inputCls()}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <SaveButton onClick={onSave} />
+        <SavedBadge show={saved} />
+      </div>
+    </div>
+  );
+}
+
+function PeriodsSection() {
+  const [sem1, setSem1] = useState<SemesterPeriod>({
+    openDate: "2025-06-01",
+    closeDate: "2025-07-31",
+    ay: "2025–2026",
+    active: true,
+  });
+  const [sem2, setSem2] = useState<SemesterPeriod>({
+    openDate: "2025-11-01",
+    closeDate: "2025-12-31",
+    ay: "2025–2026",
+    active: false,
+  });
+  const [saved1, setSaved1] = useState(false);
+  const [saved2, setSaved2] = useState(false);
+
+  function save1() { setSaved1(true); setTimeout(() => setSaved1(false), 2500); }
+  function save2() { setSaved2(true); setTimeout(() => setSaved2(false), 2500); }
+
+  return (
+    <Section id="periods" title="Application Periods" icon="calendar">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <SemesterCard label="1st Semester" value={sem1} onChange={setSem1} onSave={save1} saved={saved1} />
+        <SemesterCard label="2nd Semester" value={sem2} onChange={setSem2} onSave={save2} saved={saved2} />
+      </div>
+    </Section>
+  );
+}
+
+// ─── Section 4 — Grant & Disbursement ─────────────────────────────────────────
+
+function DisbursementSection() {
+  const [stipend, setStipend] = useState(3000);
+  const [frequency, setFrequency] = useState("monthly");
+  const [paymentMethod, setPaymentMethod] = useState("bank-transfer");
+  const [maxScholars, setMaxScholars] = useState(500);
+  const [autoNotify, setAutoNotify] = useState(true);
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  return (
+    <Section id="disbursement" title="Grant & Disbursement" icon="award">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div>
+          <Label>Monthly Stipend Amount</Label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[#6B7280] pointer-events-none">₱</span>
+            <input
+              type="number"
+              min="0"
+              value={stipend}
+              onChange={(e) => setStipend(Number(e.target.value))}
+              className={`${inputCls()} pl-7`}
+            />
+          </div>
+        </div>
+
+        <div>
+          <Label>Disbursement Frequency</Label>
+          <select value={frequency} onChange={(e) => setFrequency(e.target.value)} className={inputCls()}>
+            <option value="monthly">Monthly</option>
+            <option value="per-semester">Per Semester</option>
+            <option value="annual">Annual</option>
+          </select>
+        </div>
+
+        <div>
+          <Label>Payment Method</Label>
+          <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className={inputCls()}>
+            <option value="cash-pickup">Cash Pickup</option>
+            <option value="bank-transfer">Bank Transfer</option>
+            <option value="gcash">GCash</option>
+          </select>
+        </div>
+
+        <div>
+          <Label>Max Scholars per Semester</Label>
+          <input
+            type="number"
+            min="1"
+            value={maxScholars}
+            onChange={(e) => setMaxScholars(Number(e.target.value))}
+            className={inputCls()}
+          />
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <div className="flex items-center justify-between rounded-lg border border-[#E5E7EB] px-4 py-3">
+          <div>
+            <p className="text-sm font-500 text-[#374151]" style={{ fontWeight: 500 }}>Auto-notify scholars on disbursement</p>
+            <p className="text-xs text-[#6B7280] mt-0.5">Send automatic SMS/email notification when stipend is released</p>
+          </div>
+          <Toggle checked={autoNotify} onChange={setAutoNotify} />
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center gap-3">
+        <SaveButton onClick={handleSave} />
+        <SavedBadge show={saved} />
+      </div>
+    </Section>
+  );
+}
+
+// ─── Nav items ────────────────────────────────────────────────────────────────
+
+const NAV_ITEMS = [
+  { id: "eligibility", label: "Eligibility Criteria", icon: "user-check" },
+  { id: "documents", label: "Required Documents", icon: "clipboard" },
+  { id: "periods", label: "Application Periods", icon: "calendar" },
+  { id: "disbursement", label: "Grant & Disbursement", icon: "award" },
+];
+
+// ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SuperAdminProgramConfig() {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [programs, setPrograms] = useState<ProgramDto[]>([]);
-  const [years, setYears] = useState<string[]>([]);
-  const [schoolOptions, setSchoolOptions] = useState<string[]>([]);
-  const [docOptions, setDocOptions] = useState<string[]>([]);
-  const [form, setForm] = useState<ProgramForm>(BLANK_FORM);
-  const [selectedId, setSelectedId] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [customDoc, setCustomDoc] = useState("");
+  const [activeSection, setActiveSection] = useState("eligibility");
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const data = await api<ProgramListResponse>("/super-admin/program");
-      setPrograms(data.programs || []);
-      setYears(data.academicYears || []);
-      setSchoolOptions((data.schools || []).map((s) => s.name));
-      setDocOptions(data.requiredDocumentOptions || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load the program configuration.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  function applyProgram(program: ProgramDto | null) {
-    if (!program) {
-      setForm(BLANK_FORM);
-      setSelectedId("");
-      return;
-    }
-    setSelectedId(program.id);
-    setForm({
-      id: program.id,
-      programName: program.programName,
-      description: program.description || "",
-      academicYear: program.academicYear,
-      semester: program.semester,
-      minGwa: String(program.minGwa),
-      requiredUnits: String(program.requiredUnits),
-      grantAmount: String(program.grantAmount),
-      slotsAvailable: String(program.slotsAvailable),
-      openAt: toInputValue(program.applicationOpenAt),
-      closeAt: toInputValue(program.applicationCloseAt),
-      requiredDocuments: [...(program.requiredDocuments || [])],
-      eligibleSchools: [...(program.eligibleSchools || [])],
-      active: program.active,
-    });
-    setSaved(false);
-    setSaveError("");
-  }
-
-  function set<K extends keyof ProgramForm>(key: K, value: ProgramForm[K]) {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    setSaved(false);
-  }
-
-  function toggleInList(key: "requiredDocuments" | "eligibleSchools", item: string) {
-    setForm((prev) => {
-      const list = prev[key];
-      return { ...prev, [key]: list.includes(item) ? list.filter((x) => x !== item) : [...list, item] };
-    });
-    setSaved(false);
-  }
-
-  async function handleSave() {
-    if (!form.programName.trim() || !form.academicYear.trim() || !form.semester.trim()) {
-      setSaveError("Program name, academic year and semester are required.");
-      return;
-    }
-    setSaving(true);
-    setSaveError("");
-    try {
-      const data = await api<SaveProgramResponse>("/super-admin/program", {
-        method: "PUT",
-        body: JSON.stringify({
-          id: form.id || undefined,
-          programName: form.programName.trim(),
-          description: form.description,
-          academicYear: form.academicYear.trim(),
-          semester: form.semester,
-          minGwa: Number(form.minGwa) || 0,
-          requiredUnits: Number(form.requiredUnits) || 0,
-          grantAmount: Number(form.grantAmount) || 0,
-          slotsAvailable: Number(form.slotsAvailable) || 0,
-          applicationOpenAt: form.openAt || null,
-          applicationCloseAt: form.closeAt || null,
-          requiredDocuments: form.requiredDocuments,
-          eligibleSchools: form.eligibleSchools,
-          active: form.active,
-        }),
-      });
-      setSaved(true);
-      if (data.program) applyProgram(data.program);
-      await load();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Unable to save the program.");
-    } finally {
-      setSaving(false);
+  function scrollTo(id: string) {
+    setActiveSection(id);
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
 
   return (
-    <div className="p-6 min-h-screen" style={{ background: "#F6F7F9" }}>
-      <PageHeader
-        title="Program Configuration"
-        subtitle="Configure the scholarship program, eligibility, application period and requirements."
-        breadcrumb={["Super Admin", "Program Configuration"]}
-        action={
-          <button
-            onClick={() => applyProgram(null)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white"
-            style={{ backgroundColor: "#163A63" }}
-          >
-            <Icon name="plus" size={15} />
-            New Program
-          </button>
-        }
-      />
+    <div className="min-h-screen" style={{ backgroundColor: "#F6F7F9" }}>
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        <PageHeader
+          title="Program Configuration"
+          subtitle="Configure scholarship eligibility, documents, application periods, and disbursement settings."
+          breadcrumb={["Super Admin", "Program Configuration"]}
+        />
 
-      {error && (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
-          <Icon name="alert-circle" size={16} />
-          {error}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="py-24 flex flex-col items-center gap-3 text-[#6B7280]">
-          <Icon name="refresh" size={22} className="animate-spin" />
-          <span className="text-sm">Loading configuration…</span>
-        </div>
-      ) : (
-        <>
-          {/* Program selector + save bar */}
-          <div className="rounded-xl border border-[#E5E7EB] bg-white p-4 mb-6 flex flex-wrap items-center gap-3">
-            <div className="flex-1 min-w-[240px]">
-              <Label>Edit existing program</Label>
-              <select
-                value={selectedId}
-                onChange={(e) => {
-                  const program = programs.find((p) => p.id === e.target.value) || null;
-                  applyProgram(program);
-                }}
-                className={inputCls()}
-              >
-                <option value="">— Create a new program —</option>
-                {programs.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.programName} · AY {p.academicYear} · {p.semester}{p.active ? "" : " (inactive)"}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex items-center gap-3 pt-5">
+        {/* Mobile: horizontal scrollable tab bar */}
+        <div className="md:hidden mb-4 overflow-x-auto">
+          <div className="flex gap-1 min-w-max pb-1">
+            {NAV_ITEMS.map((item) => (
               <button
-                onClick={handleSave}
-                disabled={saving}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: "#163A63" }}
+                key={item.id}
+                type="button"
+                onClick={() => scrollTo(item.id)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-500 whitespace-nowrap transition"
+                style={{
+                  fontWeight: 500,
+                  backgroundColor: activeSection === item.id ? "#163A63" : "white",
+                  color: activeSection === item.id ? "white" : "#374151",
+                  border: "1px solid",
+                  borderColor: activeSection === item.id ? "#163A63" : "#E5E7EB",
+                }}
               >
-                <Icon name={saving ? "refresh" : "check"} size={15} className={saving ? "animate-spin" : ""} />
-                {saving ? "Saving…" : selectedId ? "Save Changes" : "Create Program"}
+                <Icon name={item.icon} size={14} />
+                {item.label}
               </button>
-              <SavedBadge show={saved} />
-            </div>
+            ))}
           </div>
+        </div>
 
-          {saveError && (
-            <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {saveError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-
-            {/* Program details */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden lg:col-span-2">
-              <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
-                <span className="text-[#163A63]"><Icon name="book" size={18} /></span>
-                <h2 className="text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>Program Details</h2>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <Label>Program name *</Label>
-                    <input value={form.programName} onChange={(e) => set("programName", e.target.value)} placeholder="e.g. City Scholar Program" className={inputCls()} />
-                  </div>
-                  <div>
-                    <Label>Status</Label>
-                    <div className="flex items-center justify-between rounded-lg border border-[#E5E7EB] px-4 py-2">
-                      <span className="text-sm text-[#374151]">{form.active ? "Active" : "Inactive"}</span>
-                      <Toggle checked={form.active} onChange={(v) => set("active", v)} />
-                    </div>
-                  </div>
-                  <div>
-                    <Label>Academic year *</Label>
-                    <input list="program-years" value={form.academicYear} onChange={(e) => set("academicYear", e.target.value)} placeholder="e.g. 2025-2026" className={inputCls()} />
-                    <datalist id="program-years">
-                      {years.map((y) => <option key={y} value={y} />)}
-                    </datalist>
-                  </div>
-                  <div>
-                    <Label>Semester *</Label>
-                    <select value={form.semester} onChange={(e) => set("semester", e.target.value)} className={inputCls()}>
-                      {SEMESTERS.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <Label>Description</Label>
-                  <textarea value={form.description} onChange={(e) => set("description", e.target.value)} rows={3} placeholder="Short description shown to applicants…" className={inputCls()} />
-                </div>
-              </div>
-            </section>
-
-            {/* Eligibility & slots */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-              <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
-                <span className="text-[#163A63]"><Icon name="user-plus" size={18} /></span>
-                <h2 className="text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>Eligibility &amp; Slots</h2>
-              </div>
-              <div className="p-6 grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Minimum GWA</Label>
-                  <input type="number" step="0.01" min="0" value={form.minGwa} onChange={(e) => set("minGwa", e.target.value)} className={inputCls()} />
-                </div>
-                <div>
-                  <Label>Required units</Label>
-                  <input type="number" min="0" value={form.requiredUnits} onChange={(e) => set("requiredUnits", e.target.value)} className={inputCls()} />
-                </div>
-                <div>
-                  <Label>Grant amount (₱)</Label>
-                  <input type="number" min="0" value={form.grantAmount} onChange={(e) => set("grantAmount", e.target.value)} className={inputCls()} />
-                </div>
-                <div>
-                  <Label>Slots available</Label>
-                  <input type="number" min="0" value={form.slotsAvailable} onChange={(e) => set("slotsAvailable", e.target.value)} className={inputCls()} />
-                </div>
-              </div>
-            </section>
-
-            {/* Application period */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-              <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
-                <span className="text-[#163A63]"><Icon name="calendar" size={18} /></span>
-                <h2 className="text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>Application Period</h2>
-              </div>
-              <div className="p-6 space-y-4">
-                <div>
-                  <Label>Applications open at</Label>
-                  <input type="datetime-local" value={form.openAt} onChange={(e) => set("openAt", e.target.value)} className={inputCls()} />
-                  <p className="text-xs text-[#9CA3AF] mt-1">Currently: {fmtDateTime(form.openAt || null)}</p>
-                </div>
-                <div>
-                  <Label>Applications close at</Label>
-                  <input type="datetime-local" value={form.closeAt} onChange={(e) => set("closeAt", e.target.value)} className={inputCls()} />
-                  <p className="text-xs text-[#9CA3AF] mt-1">Currently: {fmtDateTime(form.closeAt || null)}</p>
-                </div>
-              </div>
-            </section>
-
-            {/* Requirements */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-              <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
-                <span className="text-[#163A63]"><Icon name="file-text" size={18} /></span>
-                <h2 className="text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>Required Documents</h2>
-              </div>
-              <div className="p-6 space-y-2 max-h-72 overflow-y-auto">
-                {docOptions.map((doc) => (
-                  <label key={doc} className="flex items-center gap-3 py-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.requiredDocuments.includes(doc)}
-                      onChange={() => toggleInList("requiredDocuments", doc)}
-                      className="h-4 w-4 rounded border-[#D1D5DB] text-[#163A63] focus:ring-[#163A63]"
-                    />
-                    <span className="text-sm text-[#374151]">{doc}</span>
-                  </label>
-                ))}
-                <div className="flex items-center gap-2 pt-3 border-t border-[#E5E7EB]">
-                  <input
-                    value={customDoc}
-                    onChange={(e) => setCustomDoc(e.target.value)}
-                    placeholder="Add a custom document…"
-                    className={inputCls()}
-                  />
+        <div className="flex gap-6 items-start">
+          {/* Desktop: sticky left nav */}
+          <aside className="hidden md:flex flex-col gap-1 w-56 flex-shrink-0 sticky top-6">
+            <div className="bg-white rounded-xl border border-[#E5E7EB] p-2">
+              {NAV_ITEMS.map((item) => {
+                const isActive = activeSection === item.id;
+                return (
                   <button
+                    key={item.id}
                     type="button"
-                    onClick={() => {
-                      const name = customDoc.trim();
-                      if (name && !form.requiredDocuments.includes(name)) toggleInList("requiredDocuments", name);
-                      setCustomDoc("");
+                    onClick={() => scrollTo(item.id)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left transition"
+                    style={{
+                      backgroundColor: isActive ? "#163A63" : "transparent",
+                      color: isActive ? "white" : "#374151",
+                      fontWeight: isActive ? 600 : 400,
                     }}
-                    className="px-3 py-2 rounded-lg text-sm font-medium text-white flex-shrink-0"
-                    style={{ backgroundColor: "#163A63" }}
                   >
-                    <Icon name="plus" size={14} />
+                    <Icon name={item.icon} size={15} />
+                    <span>{item.label}</span>
+                    {isActive && (
+                      <span className="ml-auto">
+                        <Icon name="chevron-right" size={13} />
+                      </span>
+                    )}
                   </button>
-                </div>
-                {form.requiredDocuments.filter((d) => !docOptions.includes(d)).length > 0 && (
-                  <div className="pt-2">
-                    <p className="text-xs text-[#6B7280] mb-1">Custom documents:</p>
-                    <div className="flex flex-wrap gap-2">
-                      {form.requiredDocuments.filter((d) => !docOptions.includes(d)).map((d) => (
-                        <span key={d} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-[#F0F4FA] text-xs text-[#163A63]">
-                          {d}
-                          <button type="button" onClick={() => toggleInList("requiredDocuments", d)}>
-                            <Icon name="x" size={12} />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
+                );
+              })}
+            </div>
 
-            {/* Eligible schools */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden">
-              <div className="px-6 py-4 border-b border-[#E5E7EB] flex items-center gap-2.5" style={{ backgroundColor: "#F6F7F9" }}>
-                <span className="text-[#163A63]"><Icon name="map-pin" size={18} /></span>
-                <h2 className="text-[#0B1F3A] text-base" style={{ fontWeight: 600 }}>Eligible Schools</h2>
+            {/* Info card */}
+            <div
+              className="mt-3 rounded-xl p-4"
+              style={{ backgroundColor: "#0B1F3A" }}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                <Icon name="info" size={14} className="text-[#D4A72C]" />
+                <span className="text-xs font-600 text-white" style={{ fontWeight: 600 }}>Config Notice</span>
               </div>
-              <div className="p-6 space-y-2 max-h-72 overflow-y-auto">
-                {schoolOptions.length === 0 && (
-                  <p className="text-sm text-[#6B7280]">No accredited schools yet — add them in Data Management.</p>
-                )}
-                {schoolOptions.map((school) => (
-                  <label key={school} className="flex items-center gap-3 py-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.eligibleSchools.includes(school)}
-                      onChange={() => toggleInList("eligibleSchools", school)}
-                      className="h-4 w-4 rounded border-[#D1D5DB] text-[#163A63] focus:ring-[#163A63]"
-                    />
-                    <span className="text-sm text-[#374151]">{school}</span>
-                  </label>
-                ))}
-              </div>
-            </section>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Changes take effect on the next open application period. Active applications are not retroactively affected.
+              </p>
+            </div>
+          </aside>
+
+          {/* Content */}
+          <div ref={contentRef} className="flex-1 min-w-0 space-y-6">
+            <EligibilitySection />
+            <DocumentsSection />
+            <PeriodsSection />
+            <DisbursementSection />
           </div>
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }

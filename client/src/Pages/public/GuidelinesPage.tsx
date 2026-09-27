@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import Icon from '../../components/Icon';
+import { usePublicContent, type GuidelinesSection } from '../../lib/publicContent';
 
+// Shipped copy, overridable from City Office > Program Settings > Public Pages.
 const sections = [
   {
     id: 'general',
@@ -53,8 +55,17 @@ const sections = [
 ];
 
 export default function GuidelinesPage() {
+  const { pages } = usePublicContent();
+  const content = pages.guidelines || {};
+  const visibleSections: GuidelinesSection[] = content.sections?.length ? content.sections : sections;
   const [activeSection, setActiveSection] = useState(sections[0].id);
   const [expanded, setExpanded] = useState<string[]>([]);
+
+  // City Office can rename or reorder sections, so fall back to the first one
+  // when the section that was open on load no longer exists.
+  const active = visibleSections.some(section => section.id === activeSection)
+    ? activeSection
+    : visibleSections[0]?.id || '';
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -64,9 +75,9 @@ export default function GuidelinesPage() {
     <div className="py-12">
       <div className="max-w-[1100px] mx-auto px-6">
         <div className="text-center mb-10">
-          <div className="text-xs font-600 text-[#D4A72C] uppercase tracking-widest mb-2" style={{ fontWeight: 600 }}>Official Document</div>
-          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>Scholarship Guidelines</h1>
-          <p className="text-[#6B7280] max-w-lg mx-auto text-sm">City Scholarship Program Implementing Guidelines | AY 2025–2026</p>
+          <div className="text-xs font-600 text-[#D4A72C] uppercase tracking-widest mb-2" style={{ fontWeight: 600 }}>{content.eyebrow || 'Official Document'}</div>
+          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>{content.title || 'Scholarship Guidelines'}</h1>
+          <p className="text-[#6B7280] max-w-lg mx-auto text-sm">{content.subtitle || 'City Scholarship Program Implementing Guidelines | AY 2025–2026'}</p>
         </div>
 
         <div className="flex gap-6">
@@ -75,16 +86,16 @@ export default function GuidelinesPage() {
             <div className="sticky top-20 bg-white rounded-2xl border border-[#E5E7EB] p-4">
               <div className="text-xs font-700 text-[#6B7280] uppercase tracking-wide mb-3" style={{ fontWeight: 700 }}>Contents</div>
               <ul className="space-y-1">
-                {sections.map(s => (
+                {visibleSections.map(s => (
                   <li key={s.id}>
                     <button
                       onClick={() => setActiveSection(s.id)}
                       className={`text-left w-full text-sm px-3 py-2 rounded-lg transition-colors ${
-                        activeSection === s.id
+                        active === s.id
                           ? 'bg-[#0B1F3A] text-white font-600'
                           : 'text-[#6B7280] hover:text-[#1F2937] hover:bg-[#F6F7F9]'
                       }`}
-                      style={{ fontWeight: activeSection === s.id ? 600 : 400 }}
+                      style={{ fontWeight: active === s.id ? 600 : 400 }}
                     >
                       {s.title}
                     </button>
@@ -96,7 +107,7 @@ export default function GuidelinesPage() {
 
           {/* Content */}
           <div className="flex-1 space-y-4">
-            {sections.map(section => (
+            {visibleSections.map(section => (
               <div key={section.id} id={section.id} className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
                 <button
                   onClick={() => { setActiveSection(section.id); toggleExpand(section.id); }}
@@ -106,12 +117,12 @@ export default function GuidelinesPage() {
                   <Icon
                     name="chevron-down"
                     size={16}
-                    className={`text-[#6B7280] transition-transform ${expanded.includes(section.id) || activeSection === section.id ? 'rotate-180' : ''}`}
+                    className={`text-[#6B7280] transition-transform ${expanded.includes(section.id) || active === section.id ? 'rotate-180' : ''}`}
                   />
                 </button>
-                {(expanded.includes(section.id) || activeSection === section.id) && (
+                {(expanded.includes(section.id) || active === section.id) && (
                   <div className="px-6 pb-6 border-t border-[#E5E7EB] space-y-5">
-                    {section.content.map(item => (
+                    {(section.content || []).map(item => (
                       <div key={item.heading} className="pt-5">
                         <h3 className="font-600 text-sm text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>{item.heading}</h3>
                         <p className="text-sm text-[#6B7280] leading-relaxed">{item.text}</p>

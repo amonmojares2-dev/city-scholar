@@ -57,5 +57,6 @@ export const citySidebarItems: SidebarItem[] = [
   { label: 'Reports', path: '/city/reports', icon: 'file-bar-chart', group: 'MANAGEMENT' },
   { label: 'User Management', path: '/city/users', icon: 'user-cog', group: 'MANAGEMENT' },
   { label: 'Barangay Accounts', path: '/city/barangays', icon: 'map-pin', group: 'MANAGEMENT' },
+  { label: 'Program Settings', path: '/city/program-settings', icon: 'settings', group: 'MANAGEMENT' },
   { label: 'System Settings', path: '/city/system-settings', icon: 'sliders', group: 'MANAGEMENT' },
 ];

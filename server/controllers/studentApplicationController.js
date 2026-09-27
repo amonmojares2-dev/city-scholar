@@ -2,6 +2,7 @@ const Application = require('../models/Application');
 const Document = require('../models/Document');
 const User = require('../models/User');
 const { missingRequiredApplicationDocuments } = require('./studentDocController');
+const { getProgramSettings } = require('../utils/cityProgramSettings');
 
 const VALID_COURSES = new Set([
   'BS Information Technology', 'BS Computer Science', 'BS Business Administration',
@@ -77,6 +78,25 @@ function submissionErrors(application, isRenewalFlow, studentName, accountEmail)
 function sendValidationError(res, errors, message = 'Please correct the highlighted fields.') {
   console.error('Application validation failed:', { message, errors });
   return res.status(400).json({ success: false, message, errors });
+}
+
+// The City Office owns when applications may be submitted (City Office >
+// Program Settings > Application period). Returns a public-facing reason when
+// submissions are not currently accepted, or null when the window is open.
+async function applicationWindowBlockReason() {
+  const settings = await getProgramSettings();
+  const period = settings.applicationPeriod || {};
+  if (!period.enabled) {
+    return 'Scholarship applications are closed right now. Please check the How to Apply page for the next opening.';
+  }
+  const now = Date.now();
+  if (period.openDate && now < new Date(period.openDate).getTime()) {
+    return 'The application period has not opened yet. Please submit your application once it opens.';
+  }
+  if (period.closeDate && now > new Date(period.closeDate).getTime()) {
+    return 'The application period has already closed. Please apply during the next announced period.';
+  }
+  return null;
 }
 
 // Application submissions use one controller-owned field contract. The
@@ -185,6 +205,10 @@ const updateStudentApplication = async (req, res, next) => {
           return sendValidationError(res, { documents: 'Please upload all required documents before submitting.' }, 'Please upload all required documents before submitting.');
         }
       }
+      if (!isRenewalFlow) {
+        const windowBlock = await applicationWindowBlockReason();
+        if (windowBlock) return sendValidationError(res, { application: windowBlock }, windowBlock);
+      }
       const errors = submissionErrors(application, isRenewalFlow, req.body.fullName || req.user.name, req.user.email);
       if (Object.keys(errors).length) {
         return sendValidationError(res, errors);
@@ -221,6 +245,10 @@ const submitStudentApplication = async (req, res, next) => {
       if (missingDocuments.length) {
         return sendValidationError(res, { documents: 'Please upload all required documents before submitting.' }, 'Please upload all required documents before submitting.');
       }
+    }
+    if (!isRenewalFlow) {
+      const windowBlock = await applicationWindowBlockReason();
+      if (windowBlock) return sendValidationError(res, { application: windowBlock }, windowBlock);
     }
     const errors = submissionErrors(application, isRenewalFlow, req.user.name, req.user.email);
     if (Object.keys(errors).length) {

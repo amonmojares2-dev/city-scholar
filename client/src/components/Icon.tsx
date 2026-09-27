@@ -51,6 +51,8 @@ const paths: Record<string, string[]> = {
   paperclip: ['M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'],
   'arrow-right': ['M5 12h14', 'M12 5l7 7-7 7'],
   'arrow-left': ['M19 12H5', 'M12 19l-7-7 7-7'],
+  'arrow-up': ['M12 19V5', 'M5 12l7-7 7 7'],
+  'arrow-down': ['M12 5v14', 'M19 12l-7 7-7-7'],
   printer: ['M6 9V2h12v7', 'M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2', 'M6 14h12v8H6z'],
   filter: ['M22 3H2l8 9.46V19l4 2v-8.54L22 3z'],
   'more-vertical': ['M12 5h.01', 'M12 12h.01', 'M12 19h.01'],

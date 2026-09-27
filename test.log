@@ -1,0 +1,33 @@
+PASS tests/email.test.js (9.77 s)
+PASS tests/uploadSecurity.test.js (9.969 s)
+  ● Console
+
+    console.warn
+      Document upload rejected for application 507f1f77bcf86cd799439011: status=submitted
+
+    [0m [90m 92 |[39m                 removeStoredFileByFilename(req[33m.[39mfile[33m.[39mfilename)[33m;[39m
+     [90m 93 |[39m                 [36mif[39m (lockedApplication) {
+    [31m[1m>[22m[39m[90m 94 |[39m                     console[33m.[39mwarn([32m`Document upload rejected for application ${lockedApplication._id}: status=${lockedApplication.status}`[39m)[33m;[39m
+     [90m    |[39m                             [31m[1m^[22m[39m
+     [90m 95 |[39m                     [36mreturn[39m sendError([35m409[39m[33m,[39m [32m"Documents can no longer be changed because your application was already submitted."[39m)[33m;[39m
+     [90m 96 |[39m                 }
+     [90m 97 |[39m                 [36mreturn[39m sendError([35m404[39m[33m,[39m [32m"No application found. Please create your application first, then upload documents."[39m)[33m;[39m[0m
+
+      at warn (controllers/studentDocController.js:94:29)
+      at Object.<anonymous> (tests/uploadSecurity.test.js:117:9)
+
+PASS tests/citySettings.test.js (10.631 s)
+PASS tests/security.test.js (40.167 s)
+  ● Console
+
+    console.log
+      ◇ injected env (6) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+
+      at _log (node_modules/dotenv/lib/main.js:131:11)
+
+
+Test Suites: 4 passed, 4 total
+Tests:       33 passed, 33 total
+Snapshots:   0 total
+Time:        47.718 s
+Ran all test suites.

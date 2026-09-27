@@ -42,6 +42,7 @@ import CityReports from './Pages/city/CityReports';
 import CityUsers from './Pages/city/CityUsers';
 import CityBarangays from './Pages/city/CityBarangays';
 import CitySystemSettings from './Pages/city/CitySystemSettings';
+import CityProgramSettings from './Pages/city/CityProgramSettings';
 import SuperAdminDashboard from './Pages/superadmin/SuperAdminDashboard';
 import SuperAdminScholars from './Pages/superadmin/SuperAdminScholars';
 import SuperAdminAccounts from './Pages/superadmin/SuperAdminAccounts';
@@ -299,6 +300,7 @@ export const router = createBrowserRouter([
           { path: 'reports', Component: CityReports },
           { path: 'users', Component: CityUsers },
           { path: 'barangays', Component: CityBarangays },
+          { path: 'program-settings', Component: CityProgramSettings },
           { path: 'system-settings', Component: CitySystemSettings },
         ],
       },

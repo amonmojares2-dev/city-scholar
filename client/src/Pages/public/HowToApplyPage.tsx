@@ -1,6 +1,8 @@
 import { Link } from 'react-router';
 import Icon from '../../components/Icon';
+import { usePublicContent, type HowToApplyStep } from '../../lib/publicContent';
 
+// Shipped copy, overridable from City Office > Program Settings > Public Pages.
 const steps = [
   {
     num: '01',
@@ -58,21 +60,50 @@ const steps = [
   },
 ];
 
+// Icons stay with the design; the City Office only edits the words.
+const STEP_ICONS = ['check-circle', 'user-plus', 'edit', 'upload', 'eye', 'bar-chart-2'];
+
+interface RenderStep {
+  num: string;
+  title: string;
+  desc: string;
+  icon: string;
+  tips: string[];
+  link: string | null;
+  linkLabel: string | null;
+}
+
+function editableStep(step: HowToApplyStep, index: number): RenderStep {
+  return {
+    num: step.num || String(index + 1).padStart(2, '0'),
+    title: step.title,
+    desc: step.description ?? step.desc ?? '',
+    icon: STEP_ICONS[index % STEP_ICONS.length],
+    tips: step.tips || [],
+    link: step.link || null,
+    linkLabel: step.linkLabel || null,
+  };
+}
+
 export default function HowToApplyPage() {
+  const { pages } = usePublicContent();
+  const content = pages.howToApply || {};
+  const visibleSteps: RenderStep[] = content.steps?.length ? content.steps.map(editableStep) : steps;
+
   return (
     <div className="py-12">
       <div className="max-w-[900px] mx-auto px-6">
         <div className="text-center mb-12">
-          <div className="text-xs font-600 text-[#D4A72C] uppercase tracking-widest mb-2" style={{ fontWeight: 600 }}>Step-by-Step Guide</div>
-          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>How to Apply</h1>
-          <p className="text-[#6B7280] max-w-lg mx-auto text-sm">Follow these steps to complete your scholarship application. The entire process is done online through this portal.</p>
+          <div className="text-xs font-600 text-[#D4A72C] uppercase tracking-widest mb-2" style={{ fontWeight: 600 }}>{content.eyebrow || 'Step-by-Step Guide'}</div>
+          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>{content.title || 'How to Apply'}</h1>
+          <p className="text-[#6B7280] max-w-lg mx-auto text-sm">{content.subtitle || 'Follow these steps to complete your scholarship application. The entire process is done online through this portal.'}</p>
         </div>
 
         <div className="relative">
           <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-[#E5E7EB] hidden md:block" />
           <div className="space-y-6">
-            {steps.map((step, i) => (
-              <div key={step.num} className="relative flex gap-6">
+            {visibleSteps.map((step, i) => (
+              <div key={`${step.num}-${step.title}`} className="relative flex gap-6">
                 <div className="flex-shrink-0 w-12 h-12 rounded-2xl bg-[#0B1F3A] flex flex-col items-center justify-center z-10 text-[#D4A72C]">
                   <Icon name={step.icon} size={20} />
                 </div>
@@ -110,16 +141,16 @@ export default function HowToApplyPage() {
         <div className="mt-8 grid sm:grid-cols-2 gap-4">
           <div className="bg-[#F6F7F9] rounded-2xl p-5 border border-[#E5E7EB]">
             <Icon name="help-circle" size={20} className="text-[#163A63] mb-3" />
-            <h4 className="font-600 text-[#1F2937] mb-2" style={{ fontWeight: 600 }}>Need Help?</h4>
-            <p className="text-sm text-[#6B7280] mb-3">Our AI Assistant can answer your questions anytime, or contact the scholarship office directly.</p>
+            <h4 className="font-600 text-[#1F2937] mb-2" style={{ fontWeight: 600 }}>{content.helpTitle || 'Need Help?'}</h4>
+            <p className="text-sm text-[#6B7280] mb-3">{content.helpText || 'Our AI Assistant can answer your questions anytime, or contact the scholarship office directly.'}</p>
             <Link to="/ai-assistant" className="text-sm font-600 text-[#163A63] hover:text-[#0B1F3A]" style={{ fontWeight: 600 }}>
-              Ask the AI Assistant →
+              {content.helpLinkLabel ? `${content.helpLinkLabel} →` : 'Ask the AI Assistant →'}
             </Link>
           </div>
           <div className="bg-[#0B1F3A] rounded-2xl p-5">
             <Icon name="award" size={20} className="text-[#D4A72C] mb-3" />
-            <h4 className="font-600 text-white mb-2" style={{ fontWeight: 600 }}>Ready to Start?</h4>
-            <p className="text-sm text-white/60 mb-3">Create your account and begin your scholarship application today.</p>
+            <h4 className="font-600 text-white mb-2" style={{ fontWeight: 600 }}>{content.readyTitle || 'Ready to Start?'}</h4>
+            <p className="text-sm text-white/60 mb-3">{content.readyText || 'Create your account and begin your scholarship application today.'}</p>
             <Link to="/login" className="inline-flex items-center gap-1.5 text-sm font-600 text-[#D4A72C] hover:text-[#F8E7A8]" style={{ fontWeight: 600 }}>
               Apply Now →
             </Link>

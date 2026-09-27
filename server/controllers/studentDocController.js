@@ -2,7 +2,10 @@ const Application = require("../models/Application");
 const Document = require("../models/Document");
 const User = require("../models/User");
 const { removeStoredFile, removeStoredFileByFilename } = require("../config/storage");
-const { APPLICATION_DOCUMENT_TYPES, matchesRequiredDocument } = require("../config/applicationDocuments");
+const {
+    applicationDocumentTypes,
+    missingRequiredApplicationDocuments: missingRequiredFromSettings
+} = require("../utils/cityProgramSettings");
 
 // Strip the deprecated raw filesystem path before a Document leaves the
 // server — clients must never see the server's directory structure.
@@ -123,9 +126,14 @@ const uploadStudentDocument = async(req, res, next) => {
             removeStoredFileByFilename(req.file.filename);
             return sendError(400, "Please select a document type.");
         }
-        if (context === "application" && !APPLICATION_DOCUMENT_TYPES.includes(documentType)) {
-            removeStoredFileByFilename(req.file.filename);
-            return sendError(400, "Please select a valid Application document type.");
+        // The City Office owns the application document slots (City Office >
+        // Program Settings), so the accepted list is read from those settings.
+        if (context === "application") {
+            const { accepted } = await applicationDocumentTypes();
+            if (!accepted.includes(documentType)) {
+                removeStoredFileByFilename(req.file.filename);
+                return sendError(400, "Please select a valid Application document type.");
+            }
         }
 
         const filter = {
@@ -204,13 +212,10 @@ const uploadStudentDocument = async(req, res, next) => {
 // dropped from the application flow, so they are no longer recognised here —
 // such a file falls through to "Other" instead of being filed in a removed slot.
 
+// Required slots come from the City Office program settings; the Document
+// model is injected so this stays testable without a live connection.
 async function missingRequiredApplicationDocuments(applicationId) {
-    const uploaded = await Document.find({ application: applicationId, context: "application" })
-        .select("type")
-        .lean();
-    return APPLICATION_DOCUMENT_TYPES.filter((requiredType) =>
-        !uploaded.some((document) => matchesRequiredDocument(document.type, requiredType))
-    );
+    return missingRequiredFromSettings(applicationId, Document);
 }
 
 const KNOWN_DOC_TYPES = [

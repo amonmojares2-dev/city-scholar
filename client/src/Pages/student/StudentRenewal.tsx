@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import StatusBadge from '../../components/StatusBadge';
@@ -6,6 +6,7 @@ import { api, validateDocumentFile } from '../../lib/api';
 import { isImageMime, friendlyErrorMessage } from '../../lib/docUrl';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { PrivateDocumentImage } from '../../components/PrivateFile';
+import { useDocumentSlots } from '../../lib/publicContent';
 
 // The five renewal slots — identical to the server's KNOWN_DOC_TYPES[0..4],
 // so the upload endpoint stores them under the exact slot the student picked.
@@ -74,6 +75,19 @@ export default function StudentRenewal() {
   const [submitted, setSubmitted] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  // Renewal slots are configured by the City Office (City Office > Program
+  // Settings); the shipped list is the fallback when the settings cannot be
+  // read. The signature keeps `slots` referentially stable so the refresh
+  // below only re-runs when the configured slots actually change.
+  const liveSlots = useDocumentSlots('renewal');
+  const slotSignature = liveSlots.map(slot => `${slot.key}|${slot.label}|${slot.note}|${slot.required}`).join('::');
+  const slots = useMemo(
+    () => (liveSlots.length
+      ? liveSlots.map(slot => ({ docType: slot.key, note: slot.note || '' }))
+      : RENEWAL_DOCS),
+    [slotSignature],
+  );
+
   const { academicYear, days } = getRenewalWindow();
 
   const refresh = useCallback(async () => {
@@ -82,7 +96,7 @@ export default function StudentRenewal() {
         '/student/application/documents?context=renewal'
       );
       const serverDocs = result.documents ?? [];
-      setDocs(RENEWAL_DOCS.map(slot => {
+      setDocs(slots.map(slot => {
         const found = serverDocs.find(d => d.type === slot.docType);
         return {
           docType: slot.docType,
@@ -99,7 +113,7 @@ export default function StudentRenewal() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [slots]);
 
   useEffect(() => { refresh(); }, [refresh]);
 

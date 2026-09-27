@@ -20,6 +20,8 @@ const scholarsRoutes = require("./routes/scholarsRoutes");
 const userRoutes = require("./routes/userRoutes");
 const Document = require("./models/Document");
 const programRoutes = require("./routes/programRoutes");
+const citySettingsRoutes = require("./routes/citySettingsRoutes");
+const publicContentRoutes = require("./routes/publicContentRoutes");
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const { authLimiter, apiLimiter } = require("./middleware/rateLimiter");
 
@@ -112,6 +114,12 @@ app.get("/", (req, res) => {
 // either API/auth rate-limit buckets. Keep this before the guards below.
 app.use("/api/universities", universityRoutes);
 
+// Public landing-page content (Eligibility / How to Apply / Guidelines). The
+// content helpers fall back to the shipped defaults when MongoDB is not
+// reachable, so visitors still see a complete page. Rate limited because it is
+// unauthenticated.
+app.use("/api/public", apiLimiter, publicContentRoutes);
+
 app.use("/api", requireDatabase);
 app.use("/api", apiLimiter);
 app.use("/api/auth", authLimiter, authRoutes);
@@ -133,6 +141,7 @@ app.use("/api/city/scholar-approval", scholarApprovalRoutes);
 app.use("/api/scholars", scholarsRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/programs", programRoutes);
+app.use("/api/city/settings", citySettingsRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

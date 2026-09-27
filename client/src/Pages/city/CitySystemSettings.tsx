@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
 
@@ -59,6 +60,15 @@ export default function CitySystemSettings() {
               </div>
             </div>
           </div>
+          <a href="/city/program-settings" className="flex items-center justify-between gap-4 bg-white rounded-2xl border border-[#E5E7EB] p-5 hover:bg-[#F6F7F9]">
+            <div>
+              <div className="text-[#1F2937]" style={{ fontWeight: 700 }}>Program Settings</div>
+              <p className="text-xs text-[#6B7280] mt-1">
+                Document slots, application and renewal windows, eligibility rules, disbursement and the public page copy are editable there.
+              </p>
+            </div>
+            <Icon name="arrow-right" size={16} className="text-[#163A63] flex-shrink-0" />
+          </a>
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-800">
             This page is read-only for now: there is no settings storage in the backend yet. Office contact details and other editable system settings need a settings model before they can be changed here - no placeholder values are shown in the meantime.
           </div>
