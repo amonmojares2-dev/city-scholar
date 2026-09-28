@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
+import { BARANGAYS } from '../../data/barangays';
 
 interface Announcement {
   id: string;
   title: string;
   message: string;
   target: string;
+  targetBarangay?: string;
   priority: 'Normal' | 'Important' | 'Urgent';
   dateSent: string;
 }
@@ -18,8 +20,10 @@ const PRIORITY_BADGE: Record<string, string> = {
   Urgent: 'bg-red-100 text-red-700',
 };
 
-const BARANGAYS = ['Barangay 1', 'Barangay 2', 'Barangay 3', 'Barangay 4', 'Barangay 5', 'Barangay 6'];
-const SCHOOLS = ['City College', 'State University', 'Polytechnic Institute', 'Community College', 'Technical School'];
+// Barangay list is imported from the shared data file — never a second,
+// hardcoded copy. "City Office Staff Only" / "Specific School" audiences
+// were removed along with the school dropdown.
+const AUDIENCE_OPTIONS = ['All Users', 'Students Only', 'Barangay Officials Only', 'Specific Barangay'];
 
 export default function SuperAdminAnnouncements() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -28,8 +32,7 @@ export default function SuperAdminAnnouncements() {
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
   const [targetAudience, setTargetAudience] = useState('All Users');
-  const [barangay, setBarangay] = useState(BARANGAYS[0]);
-  const [school, setSchool] = useState(SCHOOLS[0]);
+  const [barangay, setBarangay] = useState<string>(BARANGAYS[0]);
   const [priority, setPriority] = useState<'Normal' | 'Important' | 'Urgent'>('Normal');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
@@ -47,6 +50,7 @@ export default function SuperAdminAnnouncements() {
           title: title.trim(),
           body: message.trim(),
           target: targetAudience,
+          ...(targetAudience === 'Specific Barangay' ? { targetBarangay: barangay } : {}),
           priority,
         }),
       });
@@ -70,15 +74,6 @@ export default function SuperAdminAnnouncements() {
       .catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load announcements.'))
       .finally(() => setLoading(false));
   }, []);
-
-  const AUDIENCE_OPTIONS = [
-    'All Users',
-    'Students Only',
-    'Barangay Officials Only',
-    'City Office Staff Only',
-    'Specific Barangay',
-    'Specific School',
-  ];
 
   return (
     <div className="p-6 min-h-screen" style={{ background: '#F6F7F9' }}>
@@ -150,18 +145,6 @@ export default function SuperAdminAnnouncements() {
                     style={{ borderColor: '#E5E7EB', color: '#0B1F3A' }}
                   >
                     {BARANGAYS.map(b => <option key={b}>{b}</option>)}
-                  </select>
-                </div>
-              )}
-              {targetAudience === 'Specific School' && (
-                <div className="mt-2">
-                  <select
-                    value={school}
-                    onChange={e => setSchool(e.target.value)}
-                    className="border rounded-lg px-3 py-2 text-sm w-full focus:outline-none"
-                    style={{ borderColor: '#E5E7EB', color: '#0B1F3A' }}
-                  >
-                    {SCHOOLS.map(s => <option key={s}>{s}</option>)}
                   </select>
                 </div>
               )}
@@ -246,7 +229,7 @@ export default function SuperAdminAnnouncements() {
                 </span>
               </div>
               <div className="flex items-center gap-3 text-xs mb-2" style={{ color: '#6B7280' }}>
-                <span>{ann.target}</span>
+                <span>{ann.target}{ann.target === 'Specific Barangay' && ann.targetBarangay ? ` · ${ann.targetBarangay}` : ''}</span>
                 <span>·</span>
                 <span>{ann.dateSent}</span>
               </div>

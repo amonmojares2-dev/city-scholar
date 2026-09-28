@@ -33,11 +33,33 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
   const [notifications, setNotifications] = useState<{ _id: string; title: string; message: string; readAt?: string; createdAt: string; link?: string }[]>([]);
   const [signOutOpen, setSignOutOpen] = useState(false);
 
+  // The bell refreshes itself: on mount, every 45 seconds, and whenever the
+  // tab regains focus, so notifications appear without a manual reload.
   useEffect(() => {
-    api<{ notifications: typeof notifications }>('/notifications')
-      .then(result => setNotifications(result.notifications || []))
-      .catch(() => setNotifications([]));
+    let cancelled = false;
+
+    const load = () => {
+      api<{ notifications: typeof notifications }>('/notifications')
+        .then(result => { if (!cancelled) setNotifications(result.notifications || []); })
+        .catch(() => { /* transient error: keep the last known list */ });
+    };
+
+    load();
+    const intervalId = window.setInterval(load, 45000);
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') load(); };
+
+    window.addEventListener('focus', load);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', load);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, []);
+
+  const unreadCount = notifications.filter(notification => !notification.readAt).length;
 
   const colors = roleColors[role];
   const sessionUser = getSession()?.user;
@@ -177,14 +199,14 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
                 className="relative w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F6F7F9] text-[#6B7280]"
               >
                 <Icon name="bell" size={18} />
-                {notifications.filter(notification => !notification.readAt).length > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#DC2626] rounded-full" />}
+                {unreadCount > 0 && <span className="absolute top-0.5 right-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-[#DC2626] text-white text-[10px] flex items-center justify-center" style={{ fontWeight: 700 }}>{unreadCount > 99 ? '99+' : unreadCount}</span>}
               </button>
 
               {notifOpen && (
                 <div className="absolute right-0 top-full mt-1 w-80 bg-white border border-[#E5E7EB] rounded-2xl shadow-xl overflow-hidden z-50">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
                     <span className="font-700 text-sm text-[#1F2937]" style={{ fontWeight: 700 }}>Notifications</span>
-                    <span className="text-xs px-2 py-0.5 bg-red-50 text-red-600 font-600 rounded-full" style={{ fontWeight: 600 }}>{notifications.filter(notification => !notification.readAt).length} new</span>
+                    <span className="text-xs px-2 py-0.5 bg-red-50 text-red-600 font-600 rounded-full" style={{ fontWeight: 600 }}>{unreadCount} new</span>
                   </div>
                   <div className="divide-y divide-[#E5E7EB] max-h-72 overflow-y-auto">
                     {notifications.length === 0 ? <div className="px-4 py-8 text-center text-sm text-[#6B7280]">No notifications yet.</div> : notifications.map(notification => (
@@ -197,7 +219,7 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
                   </div>
                   <div className="px-4 py-2.5 border-t border-[#E5E7EB]">
                     <button
-                      onClick={async () => { await Promise.all(notifications.filter(notification => !notification.readAt).map(notification => api(`/notifications/${notification._id}/read`, { method: 'PATCH' }).catch(() => undefined))); setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt || new Date().toISOString() }))); }}
+                      onClick={async () => { await api('/notifications/read-all', { method: 'PATCH' }).catch(() => undefined); setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt || new Date().toISOString() }))); }}
                       className="w-full text-xs font-600 text-[#163A63] hover:text-[#0B1F3A] text-center"
                       style={{ fontWeight: 600 }}
                     >

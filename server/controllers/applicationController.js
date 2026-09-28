@@ -151,6 +151,20 @@ const DECISION_NOTICE = {
     }
 };
 
+// Renewals reuse the same review endpoint, but the student must not be told
+// "Application approved" when what changed is their renewal.
+const RENEWAL_NOTICE = {
+    ...DECISION_NOTICE,
+    approved: {
+        title: "Renewal approved",
+        message: "Congratulations! Your scholarship renewal has been approved by the City Scholarship Office."
+    },
+    rejected: {
+        title: "Renewal rejected",
+        message: "Your scholarship renewal was not approved by the City Scholarship Office."
+    }
+};
+
 const reviewApplication = async(req, res, next) => {
         try {
             const { decision, remarks, documentIds } = req.body || {};
@@ -183,6 +197,10 @@ const reviewApplication = async(req, res, next) => {
                     message: "The Barangay Office has not confirmed this applicant's residency yet."
                 });
             }
+
+            // Captured BEFORE the decision overwrites it, so the notification
+            // can tell a renewal decision apart from a first-time application.
+            const isRenewal = application.status === "renewal";
 
             application.status = decision;
             application.remarks = note;
@@ -227,14 +245,14 @@ const reviewApplication = async(req, res, next) => {
 
             // Best effort: a notification or audit failure must never undo a
             // decision the reviewer already made.
-            const notice = DECISION_NOTICE[decision];
+            const notice = (isRenewal ? RENEWAL_NOTICE : DECISION_NOTICE)[decision] || DECISION_NOTICE[decision];
             try {
                 await Notification.create({
                     recipient: application.student._id || application.student,
                     title: notice.title,
                     message: note ? `${notice.message} ${note}` : notice.message,
                     type: "application",
-                    link: "/student/application"
+                    link: isRenewal ? "/student/renewal" : "/student/application"
                 });
             } catch (notificationError) {
                 console.error("Application review notification error:", notificationError.message);
@@ -355,14 +373,18 @@ const reviewBarangayApplication = async(req, res, next) => {
 
         // Best effort: a notification or audit failure must never undo a
         // decision the reviewer already made.
+        //
+        // The approve message deliberately says "under review" and never
+        // "approved": the Barangay only verifies residency, the City
+        // Scholarship Office still has to decide the application itself.
         try {
             await Notification.create({
                 recipient: application.student._id || application.student,
                 title: status === "approved" ?
-                    "Barangay verification approved" :
-                    "Barangay verification rejected",
+                    "Application under review" :
+                    "Application rejected",
                 message: status === "approved" ?
-                    "Your Barangay Office confirmed your residency. Your application is now with the City Scholarship Office for final review." :
+                    "Your Barangay Office verified your residency. Your application is now under review by the City Scholarship Office." :
                     `Your Barangay Office did not confirm your residency.${note ? ` ${note}` : ""}`,
                 type: "application",
                 link: "/student/application"
