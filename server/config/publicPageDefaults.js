@@ -1,3 +1,5 @@
+const { DEFAULT_HOME_CONTENT } = require("./homePageDefaults");
+
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
 }
@@ -127,6 +129,7 @@ const DEFAULT_GUIDELINES_CONTENT = Object.freeze({
 });
 
 const DEFAULT_PUBLIC_PAGE_CONTENT = Object.freeze({
+    home: DEFAULT_HOME_CONTENT,
     eligibility: DEFAULT_ELIGIBILITY_CONTENT,
     howToApply: DEFAULT_HOW_TO_APPLY_CONTENT,
     guidelines: DEFAULT_GUIDELINES_CONTENT
@@ -140,6 +143,7 @@ module.exports = {
     DEFAULT_ELIGIBILITY_CONTENT,
     DEFAULT_HOW_TO_APPLY_CONTENT,
     DEFAULT_GUIDELINES_CONTENT,
+    DEFAULT_HOME_CONTENT,
     DEFAULT_PUBLIC_PAGE_CONTENT,
     getDefaultPublicPageContent
 };

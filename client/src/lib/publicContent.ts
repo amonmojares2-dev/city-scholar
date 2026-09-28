@@ -84,7 +84,120 @@ export interface GuidelinesContent {
   sections?: GuidelinesSection[];
 }
 
+export interface HomeStat {
+  key?: string;
+  value: string;
+  label: string;
+  icon?: string;
+}
+
+export interface HomeHighlight {
+  value: string;
+  label: string;
+}
+
+export interface HomeDetailRow {
+  label: string;
+  value: string;
+}
+
+export interface HomeStepContent {
+  num?: string;
+  title: string;
+  description: string;
+}
+
+export interface HomeTestimonial {
+  name: string;
+  batch?: string;
+  school?: string;
+  text: string;
+  rating?: number;
+}
+
+export interface HomeAnnouncement {
+  tag?: string;
+  date?: string;
+  title: string;
+  excerpt?: string;
+}
+
+export interface HomeHeroContent {
+  badge?: string;
+  /** When on, the badge renders from the live application window instead. */
+  followWindow?: boolean;
+  titleLine1?: string;
+  titleLine2?: string;
+  subtitle?: string;
+  primaryCtaLabel?: string;
+  primaryCtaHref?: string;
+  secondaryCtaLabel?: string;
+  secondaryCtaHref?: string;
+  imageUrl?: string;
+}
+
+export interface HomeAboutContent {
+  eyebrow?: string;
+  title?: string;
+  body?: string;
+  bullets?: string[];
+  highlights?: HomeHighlight[];
+}
+
+export interface HomeProgramCard {
+  title?: string;
+  /** When on, the subtitle, status pill and dates follow the live window. */
+  followWindow?: boolean;
+  subtitle?: string;
+  statusLabel?: string;
+  rows?: HomeDetailRow[];
+  ctaLabel?: string;
+  ctaHref?: string;
+}
+
+export interface HomeProcessContent {
+  eyebrow?: string;
+  title?: string;
+  steps?: HomeStepContent[];
+  ctaLabel?: string;
+  ctaHref?: string;
+}
+
+export interface HomeTestimonialsContent {
+  eyebrow?: string;
+  title?: string;
+  /** An empty list hides the section on the public page. */
+  items?: HomeTestimonial[];
+}
+
+export interface HomeAnnouncementsContent {
+  eyebrow?: string;
+  title?: string;
+  items?: HomeAnnouncement[];
+}
+
+export interface HomeCtaContent {
+  title?: string;
+  body?: string;
+  primaryLabel?: string;
+  primaryHref?: string;
+  secondaryLabel?: string;
+  secondaryHref?: string;
+}
+
+export interface HomeContent {
+  hero?: HomeHeroContent;
+  stats?: HomeStat[];
+  about?: HomeAboutContent;
+  programCard?: HomeProgramCard;
+  process?: HomeProcessContent;
+  testimonials?: HomeTestimonialsContent;
+  announcements?: HomeAnnouncementsContent;
+  cta?: HomeCtaContent;
+}
+
 export interface PublicPages {
+  home?: HomeContent;
   eligibility?: EligibilityContent;
   howToApply?: HowToApplyContent;
   guidelines?: GuidelinesContent;

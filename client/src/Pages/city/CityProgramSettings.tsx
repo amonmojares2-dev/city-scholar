@@ -3,7 +3,21 @@ import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { api, ApiError } from '../../lib/api';
-import type { EligibilityContent, GuidelinesContent, GuidelinesSection, HowToApplyContent } from '../../lib/publicContent';
+import type {
+  EligibilityContent,
+  GuidelinesContent,
+  GuidelinesSection,
+  HowToApplyContent,
+  HomeAboutContent,
+  HomeAnnouncementsContent,
+  HomeCtaContent,
+  HomeContent,
+  HomeHeroContent,
+  HomeProcessContent,
+  HomeProgramCard,
+  HomeStat,
+  HomeTestimonialsContent,
+} from '../../lib/publicContent';
 
 // City-wide program settings: the single place the City Office decides which
 // document slots a student fills, when the application and renewal windows are
@@ -59,6 +73,7 @@ interface SettingsOptions {
 }
 
 interface PagesState {
+  home: HomeContent;
   eligibility: EligibilityContent;
   howToApply: HowToApplyContent;
   guidelines: GuidelinesContent;
@@ -740,10 +755,323 @@ function GuidelinesContentEditor({ value, onChange }: { value: GuidelinesContent
   );
 }
 
+// Editor for the landing page ("/"). Each block mirrors one section of
+// server/config/homePageDefaults.js; a blank field falls back to the shipped
+// copy when it is saved.
+function HomeContentEditor({ value, onChange }: { value: HomeContent; onChange: (value: HomeContent) => void }) {
+  const hero = value.hero || {};
+  const stats = value.stats || [];
+  const about = value.about || {};
+  const programCard = value.programCard || {};
+  const process = value.process || {};
+  const testimonials = value.testimonials || {};
+  const announcements = value.announcements || {};
+  const cta = value.cta || {};
+
+  const setHero = (patch: Partial<HomeHeroContent>) => onChange({ ...value, hero: { ...hero, ...patch } });
+  const setStats = (next: HomeStat[]) => onChange({ ...value, stats: next });
+  const setAbout = (patch: Partial<HomeAboutContent>) => onChange({ ...value, about: { ...about, ...patch } });
+  const setCard = (patch: Partial<HomeProgramCard>) => onChange({ ...value, programCard: { ...programCard, ...patch } });
+  const setProcess = (patch: Partial<HomeProcessContent>) => onChange({ ...value, process: { ...process, ...patch } });
+  const setTestimonials = (patch: Partial<HomeTestimonialsContent>) => onChange({ ...value, testimonials: { ...testimonials, ...patch } });
+  const setAnnouncements = (patch: Partial<HomeAnnouncementsContent>) => onChange({ ...value, announcements: { ...announcements, ...patch } });
+  const setCta = (patch: Partial<HomeCtaContent>) => onChange({ ...value, cta: { ...cta, ...patch } });
+
+  return (
+    <>
+      <Section title="Hero" icon="eye" description="The opening screen of the landing page at /.">
+        <ToggleField
+          label="Follow the live application window"
+          hint="Shows the badge from the Application windows tab instead of the text below."
+          checked={hero.followWindow !== false}
+          onChange={followWindow => setHero({ followWindow })}
+        />
+        <TextRow label="Status badge" hint="Used when the toggle above is off." value={hero.badge} onChange={badge => setHero({ badge })} />
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Headline line 1" value={hero.titleLine1} onChange={titleLine1 => setHero({ titleLine1 })} />
+          <TextRow label="Headline line 2" value={hero.titleLine2} onChange={titleLine2 => setHero({ titleLine2 })} />
+        </div>
+        <TextAreaRow label="Subtitle" value={hero.subtitle} onChange={subtitle => setHero({ subtitle })} rows={2} />
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Primary button" value={hero.primaryCtaLabel} onChange={primaryCtaLabel => setHero({ primaryCtaLabel })} />
+          <TextRow label="Primary button link" hint="e.g. /eligibility" value={hero.primaryCtaHref} onChange={primaryCtaHref => setHero({ primaryCtaHref })} />
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Secondary button" value={hero.secondaryCtaLabel} onChange={secondaryCtaLabel => setHero({ secondaryCtaLabel })} />
+          <TextRow label="Secondary button link" hint="e.g. /how-to-apply" value={hero.secondaryCtaHref} onChange={secondaryCtaHref => setHero({ secondaryCtaHref })} />
+        </div>
+        <TextRow label="Background image URL" value={hero.imageUrl} onChange={imageUrl => setHero({ imageUrl })} />
+      </Section>
+
+      <Section title="Key figures" icon="bar-chart-2" description="The four numbers shown below the hero.">
+        <div className="space-y-3">
+          {stats.map((stat, index) => (
+            <div key={stat.key || index} className="rounded-xl border border-[#E5E7EB] p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid sm:grid-cols-2 gap-3 flex-1">
+                  <TextRow label="Value" value={stat.value} onChange={next => setStats(stats.map((item, position) => (position === index ? { ...item, value: next } : item)))} />
+                  <TextRow label="Label" value={stat.label} onChange={next => setStats(stats.map((item, position) => (position === index ? { ...item, label: next } : item)))} />
+                </div>
+                <div className="pt-6">
+                  <ListActions
+                    index={index}
+                    total={stats.length}
+                    onMove={(from, delta) => setStats(moveItem(stats, from, delta))}
+                    onRemove={removeIndex => setStats(stats.filter((_, position) => position !== removeIndex))}
+                    removeLabel="Remove figure"
+                  />
+                </div>
+              </div>
+              <TextRow
+                label="Icon"
+                hint="award, users, book, check-circle, grid, bar-chart-2, megaphone, calendar or map-pin"
+                value={stat.icon}
+                onChange={next => setStats(stats.map((item, position) => (position === index ? { ...item, icon: next } : item)))}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="pt-3">
+          <AddButton label="Add figure" onClick={() => setStats([...stats, { key: `stat-${stats.length + 1}`, value: '', label: '', icon: 'award' }])} />
+        </div>
+      </Section>
+      <Section title="About" icon="info" description="The explainer shown beside the program card.">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Eyebrow" value={about.eyebrow} onChange={eyebrow => setAbout({ eyebrow })} />
+          <TextRow label="Heading" value={about.title} onChange={title => setAbout({ title })} />
+        </div>
+        <TextAreaRow label="Body" value={about.body} onChange={body => setAbout({ body })} rows={3} />
+        <LinesRow label="Key points (one per line)" value={about.bullets} onChange={bullets => setAbout({ bullets })} />
+        <div className="pt-2">
+          <div className="text-sm font-600 text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>Highlight tiles</div>
+          <div className="space-y-3">
+            {(about.highlights || []).map((highlight, index) => (
+              <div key={index} className="rounded-xl border border-[#E5E7EB] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid sm:grid-cols-2 gap-3 flex-1">
+                    <TextRow label="Value" value={highlight.value} onChange={next => setAbout({ highlights: (about.highlights || []).map((item, position) => (position === index ? { ...item, value: next } : item)) })} />
+                    <TextRow label="Label" value={highlight.label} onChange={next => setAbout({ highlights: (about.highlights || []).map((item, position) => (position === index ? { ...item, label: next } : item)) })} />
+                  </div>
+                  <div className="pt-6">
+                    <ListActions
+                      index={index}
+                      total={(about.highlights || []).length}
+                      onMove={(from, delta) => setAbout({ highlights: moveItem(about.highlights || [], from, delta) })}
+                      onRemove={removeIndex => setAbout({ highlights: (about.highlights || []).filter((_, position) => position !== removeIndex) })}
+                      removeLabel="Remove tile"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="pt-3">
+            <AddButton label="Add tile" onClick={() => setAbout({ highlights: [...(about.highlights || []), { value: '', label: '' }] })} />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Program card" icon="clipboard" description="The dark card shown beside the about copy.">
+        <ToggleField
+          label="Follow the live application window"
+          hint="Renders the subtitle, status pill and Application Period row from the Application windows tab."
+          checked={programCard.followWindow !== false}
+          onChange={followWindow => setCard({ followWindow })}
+        />
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Card title" value={programCard.title} onChange={title => setCard({ title })} />
+          <TextRow label="Status pill" hint="Used when the toggle above is off." value={programCard.statusLabel} onChange={statusLabel => setCard({ statusLabel })} />
+        </div>
+        <TextRow label="Subtitle" hint="Used when the toggle above is off." value={programCard.subtitle} onChange={subtitle => setCard({ subtitle })} />
+        <div className="pt-2">
+          <div className="text-sm font-600 text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>Detail rows</div>
+          <div className="space-y-3">
+            {(programCard.rows || []).map((row, index) => (
+              <div key={index} className="rounded-xl border border-[#E5E7EB] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid sm:grid-cols-[1fr_1.4fr] gap-3 flex-1">
+                    <TextRow label="Label" value={row.label} onChange={next => setCard({ rows: (programCard.rows || []).map((item, position) => (position === index ? { ...item, label: next } : item)) })} />
+                    <TextRow label="Value" value={row.value} onChange={next => setCard({ rows: (programCard.rows || []).map((item, position) => (position === index ? { ...item, value: next } : item)) })} />
+                  </div>
+                  <div className="pt-6">
+                    <ListActions
+                      index={index}
+                      total={(programCard.rows || []).length}
+                      onMove={(from, delta) => setCard({ rows: moveItem(programCard.rows || [], from, delta) })}
+                      onRemove={removeIndex => setCard({ rows: (programCard.rows || []).filter((_, position) => position !== removeIndex) })}
+                      removeLabel="Remove row"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="pt-3">
+            <AddButton label="Add row" onClick={() => setCard({ rows: [...(programCard.rows || []), { label: '', value: '' }] })} />
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3 pt-2">
+          <TextRow label="Button label" value={programCard.ctaLabel} onChange={ctaLabel => setCard({ ctaLabel })} />
+          <TextRow label="Button link" hint="e.g. /eligibility" value={programCard.ctaHref} onChange={ctaHref => setCard({ ctaHref })} />
+        </div>
+      </Section>
+      <Section title="How it works" icon="check-circle" description="The four steps shown in the middle of the page.">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Eyebrow" value={process.eyebrow} onChange={eyebrow => setProcess({ eyebrow })} />
+          <TextRow label="Heading" value={process.title} onChange={title => setProcess({ title })} />
+        </div>
+        <div className="pt-2">
+          <div className="text-sm font-600 text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>Steps</div>
+          <div className="space-y-3">
+            {(process.steps || []).map((step, index) => (
+              <div key={`${step.num || index}-${index}`} className="rounded-xl border border-[#E5E7EB] p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid sm:grid-cols-[90px_1fr] gap-3 flex-1">
+                    <TextRow label="Step no." value={step.num} onChange={num => setProcess({ steps: (process.steps || []).map((item, position) => (position === index ? { ...item, num } : item)) })} />
+                    <TextRow label="Step title" value={step.title} onChange={title => setProcess({ steps: (process.steps || []).map((item, position) => (position === index ? { ...item, title } : item)) })} />
+                  </div>
+                  <div className="pt-6">
+                    <ListActions
+                      index={index}
+                      total={(process.steps || []).length}
+                      onMove={(from, delta) => setProcess({ steps: moveItem(process.steps || [], from, delta) })}
+                      onRemove={removeIndex => setProcess({ steps: (process.steps || []).filter((_, position) => position !== removeIndex) })}
+                      removeLabel="Remove step"
+                    />
+                  </div>
+                </div>
+                <TextAreaRow
+                  label="Description"
+                  value={step.description}
+                  onChange={description => setProcess({ steps: (process.steps || []).map((item, position) => (position === index ? { ...item, description } : item)) })}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="pt-3">
+            <AddButton
+              label="Add step"
+              onClick={() => setProcess({ steps: [...(process.steps || []), { num: String((process.steps || []).length + 1).padStart(2, '0'), title: 'New step', description: '' }] })}
+            />
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3 pt-2">
+          <TextRow label="Button label" value={process.ctaLabel} onChange={ctaLabel => setProcess({ ctaLabel })} />
+          <TextRow label="Button link" hint="e.g. /login" value={process.ctaHref} onChange={ctaHref => setProcess({ ctaHref })} />
+        </div>
+      </Section>
+      <Section title="Testimonials" icon="message-square" description="Scholar stories. Clear the list to hide the section on the public page.">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Eyebrow" value={testimonials.eyebrow} onChange={eyebrow => setTestimonials({ eyebrow })} />
+          <TextRow label="Heading" value={testimonials.title} onChange={title => setTestimonials({ title })} />
+        </div>
+        <div className="pt-2">
+          <div className="text-sm font-600 text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>Stories</div>
+          <div className="space-y-3">
+            {(testimonials.items || []).map((item, index) => (
+              <div key={index} className="rounded-xl border border-[#E5E7EB] p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid sm:grid-cols-3 gap-3 flex-1">
+                    <TextRow label="Name" value={item.name} onChange={next => setTestimonials({ items: (testimonials.items || []).map((row, position) => (position === index ? { ...row, name: next } : row)) })} />
+                    <TextRow label="Batch" value={item.batch} onChange={next => setTestimonials({ items: (testimonials.items || []).map((row, position) => (position === index ? { ...row, batch: next } : row)) })} />
+                    <TextRow label="School" value={item.school} onChange={next => setTestimonials({ items: (testimonials.items || []).map((row, position) => (position === index ? { ...row, school: next } : row)) })} />
+                  </div>
+                  <div className="pt-6">
+                    <ListActions
+                      index={index}
+                      total={(testimonials.items || []).length}
+                      onMove={(from, delta) => setTestimonials({ items: moveItem(testimonials.items || [], from, delta) })}
+                      onRemove={removeIndex => setTestimonials({ items: (testimonials.items || []).filter((_, position) => position !== removeIndex) })}
+                      removeLabel="Remove story"
+                    />
+                  </div>
+                </div>
+                <TextAreaRow
+                  label="Quote"
+                  value={item.text}
+                  onChange={next => setTestimonials({ items: (testimonials.items || []).map((row, position) => (position === index ? { ...row, text: next } : row)) })}
+                  rows={3}
+                />
+                <div className="grid sm:grid-cols-[120px_1fr] gap-3">
+                  <TextRow
+                    label="Stars (0–5)"
+                    value={String(item.rating ?? 5)}
+                    onChange={next => setTestimonials({ items: (testimonials.items || []).map((row, position) => (position === index ? { ...row, rating: Number(next) || 0 } : row)) })}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="pt-3">
+            <AddButton
+              label="Add story"
+              onClick={() => setTestimonials({ items: [...(testimonials.items || []), { name: '', batch: '', school: '', text: '', rating: 5 }] })}
+            />
+          </div>
+        </div>
+      </Section>
+      <Section title="Announcements" icon="megaphone" description="Latest updates listed at the bottom of the page. Clear the list to hide the section.">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Eyebrow" value={announcements.eyebrow} onChange={eyebrow => setAnnouncements({ eyebrow })} />
+          <TextRow label="Heading" value={announcements.title} onChange={title => setAnnouncements({ title })} />
+        </div>
+        <div className="pt-2">
+          <div className="text-sm font-600 text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>Posts</div>
+          <div className="space-y-3">
+            {(announcements.items || []).map((item, index) => (
+              <div key={index} className="rounded-xl border border-[#E5E7EB] p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid sm:grid-cols-2 gap-3 flex-1">
+                    <TextRow label="Tag" value={item.tag} onChange={next => setAnnouncements({ items: (announcements.items || []).map((row, position) => (position === index ? { ...row, tag: next } : row)) })} />
+                    <TextRow label="Date" hint="e.g. May 28, 2025" value={item.date} onChange={next => setAnnouncements({ items: (announcements.items || []).map((row, position) => (position === index ? { ...row, date: next } : row)) })} />
+                  </div>
+                  <div className="pt-6">
+                    <ListActions
+                      index={index}
+                      total={(announcements.items || []).length}
+                      onMove={(from, delta) => setAnnouncements({ items: moveItem(announcements.items || [], from, delta) })}
+                      onRemove={removeIndex => setAnnouncements({ items: (announcements.items || []).filter((_, position) => position !== removeIndex) })}
+                      removeLabel="Remove post"
+                    />
+                  </div>
+                </div>
+                <TextRow label="Title" value={item.title} onChange={next => setAnnouncements({ items: (announcements.items || []).map((row, position) => (position === index ? { ...row, title: next } : row)) })} />
+                <TextAreaRow label="Excerpt" value={item.excerpt} onChange={next => setAnnouncements({ items: (announcements.items || []).map((row, position) => (position === index ? { ...row, excerpt: next } : row)) })} rows={2} />
+              </div>
+            ))}
+          </div>
+          <div className="pt-3">
+            <AddButton
+              label="Add post"
+              onClick={() => setAnnouncements({ items: [...(announcements.items || []), { tag: '', date: '', title: 'New announcement', excerpt: '' }] })}
+            />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Closing banner" icon="send" description="The final call-to-action at the bottom of the page.">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Heading" value={cta.title} onChange={title => setCta({ title })} />
+          <TextAreaRow label="Body" value={cta.body} onChange={body => setCta({ body })} rows={2} />
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Primary button" value={cta.primaryLabel} onChange={primaryLabel => setCta({ primaryLabel })} />
+          <TextRow label="Primary button link" hint="e.g. /login?tab=register" value={cta.primaryHref} onChange={primaryHref => setCta({ primaryHref })} />
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <TextRow label="Secondary button" value={cta.secondaryLabel} onChange={secondaryLabel => setCta({ secondaryLabel })} />
+          <TextRow label="Secondary button link" hint="e.g. /eligibility" value={cta.secondaryHref} onChange={secondaryHref => setCta({ secondaryHref })} />
+        </div>
+      </Section>
+    </>
+  );
+}
+
 const TABS = [
   { id: 'documents', label: 'Document slots', icon: 'file-text', group: 'program' },
   { id: 'windows', label: 'Application windows', icon: 'calendar', group: 'program' },
   { id: 'rules', label: 'Eligibility & disbursement', icon: 'award', group: 'program' },
+  { id: 'home-page', label: 'Home page', icon: 'home', group: 'pages' },
   { id: 'eligibility-page', label: 'Eligibility page', icon: 'eye', group: 'pages' },
   { id: 'apply-page', label: 'How to Apply page', icon: 'book', group: 'pages' },
   { id: 'guidelines-page', label: 'Guidelines page', icon: 'clipboard', group: 'pages' },
@@ -752,6 +1080,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 
 const PREVIEWS: Partial<Record<TabId, string>> = {
+  'home-page': '/',
   'eligibility-page': '/eligibility',
   'apply-page': '/how-to-apply',
   'guidelines-page': '/guidelines',
@@ -864,6 +1193,9 @@ function PagesPanel({ tab, draft, onEdit, ...panel }: { tab: TabId; draft: Pages
   const preview = PREVIEWS[tab];
 
   const body = (() => {
+    if (tab === 'home-page') {
+      return <HomeContentEditor value={draft.home} onChange={next => onEdit({ ...draft, home: next })} />;
+    }
     if (tab === 'eligibility-page') {
       return (
         <Section
@@ -1153,7 +1485,7 @@ export default function CityProgramSettings() {
         message={
           confirming === 'program'
             ? 'Document slots, filing windows, eligibility rules and disbursement go back to the values shipped with the system. Anything saved here is overwritten.'
-            : 'The Eligibility, How to Apply and Guidelines pages go back to the copy shipped with the system. Anything saved here is overwritten.'
+            : 'The Home, Eligibility, How to Apply and Guidelines pages go back to the copy shipped with the system. Anything saved here is overwritten.'
         }
         confirmLabel="Restore defaults"
         danger
