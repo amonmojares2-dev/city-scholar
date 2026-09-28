@@ -1,3 +1,0 @@
-email.test.js
-security.test.js
-uploadSecurity.test.js
