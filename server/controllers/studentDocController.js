@@ -20,6 +20,12 @@ const publicDocuments = (documents) => (documents || []).map(publicDocument);
 
 const PAGE_SIZE = 50;
 
+// Statuses in which a student may (re)upload an Application-context document:
+//   draft                    – the application is still being prepared
+//   additional_requirements  – the City Office asked for a replacement
+// Anything else is locked (the 409 below), and renewals are never locked.
+const REPLACEABLE_APPLICATION_STATUSES = ["draft", "additional_requirements"];
+
 /** Student: list documents for the application they most recently submitted (or draft). */
 const listStudentDocuments = async(req, res, next) => {
     try {
@@ -78,13 +84,15 @@ const uploadStudentDocument = async(req, res, next) => {
         const rawContext = String(req.body.context || "").trim().toLowerCase();
         const context = rawContext === "renewal" ? "renewal" : "application";
 
-        // Application uploads target a draft explicitly. If a student has no
-        // draft but does have a locked application, return the useful 409 rather
-        // than a misleading 404. Renewal uploads keep their existing latest-
-        // application behavior.
+        // Application uploads target a draft explicitly, or a record the City
+        // Office has asked to complete / replace documents on
+        // ("additional_requirements" — that decision is what unlocks the
+        // replacement flow after submission). If a student has neither, return
+        // the useful 409 rather than a misleading 404. Renewal uploads keep
+        // their existing latest-application behavior.
         let application;
         if (context === "application") {
-            application = await Application.findOne({ student: req.user.id, status: "draft" })
+            application = await Application.findOne({ student: req.user.id, status: { $in: REPLACEABLE_APPLICATION_STATUSES } })
                 .sort({ createdAt: -1 });
             if (!application) {
                 const lockedApplication = await Application.findOne({ student: req.user.id })
@@ -113,7 +121,7 @@ const uploadStudentDocument = async(req, res, next) => {
             return sendError(403, "You can only upload documents for your own application.");
         }
 
-        if (context === "application" && application.status !== "draft") {
+        if (context === "application" && !REPLACEABLE_APPLICATION_STATUSES.includes(application.status)) {
             console.warn(`Document upload rejected for application ${application._id}: status=${application.status}`);
             removeStoredFileByFilename(req.file.filename);
             return sendError(409, "Documents can no longer be changed because your application was already submitted.");
@@ -146,8 +154,14 @@ const uploadStudentDocument = async(req, res, next) => {
             originalName: req.file.originalname,
             filename: req.file.filename,
             mimeType,
+            // Replacing a document resets its review state: the new file is
+            // unreviewed, so the status goes back to pending and the previous
+            // reviewer trail is cleared. The City Office then has to review the
+            // replacement before the application can be approved.
             status: "pending",
-            remarks: ""
+            remarks: "",
+            reviewedBy: null,
+            reviewedAt: null
         };
 
         let previousDocument;

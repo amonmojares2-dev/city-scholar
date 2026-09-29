@@ -78,6 +78,8 @@ interface Application {
   updatedAt?: string;
   reviewedAt?: string | null;
   reviewedBy?: { name: string } | null;
+  // Per-document review gate, computed by the server for this record.
+  documentReview?: DocumentReviewSummary | null;
 }
 
 interface DocumentRecord {
@@ -89,6 +91,9 @@ interface DocumentRecord {
   context?: string;
   status: string;
   remarks?: string;
+  // Written by the per-document review (PATCH /api/documents/:id).
+  reviewedAt?: string | null;
+  reviewedBy?: { name: string } | string | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -99,6 +104,34 @@ interface ProgramConfig {
   minGwa: number;
   requiredDocuments: string[];
   eligibleSchools: string[];
+}
+
+// One document slot from the City Office Program Config ("Program Settings").
+interface ProgramDocumentSlot {
+  key: string;
+  label?: string;
+  required?: boolean;
+  enabled?: boolean;
+}
+
+// GET /api/city/settings/program — the City Office owns the required document
+// list, which is also what the backend approve gate checks.
+interface CityProgramSettings {
+  applicationDocuments: ProgramDocumentSlot[];
+  renewalDocuments: ProgramDocumentSlot[];
+}
+
+// GET /api/applications/:id ships the per-document review gate with the record
+// (same numbers the approve endpoint enforces).
+interface DocumentReviewSummary {
+  context: string;
+  totalDocuments: number;
+  approvedDocuments: number;
+  pendingDocuments: number;
+  rejectedDocuments: number;
+  missingRequiredDocuments: string[];
+  canApprove: boolean;
+  reason: string;
 }
 
 type TabKey = 'overview' | 'documents' | 'eligibility' | 'activity';
@@ -126,9 +159,9 @@ const HERO_STATUS: Record<string, { label: string; className: string }> = {
 
 const DOC_STATUS: Record<DocViewStatus, { label: string; text: string; dot: string }> = {
   'not-uploaded': { label: 'Not Uploaded', text: 'text-[#6B7280]', dot: 'bg-[#9CA3AF]' },
-  'under-review': { label: 'Under Review', text: 'text-[#D97706]', dot: 'bg-[#D97706]' },
-  verified: { label: 'Verified', text: 'text-[#22A06B]', dot: 'bg-[#22A06B]' },
-  'needs-replacement': { label: 'Needs Replacement', text: 'text-[#EA580C]', dot: 'bg-[#EA580C]' },
+  'under-review': { label: 'Pending Review', text: 'text-[#D97706]', dot: 'bg-[#D97706]' },
+  verified: { label: 'Approved', text: 'text-[#22A06B]', dot: 'bg-[#22A06B]' },
+  'needs-replacement': { label: 'Rejected', text: 'text-[#EA580C]', dot: 'bg-[#EA580C]' },
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -173,10 +206,17 @@ interface DocRow {
 
 const documentViewStatus = (document: DocumentRecord | null): DocViewStatus => {
   if (!document) return 'not-uploaded';
-  if (document.status === 'verified') return 'verified';
+  if (documentIsApproved(document)) return 'verified';
   if (document.status === 'rejected') return 'needs-replacement';
   return 'under-review';
 };
+
+// "approved" is what the City Office document review writes; "verified" is the
+// older label for the SAME state, still stored on rows saved before the review
+// gate existed (and on rows the Barangay review touched). Both count as
+// approved, so no historical row has to be re-reviewed or migrated.
+const documentIsApproved = (document: DocumentRecord | null) =>
+  Boolean(document) && (document?.status === 'approved' || document?.status === 'verified');
 
 // An uploaded row belongs to a slot when the names match or one contains the
 // other (legacy uploads use short labels like "residency" or "birth
@@ -267,6 +307,8 @@ export default function CityApplicationDetail() {
   const [application, setApplication] = useState<Application | null>(null);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [programs, setPrograms] = useState<ProgramConfig[]>([]);
+  // Required document slots as configured by the City Office Program Settings.
+  const [programSettings, setProgramSettings] = useState<CityProgramSettings | null>(null);
   const [tab, setTab] = useState<TabKey>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -281,20 +323,31 @@ export default function CityApplicationDetail() {
   // Document preview + review modal
   const [preview, setPreview] = useState<DocRow | null>(null);
   const [previewRemarks, setPreviewRemarks] = useState('');
+  // The row currently getting an approve/reject decision (disables its buttons).
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  // The server's own gate summary for this record — the exact numbers the
+  // approve endpoint enforces, so the UI never claims something the API denies.
+  const [serverReview, setServerReview] = useState<DocumentReviewSummary | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     // Program rules support the review (min GWA + required document slots).
     // A failure there must never blank out the application itself, so it falls
     // back to an empty list and the default document slots.
-    const [applicationResult, documentResult, programResult] = await Promise.all([
-      api<{ application: Application }>(`/applications/${id}`),
+    const [applicationResult, documentResult, programResult, settingsResult] = await Promise.all([
+      api<{ application: Application; documentReview?: DocumentReviewSummary | null }>(`/applications/${id}`),
       api<{ documents: DocumentRecord[] }>(`/documents?application=${encodeURIComponent(id)}`),
       api<{ programs: ProgramConfig[] }>('/programs').catch(() => ({ programs: [] as ProgramConfig[] })),
+      // Required document slots come from the City Office Program Config
+      // (Program Settings) — the SAME list the backend approve gate checks, so
+      // the rows below and the API can never disagree.
+      api<{ settings: CityProgramSettings }>('/city/settings/program').catch(() => null),
     ]);
     setApplication(applicationResult.application);
+    setServerReview(applicationResult.documentReview || null);
     setDocuments(documentResult.documents || []);
     setPrograms(programResult.programs || []);
+    setProgramSettings(settingsResult?.settings || null);
   }, [id]);
 
   useEffect(() => {
@@ -322,14 +375,56 @@ export default function CityApplicationDetail() {
     return programs.find(program => namesMatch(program.programName, application.program as string)) || null;
   }, [programs, application]);
 
-  const slots = useMemo(
-    () => (programConfig?.requiredDocuments?.length ? programConfig.requiredDocuments : APPLICATION_DOCUMENT_TYPES.map(slot => slot.key)),
-    [programConfig]
-  );
+  // Required slots: the City Office Program Config owns them, so adding or
+  // removing a required document in Program Settings changes these rows AND the
+  // approve gate at the same time.
+  const slots = useMemo(() => {
+    const configured = context === 'renewal' ? programSettings?.renewalDocuments : programSettings?.applicationDocuments;
+    const usable = (configured || []).filter(slot => slot.enabled !== false);
+    const required = usable.filter(slot => slot.required !== false);
+    const source = required.length ? required : usable;
+    return source.length ? source.map(slot => slot.key) : APPLICATION_DOCUMENT_TYPES.map(slot => slot.key);
+  }, [programSettings, context]);
 
   const docRows = useMemo(() => buildDocRows(slots, scopedDocuments), [slots, scopedDocuments]);
   const uploadedCount = docRows.filter(row => row.document).length;
-  const verifiedCount = docRows.filter(row => documentViewStatus(row.document) === 'verified').length;
+  const approvedCount = docRows.filter(row => documentIsApproved(row.document)).length;
+  const rejectedCount = docRows.filter(row => row.document?.status === 'rejected').length;
+  const pendingReviewCount = docRows.filter(row => row.document && !documentIsApproved(row.document) && row.document?.status !== 'rejected').length;
+  const missingRequiredCount = docRows.filter(row => !row.document).length;
+
+  // ============================================================
+  // THE DOCUMENT REVIEW GATE (mirrors utils/documentReview.js)
+  //   - every uploaded document of this flow must be approved, and
+  //   - every required slot must be covered by an approved upload.
+  // The Approve button stays disabled until then. The API recomputes the same
+  // gate from the server side, so a hand-made request cannot skip the review.
+  // The server's summary (fetched with the record) is authoritative — the
+  // local counts below are only what the page can see.
+  // ============================================================
+  const localCanApprove = docRows.every(row => documentIsApproved(row.document));
+  const canApproveDocuments = localCanApprove && (serverReview ? serverReview.canApprove : true);
+
+  const localGateReason = useMemo(() => {
+    if (localCanApprove) return '';
+    const problems: string[] = [];
+    if (missingRequiredCount) {
+      problems.push(`${missingRequiredCount} required document${missingRequiredCount === 1 ? ' has' : 's have'} no file yet`);
+    }
+    if (pendingReviewCount) {
+      problems.push(`${pendingReviewCount} document${pendingReviewCount === 1 ? ' still needs' : 's still need'} an approve or reject decision`);
+    }
+    if (rejectedCount) {
+      problems.push(`${rejectedCount} document${rejectedCount === 1 ? ' was' : 's were'} rejected and must be replaced by the student first`);
+    }
+    const closing = rejectedCount && !pendingReviewCount && !missingRequiredCount
+      ? 'This record can only be rejected, or held until the replacement documents are approved.'
+      : 'Every uploaded document must be approved before this can be approved.';
+    return `${approvedCount} of ${docRows.length} documents approved. ${problems.join('. ')}${problems.length ? '. ' : ''}${closing}`;
+  }, [localCanApprove, approvedCount, docRows.length, missingRequiredCount, pendingReviewCount, rejectedCount]);
+
+  // The server sends the same summary with the record; prefer its wording.
+  const gateReason = canApproveDocuments ? '' : (serverReview?.reason || localGateReason);
 
   // Eligibility checks are computed from what is actually on the record.
   // Anything the record does not answer stays "unknown" instead of guessing.
@@ -404,12 +499,20 @@ export default function CityApplicationDetail() {
       },
       {
         key: 'documents-verified',
-        label: 'All uploaded documents verified',
-        detail: `${verifiedCount} of ${uploadedCount} uploaded documents verified`,
-        state: uploadedCount === 0 ? 'unknown' : stateFrom(verifiedCount === uploadedCount),
+        label: 'All uploaded documents approved',
+        detail: `${approvedCount} of ${uploadedCount} uploaded documents approved`,
+        state: uploadedCount === 0 ? 'unknown' : stateFrom(approvedCount === uploadedCount),
+      },
+      {
+        key: 'documents-approved-gate',
+        label: 'Document review complete for approval',
+        detail: canApproveDocuments
+          ? 'Every uploaded document is approved — the application can be approved.'
+          : gateReason,
+        state: stateFrom(canApproveDocuments),
       },
     ];
-  }, [application, programConfig, uploadedCount, verifiedCount, docRows.length]);
+  }, [application, programConfig, uploadedCount, approvedCount, canApproveDocuments, gateReason, docRows.length]);
 
   // The activity feed is built from the record's own timestamps — no events
   // are stored separately, so nothing is shown that didn't happen.
@@ -516,25 +619,86 @@ export default function CityApplicationDetail() {
     setModalError('');
   };
 
-  const reviewDocument = async (nextStatus: 'verified' | 'rejected') => {
-    const document = preview?.document;
-    if (!document) return;
-    setSaving(true);
+  // ============================================================
+  // Per-document review — what the Approve gate actually counts.
+  //
+  //   approve → writes status "approved" (the canonical value the gate and
+  //             the API both count as reviewed OK).
+  //   reject  → REQUIRES a reason: the API notifies the student with it, so
+  //             they know exactly which file to replace. Inline Reject opens
+  //             the preview modal with the reason field instead.
+  // ============================================================
+  const refreshGate = async () => {
+    if (!id) return;
+    try {
+      const [freshApplication, freshDocuments] = await Promise.all([
+        api<{ application: Application; documentReview?: DocumentReviewSummary | null }>(`/applications/${id}`),
+        api<{ documents: DocumentRecord[] }>(`/documents?application=${encodeURIComponent(id)}`),
+      ]);
+      setApplication(freshApplication.application);
+      setServerReview(freshApplication.documentReview || null);
+      setDocuments(freshDocuments.documents || []);
+    } catch {
+      // The documents list the page already has is still accurate; the gate
+      // copy on screen is refreshed on the next full load.
+    }
+  };
+
+  const reviewDocumentRow = async (row: DocRow, nextStatus: 'approved', remarks = '') => {
+    const document = row.document;
+    if (!document || reviewingId) return;
+    setReviewingId(document._id);
     setModalError('');
     try {
       const result = await api<{ document: DocumentRecord }>(`/documents/${document._id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status: nextStatus, remarks: previewRemarks.trim() }),
+        body: JSON.stringify({ status: nextStatus, remarks }),
       });
       setDocuments(current => current.map(item => (item._id === document._id ? { ...item, ...result.document } : item)));
-      setNotice(nextStatus === 'verified'
-        ? { kind: 'success', text: `${document.type} is marked as verified.` }
-        : { kind: 'warning', text: `${document.type} is marked as needing a replacement. Send the student instructions with “Request Docs” so they are notified.` });
+      setNotice({ kind: 'success', text: `${row.label} approved. The review progress below is updated right away.` });
+      if (preview?.document?._id === document._id) setPreview(null);
+      await refreshGate();
+    } catch (requestError) {
+      if (preview?.document?._id === document._id) {
+        setModalError(requestError instanceof Error ? requestError.message : 'Unable to update the document.');
+      } else {
+        setNotice({ kind: 'danger', text: requestError instanceof Error ? requestError.message : `Unable to approve ${row.label}.` });
+      }
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const reviewDocument = async (nextStatus: 'approved' | 'rejected') => {
+    const row = preview;
+    const document = row?.document;
+    if (!row || !document) return;
+    // A rejection with no reason leaves the student guessing which file to
+    // fix — force the reviewer to write one.
+    if (nextStatus === 'rejected' && !previewRemarks.trim()) {
+      setModalError('Write the reason for the rejection so the student knows which file to replace.');
+      return;
+    }
+    if (nextStatus === 'approved') {
+      await reviewDocumentRow(row, 'approved', previewRemarks.trim());
+      return;
+    }
+    if (reviewingId) return;
+    setReviewingId(document._id);
+    setModalError('');
+    try {
+      const result = await api<{ document: DocumentRecord }>(`/documents/${document._id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'rejected', remarks: previewRemarks.trim() }),
+      });
+      setDocuments(current => current.map(item => (item._id === document._id ? { ...item, ...result.document } : item)));
+      setNotice({ kind: 'warning', text: `${row.label} was rejected. The student is notified and must re-upload it — the application cannot be approved until the replacement is reviewed.` });
       setPreview(null);
+      await refreshGate();
     } catch (requestError) {
       setModalError(requestError instanceof Error ? requestError.message : 'Unable to update the document.');
     } finally {
-      setSaving(false);
+      setReviewingId(null);
     }
   };
 
@@ -652,8 +816,12 @@ export default function CityApplicationDetail() {
           </button>
           <button
             onClick={() => openDecision('approved')}
-            disabled={saving || decided}
-            title={decided ? 'This application already has a final decision.' : 'Approve this application'}
+            disabled={saving || decided || !canApproveDocuments}
+            title={decided
+              ? 'This application already has a final decision.'
+              : canApproveDocuments
+                ? 'Approve this application'
+                : `Cannot approve yet — ${gateReason}`}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#22A06B] text-sm text-white hover:bg-[#1B8457] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontWeight: 600 }}
           >
@@ -664,6 +832,31 @@ export default function CityApplicationDetail() {
 
       {error && <div className="mb-4 bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-sm text-red-700">{error}</div>}
       {notice && <div className={`mb-4 rounded-xl px-4 py-3 text-sm border ${noticeStyle}`}>{notice.text}</div>}
+
+      {/* The review gate, always visible while the record is still undecided:
+          the Approve button above stays disabled until this is satisfied. */}
+      {!decided && !canApproveDocuments && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+          <span className="mt-0.5 text-[#D97706]"><Icon name="clock" size={15} /></span>
+          <div className="min-w-0">
+            <div className="text-sm text-[#92400E]" style={{ fontWeight: 600 }}>
+              Document review incomplete — {approvedCount} of {docRows.length} approved
+            </div>
+            <p className="text-xs text-[#92400E]/80 mt-0.5">{gateReason}</p>
+          </div>
+        </div>
+      )}
+      {!decided && canApproveDocuments && (
+        <div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-3">
+          <span className="mt-0.5 text-[#22A06B]"><Icon name="check-circle" size={15} /></span>
+          <div className="min-w-0">
+            <div className="text-sm text-[#166534]" style={{ fontWeight: 600 }}>
+              Document review complete — all {docRows.length} documents approved
+            </div>
+            <p className="text-xs text-[#166534]/80 mt-0.5">The application can now be approved.</p>
+          </div>
+        </div>
+      )}
 
       {/* Applicant hero */}
       <div className="bg-[#0B1F3A] rounded-2xl px-6 py-5 mb-5 text-white">
@@ -731,39 +924,96 @@ export default function CityApplicationDetail() {
 
       {tab === 'documents' && (
         <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
-          <div className="px-5 py-4 border-b border-[#E5E7EB] flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-700 text-[#1F2937]" style={{ fontWeight: 700 }}>Required Documents</h2>
-            <span className="text-xs text-[#6B7280]">
-              {uploadedCount} of {docRows.length} uploaded · {verifiedCount} verified
-            </span>
+          {/* Review progress — how close the Approve gate (above) is. */}
+          <div className="px-5 py-4 border-b border-[#E5E7EB]">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-700 text-[#1F2937]" style={{ fontWeight: 700 }}>Required Documents</h2>
+              <span className={`text-xs ${canApproveDocuments ? 'text-[#22A06B]' : 'text-[#6B7280]'}`} style={{ fontWeight: 600 }}>
+                {approvedCount} of {docRows.length} approved
+              </span>
+            </div>
+            <div className="mt-2.5 h-2 rounded-full bg-[#F1F5F9] overflow-hidden" role="progressbar" aria-valuenow={approvedCount} aria-valuemin={0} aria-valuemax={docRows.length} aria-label="Documents approved">
+              <div
+                className={`h-full rounded-full transition-all ${canApproveDocuments ? 'bg-[#22A06B]' : 'bg-[#D4A72C]'}`}
+                style={{ width: docRows.length ? `${Math.round((approvedCount / docRows.length) * 100)}%` : '0%' }}
+              />
+            </div>
+            {!decided && !canApproveDocuments && gateReason && (
+              <p className="mt-2 text-xs text-[#92400E]">{gateReason}</p>
+            )}
           </div>
           <div className="divide-y divide-[#E5E7EB]">
-            {docRows.map(row => (
-              <div key={row.key} className="flex items-center gap-4 px-5 py-4">
-                <span className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${row.document ? 'bg-[#F0F4FA] text-[#163A63]' : 'bg-[#F6F7F9] text-[#9CA3AF]'}`}>
-                  <Icon name="file-text" size={16} />
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-[#1F2937] truncate" style={{ fontWeight: 600 }}>{row.label}</div>
-                  <div className="text-xs text-[#9CA3AF] truncate">
-                    {row.document
-                      ? `${row.document.originalName} · Uploaded ${formatDay(row.document.createdAt)}`
-                      : 'No file submitted for this document'}
+            {docRows.map(row => {
+              const document = row.document;
+              const busy = Boolean(document) && reviewingId === document?._id;
+              const approved = documentIsApproved(document);
+              // `reviewedBy` can arrive as a populated { name } object or a
+              // plain id string — show a name only when we actually have one.
+              const reviewedBy = document?.reviewedBy;
+              const reviewName = typeof reviewedBy === 'string' ? '' : reviewedBy?.name;
+              return (
+                <div key={row.key} className="flex items-center gap-4 px-5 py-4">
+                  <span className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${document ? 'bg-[#F0F4FA] text-[#163A63]' : 'bg-[#F6F7F9] text-[#9CA3AF]'}`}>
+                    <Icon name="file-text" size={16} />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-[#1F2937] truncate" style={{ fontWeight: 600 }}>{row.label}</div>
+                    <div className="text-xs text-[#9CA3AF] truncate">
+                      {document
+                        ? `${document.originalName} · Uploaded ${formatDay(document.createdAt)}`
+                        : 'No file submitted for this document'}
+                    </div>
+                    {approved && document?.reviewedAt && (
+                      <div className="text-xs text-[#22A06B] truncate mt-0.5">
+                        Approved {formatDay(document.reviewedAt)}{reviewName ? ` by ${reviewName}` : ''}
+                      </div>
+                    )}
+                    {document?.remarks && (
+                      <div className="text-xs text-[#6B7280] truncate mt-0.5">Reviewer note: {document.remarks}</div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <DocStatusLabel status={documentViewStatus(document)} />
+                    {/* Per-document review: approve directly, or open the
+                        preview to reject with a reason for the student. */}
+                    {document && !decided && (
+                      <>
+                        {!approved && (
+                          <button
+                            onClick={() => reviewDocumentRow(row, 'approved')}
+                            disabled={busy}
+                            title={`Approve ${row.label}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#BBF7D0] text-xs text-[#16A34A] hover:bg-green-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            style={{ fontWeight: 600 }}
+                          >
+                            <Icon name="check" size={12} /> {busy ? 'Saving…' : 'Approve'}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => openPreview(row)}
+                          disabled={busy}
+                          title={approved ? 'Review or override this decision' : 'Review — approve, or reject with a reason for the student'}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E5E7EB] text-xs text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#163A63] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          style={{ fontWeight: 600 }}
+                        >
+                          <Icon name={approved ? 'edit' : 'eye'} size={12} /> {approved ? 'Review' : document?.status === 'rejected' ? 'Details' : 'Review / Reject'}
+                        </button>
+                      </>
+                    )}
+                    {(!document || decided) && (
+                      <button
+                        onClick={() => openPreview(row)}
+                        disabled={!document}
+                        title={document ? 'Open and review this document' : 'No document uploaded yet'}
+                        className="w-8 h-8 rounded-lg flex items-center justify-center text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#163A63] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Icon name="eye" size={15} />
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-5 flex-shrink-0">
-                  <DocStatusLabel status={documentViewStatus(row.document)} />
-                  <button
-                    onClick={() => openPreview(row)}
-                    disabled={!row.document || saving}
-                    title={row.document ? 'Open and review this document' : 'No document uploaded yet'}
-                    className="w-8 h-8 rounded-lg flex items-center justify-center text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#163A63] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    <Icon name="eye" size={15} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -840,6 +1090,15 @@ export default function CityApplicationDetail() {
             </div>
 
             <div className="p-6 space-y-4">
+              {/* Even if the header button's gate ever went stale (e.g. a
+                  document was rejected in another tab), the API re-checks —
+                  repeat the reason here so the refusal can't be surprising. */}
+              {decision === 'approved' && !canApproveDocuments && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-[#92400E]">
+                  {gateReason}
+                </div>
+              )}
+
               <p className="text-sm text-[#6B7280]">
                 {decision === 'approved'
                   ? `Approving records the decision on application #${displayId} and notifies ${studentName} in the student portal.`
@@ -928,29 +1187,32 @@ export default function CityApplicationDetail() {
       )}
 
       {/* Document preview + review modal */}
-      {preview?.document && (
+      {preview?.document && (() => {
+        const previewDocument = preview.document as DocumentRecord;
+        const previewBusy = reviewingId === previewDocument._id;
+        return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[70vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-[#E5E7EB] sticky top-0 bg-white">
               <div className="min-w-0">
                 <h2 className="text-sm font-700 text-[#1F2937] truncate" style={{ fontWeight: 700 }}>{preview.label}</h2>
                 <p className="text-xs text-[#9CA3AF] truncate">
-                  {preview.document.originalName} · Uploaded {formatDay(preview.document.createdAt)}
+                  {previewDocument.originalName} · Uploaded {formatDay(previewDocument.createdAt)}
                 </p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <DocStatusLabel status={documentViewStatus(preview.document)} />
-                <button onClick={() => setPreview(null)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[#F6F7F9] text-[#6B7280]">
+                <DocStatusLabel status={documentViewStatus(previewDocument)} />
+                <button onClick={() => setPreview(null)} disabled={previewBusy} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[#F6F7F9] text-[#6B7280] disabled:opacity-40">
                   <Icon name="x" size={15} />
                 </button>
               </div>
             </div>
 
             <div className="p-6 space-y-4">
-              {isImageMime(preview.document.mimeType) ? (
+              {isImageMime(previewDocument.mimeType) ? (
                 <PrivateDocumentImage
-                  documentId={preview.document._id}
-                  alt={preview.document.originalName}
+                  documentId={previewDocument._id}
+                  alt={previewDocument.originalName}
                   className="w-full max-h-[30vh] object-contain rounded-xl border border-[#E5E7EB] bg-[#F6F7F9]"
                 />
               ) : (
@@ -961,7 +1223,7 @@ export default function CityApplicationDetail() {
               )}
 
               <PrivateFileLink
-                documentId={preview.document._id}
+                documentId={previewDocument._id}
                 className="inline-flex items-center gap-2 text-sm text-[#163A63] hover:underline"
               >
                 <Icon name="external-link" size={14} /> Open the uploaded file in a new tab
@@ -987,25 +1249,28 @@ export default function CityApplicationDetail() {
               <div className="flex flex-wrap justify-end gap-3">
                 <button
                   onClick={() => reviewDocument('rejected')}
-                  disabled={saving}
+                  disabled={previewBusy}
+                  title="Reject this file — the reason above is sent to the student"
                   className="px-4 py-2.5 rounded-xl border border-[#FDBA74] text-sm text-[#EA580C] hover:bg-orange-50 disabled:opacity-40"
                   style={{ fontWeight: 600 }}
                 >
-                  Needs replacement
+                  {previewBusy ? 'Saving…' : 'Reject (needs replacement)'}
                 </button>
                 <button
-                  onClick={() => reviewDocument('verified')}
-                  disabled={saving}
+                  onClick={() => reviewDocument('approved')}
+                  disabled={previewBusy}
+                  title="Approve this file"
                   className="px-4 py-2.5 rounded-xl bg-[#22A06B] text-sm text-white hover:bg-[#1B8457] disabled:opacity-40"
                   style={{ fontWeight: 600 }}
                 >
-                  {saving ? 'Saving…' : 'Verify document'}
+                  {previewBusy ? 'Saving…' : 'Approve document'}
                 </button>
               </div>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
       <ConfirmDialog
         open={confirmDecisionOpen && decision !== null}
         title={decision === 'approved' ? 'Approve application?' : decision === 'rejected' ? 'Reject application?' : 'Request additional documents?'}

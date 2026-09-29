@@ -1,9 +1,11 @@
 const Document = require("../models/Document");
 const Application = require("../models/Application");
+const Notification = require("../models/Notification");
 const User = require("../models/User");
 const fs = require("fs");
 const { resolveStoredFile, removeStoredFileByFilename } = require("../config/storage");
 const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES, BARANGAY_ADMIN_ROLES } = require("../utils/validation");
+const { normalizeReviewStatus } = require("../utils/documentReview");
 
 // Strip the deprecated raw filesystem path before a Document leaves the
 // server — clients must never see the server's directory structure.
@@ -52,10 +54,58 @@ const uploadDocument = async(req, res, next) => {
     }
 };
 
+// ==========================================================
+// PATCH /api/documents/:id — the per-document review action
+//
+// The City Office (and the Barangay Office, which keeps its own residency
+// workflow) approves or rejects ONE uploaded file at a time:
+//   { status: "approved" | "rejected" | "pending", remarks?: string }
+//
+// Stores the decision with reviewedBy / reviewedAt so the review page can show
+// who decided what. A rejected document immediately notifies the student, with
+// the document name, so they know exactly which file to replace.
+//
+// The application-level "Approve" button is separately gated on all of these
+// decisions (see utils/documentReview.js) — this endpoint never approves an
+// application.
+// ==========================================================
 const updateDocument = async(req, res, next) => {
     try {
-        const document = await Document.findByIdAndUpdate(req.params.id, { status: req.body.status, remarks: req.body.remarks }, { new: true, runValidators: true });
+        const status = normalizeReviewStatus(req.body && req.body.status);
+        if (!status) {
+            return res.status(400).json({
+                success: false,
+                message: "Document review status must be approved, rejected, or pending."
+            });
+        }
+        const remarks = typeof req.body?.remarks === "string" ? req.body.remarks.trim() : "";
+
+        // A replacement resets the row to pending: the reviewer trail is cleared
+        // so a stale "approved" decision can never linger on a new file.
+        const update = status === "pending" ?
+            { status, remarks, reviewedBy: null, reviewedAt: null } :
+            { status, remarks, reviewedBy: req.user.id, reviewedAt: new Date() };
+
+        const document = await Document.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
         if (!document) return res.status(404).json({ success: false, message: "Document not found" });
+
+        // Notify the owner when their file was rejected (requirement: the student
+        // must be told which document to replace). Best effort — a notification
+        // failure must never undo a decision the reviewer already made.
+        if (status === "rejected") {
+            try {
+                await Notification.create({
+                    recipient: document.student,
+                    title: "Document rejected",
+                    message: `${document.type} was rejected by the City Scholarship Office and needs to be replaced.${remarks ? ` ${remarks}` : ""}`,
+                    type: "document",
+                    link: document.context === "renewal" ? "/student/renewal" : "/student/documents"
+                });
+            } catch (notificationError) {
+                console.error("Document review notification error:", notificationError.message);
+            }
+        }
+
         res.json({ success: true, document: publicDocument(document) });
     } catch (error) { next(error); }
 };

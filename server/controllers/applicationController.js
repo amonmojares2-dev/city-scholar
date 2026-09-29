@@ -4,6 +4,7 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { logAudit } = require("../utils/audit");
 const { CITY_ADMIN_ROLES } = require("../utils/validation");
+const { documentReviewSummary } = require("../utils/documentReview");
 
 const listApplications = async(req, res, next) => {
     try {
@@ -85,7 +86,12 @@ const getApplication = async(req, res, next) => {
                 message: "This application is still awaiting Barangay residency verification."
             });
         }
-        res.json({ success: true, application });
+        // The per-document review gate travels with the record so the review page
+        // can show "3 of 5 documents approved" and keep its Approve button
+        // disabled without a second round trip. A failure here must never hide
+        // the application itself.
+        const documentReview = await documentReviewSummary(application).catch(() => null);
+        res.json({ success: true, application, documentReview });
     } catch (error) { next(error); }
 };
 
@@ -196,6 +202,29 @@ const reviewApplication = async(req, res, next) => {
                     success: false,
                     message: "The Barangay Office has not confirmed this applicant's residency yet."
                 });
+            }
+
+            // ==========================================================
+            // DOCUMENT REVIEW GATE (backend enforcement)
+            //
+            // A disabled button is not enough — someone can call this endpoint
+            // directly. Every uploaded document of this flow must carry an
+            // individual "approved" decision, and every required slot in the
+            // City Office Program Config (Program Settings > Required
+            // Documents) must be covered by an approved upload, before the
+            // record may be approved. Rejecting is never gated, so a record
+            // with a rejected document can still be closed.
+            // ==========================================================
+            if (decision === "approved") {
+                const documentReview = await documentReviewSummary(application);
+                if (!documentReview.canApprove) {
+                    return res.status(400).json({
+                        success: false,
+                        message: documentReview.reason ||
+                            "Every uploaded document must be approved before this can be approved.",
+                        documentReview
+                    });
+                }
             }
 
             // Captured BEFORE the decision overwrites it, so the notification

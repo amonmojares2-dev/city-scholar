@@ -25,8 +25,22 @@ const documentSchema = new mongoose.Schema({
     originalName: { type: String, required: true },
     filename: { type: String, required: true },
     mimeType: { type: String, required: true },
-    status: { type: String, enum: ["pending", "verified", "rejected"], default: "pending" },
-    remarks: { type: String, default: "" }
+
+    // Per-document review status (see utils/documentReview.js):
+    //   pending  – uploaded, no reviewer decision yet (default)
+    //   approved – the City Office accepted this file (canonical value)
+    //   rejected – the file is not acceptable; the student replaces it
+    // "verified" is the OLDER label for the same state as "approved". Rows
+    // created before the review gate existed still carry it, so both values
+    // stay in the enum and both count as approved. New decisions are always
+    // written as "approved" — no migration of historical rows is needed.
+    status: { type: String, enum: ["pending", "verified", "approved", "rejected"], default: "pending" },
+    remarks: { type: String, default: "" },
+
+    // Reviewer trail for the single-document decision, plus the moment the
+    // document was flagged as needing a replacement.
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    reviewedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 // One stored file per document slot and portal flow. This supports replacement
