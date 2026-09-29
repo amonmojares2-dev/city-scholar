@@ -32,6 +32,20 @@ function query(result) {
     return stub;
 }
 
+// Real 24-hex ids: the controller now rejects anything that is not a valid
+// ObjectId before it reaches Mongoose, so the fixtures must look like the ids
+// the API actually receives.
+const ID = {
+    me: "6a9e4c34f86766b456a321aa",
+    city: "6a9e4c34f86766b456a321bb",
+    brgy: "6a9e4c34f86766b456a321cc",
+    brgyStaff: "6a9e4c34f86766b456a321dd",
+    superAdmin: "6a9e4c34f86766b456a321ee",
+    student: "6a9e4c34f86766b456a321ff",
+    conversation: "6a9e4c34f86766b456a32200",
+    brgy9: "6a9e4c34f86766b456a32211"
+};
+
 function response() {
     return {
         status: jest.fn().mockReturnThis(),
@@ -148,33 +162,132 @@ describe("conversation listing", () => {
     });
 });
 
+describe("Barangay office threads (student messages across accounts)", () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    // A student thread is created against ONE staff account of the barangay. The
+    // office has to see it from ANY of its accounts, otherwise the message a
+    // student already sent looks like it never arrived.
+    const officeUser = { id: ID.brgy, role: "barangay_admin", barangay: ID.brgy9 };
+    const colleagueUser = { id: ID.brgyStaff, role: "barangay_staff", barangay: ID.brgy9 };
+    const studentThread = {
+        _id: ID.conversation,
+        participants: [
+            { _id: ID.student, name: "Student", role: "student" },
+            { _id: ID.brgyStaff, name: "Colleague", role: "barangay_staff" }
+        ],
+        toObject: () => ({ _id: ID.conversation })
+    };
+
+    it("lists a student thread held by a colleague account of the same office", async() => {
+        const find = jest.spyOn(User, "find").mockReturnValue(query([
+            { _id: ID.brgy },
+            { _id: ID.brgyStaff }
+        ]));
+        jest.spyOn(Conversation, "find").mockReturnValue(query([studentThread]));
+        jest.spyOn(Message, "find").mockReturnValue(query([
+            { conversation: ID.conversation, body: "hi", createdAt: new Date(), sender: ID.student }
+        ]));
+
+        const res = response();
+        await listConversations({ user: officeUser }, res, jest.fn());
+
+        // The thread is looked up across the whole office, not just "me".
+        expect(find).toHaveBeenCalledWith(expect.objectContaining({ barangay: ID.brgy9 }));
+        expect(find.mock.results.length).toBeGreaterThan(0);
+        expect(Conversation.find.mock.calls[0][0].participants.$in).toEqual(
+            expect.arrayContaining([ID.brgy, ID.brgyStaff])
+        );
+        expect(res.json.mock.calls[0][0].conversations.map((c) => c._id)).toEqual([ID.conversation]);
+    });
+
+    it("does not treat a colleague of the same office as the other side of the thread", async() => {
+        jest.spyOn(User, "find").mockReturnValue(query([{ _id: ID.brgy }, { _id: ID.brgyStaff }]));
+        jest.spyOn(Conversation, "find").mockReturnValue(query([studentThread]));
+        jest.spyOn(Message, "find").mockReturnValue(query([]));
+
+        const res = response();
+        await listConversations({ user: officeUser }, res, jest.fn());
+
+        // Student <-> Barangay is allowed, so the thread survives the filter
+        // even though one participant is a fellow staff account.
+        expect(res.json.mock.calls[0][0].conversations).toHaveLength(1);
+    });
+
+    it("lets the office account reply to the student, not to the colleague", async() => {
+        jest.spyOn(User, "find").mockReturnValue(query([{ _id: ID.brgy }, { _id: ID.brgyStaff }]));
+        jest.spyOn(Conversation, "findOne").mockResolvedValue({
+            _id: ID.conversation,
+            participants: [ID.student, ID.brgyStaff],
+            lastMessageAt: null,
+            save: jest.fn().mockResolvedValue(undefined)
+        });
+        jest.spyOn(User, "findOne").mockReturnValue(query({ _id: ID.student, name: "Student", role: "student" }));
+        const create = jest.spyOn(Message, "create").mockResolvedValue({
+            _id: "m9",
+            body: "Noted, thank you.",
+            readAt: null,
+            populate: jest.fn().mockResolvedValue(undefined),
+            toObject: () => ({ _id: "m9" })
+        });
+        jest.spyOn(Notification, "create").mockResolvedValue({});
+
+        const res = response();
+        await sendMessage({
+            params: { conversationId: ID.conversation },
+            body: { body: "Noted, thank you." },
+            user: officeUser
+        }, res, jest.fn());
+
+        // The student is the recipient; the colleague is filtered out by $nin.
+        expect(create).toHaveBeenCalledWith(expect.objectContaining({
+            conversation: ID.conversation,
+            sender: ID.brgy,
+            recipient: ID.student
+        }));
+        expect(res.status).toHaveBeenCalledWith(201);
+    });
+
+    it("keeps the strict participants:me rule for non-Barangay roles", async() => {
+        const find = jest.spyOn(Conversation, "find").mockReturnValue(query([]));
+
+        await listConversations({ user: { id: ID.city, role: "city_admin" } }, response(), jest.fn());
+
+        // A City account must NOT inherit office-wide visibility.
+        expect(find.mock.calls[0][0].participants).toEqual({ $in: [ID.city] });
+    });
+});
+
 describe("thread access and read state", () => {
     afterEach(() => jest.restoreAllMocks());
 
     it("marks the received messages as read when the thread is opened", async() => {
-        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: "c1", participants: ["me", "brgy-1"] });
-        jest.spyOn(User, "find").mockReturnValue(query([{ _id: "brgy-1", role: "barangay_admin" }]));
+        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: ID.conversation, participants: [ID.me, ID.brgy] });
+        jest.spyOn(User, "find").mockReturnValue(query([{ _id: ID.brgy, role: "barangay_admin" }]));
         const updateMany = jest.spyOn(Message, "updateMany").mockResolvedValue({});
         jest.spyOn(Message, "find").mockReturnValue(query([
             { _id: "m1", body: "hi", readAt: new Date(), toObject: () => ({ _id: "m1", body: "hi" }) }
         ]));
 
         const res = response();
-        await listMessages({ params: { conversationId: "c1" }, user: { id: "me", role: "city_admin" } }, res, jest.fn());
+        await listMessages({ params: { conversationId: ID.conversation }, user: { id: ID.me, role: "city_admin" } }, res, jest.fn());
 
         expect(updateMany).toHaveBeenCalledWith(
-            { conversation: "c1", sender: { $ne: "me" }, readAt: null },
+            { conversation: ID.conversation, sender: { $ne: ID.me }, readAt: null },
             { $set: { readAt: expect.any(Date) } }
         );
         expect(res.json.mock.calls[0][0].messages[0].isRead).toBe(true);
     });
 
     it("refuses to open a conversation with a disallowed role pair", async() => {
-        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: "c3", participants: ["me", "stu-1"] });
-        jest.spyOn(User, "find").mockReturnValue(query([{ _id: "stu-1", role: "student" }]));
+        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: "6a9e4c34f86766b456a32233", participants: [ID.me, ID.student] });
+        jest.spyOn(User, "find").mockReturnValue(query([{ _id: ID.student, role: "student" }]));
 
         const res = response();
-        await listMessages({ params: { conversationId: "c3" }, user: { id: "me", role: "city_admin" } }, res, jest.fn());
+        await listMessages({
+            params: { conversationId: "6a9e4c34f86766b456a32222" },
+            user: { id: ID.me, role: "city_admin" }
+        }, res, jest.fn());
 
         expect(res.status).toHaveBeenCalledWith(403);
     });
@@ -184,40 +297,77 @@ describe("starting a conversation (backend role enforcement)", () => {
     afterEach(() => jest.restoreAllMocks());
 
     it("refuses a Super Admin conversation with a Barangay account", async() => {
-        jest.spyOn(User, "findById").mockReturnValue(query({ _id: "brgy-1", name: "Brgy", role: "barangay_admin" }));
+        jest.spyOn(User, "findById").mockReturnValue(query({ _id: ID.brgy, name: "Brgy", role: "barangay_admin" }));
         const create = jest.spyOn(Conversation, "create");
 
         const res = response();
-        await createConversation({ user: { id: "me", role: "super_admin" }, body: { recipientId: "brgy-1" } }, res, jest.fn());
+        await createConversation({ user: { id: ID.me, role: "super_admin" }, body: { recipientId: ID.brgy } }, res, jest.fn());
 
         expect(res.status).toHaveBeenCalledWith(403);
         expect(create).not.toHaveBeenCalled();
     });
 
     it("refuses a City conversation with a student", async() => {
-        jest.spyOn(User, "findById").mockReturnValue(query({ _id: "stu-1", name: "Student", role: "student" }));
+        jest.spyOn(User, "findById").mockReturnValue(query({ _id: ID.student, name: "Student", role: "student" }));
         const create = jest.spyOn(Conversation, "create");
 
         const res = response();
-        await createConversation({ user: { id: "me", role: "city_admin" }, body: { recipientId: "stu-1" } }, res, jest.fn());
+        await createConversation({ user: { id: ID.me, role: "city_admin" }, body: { recipientId: ID.student } }, res, jest.fn());
 
         expect(res.status).toHaveBeenCalledWith(403);
         expect(create).not.toHaveBeenCalled();
     });
 
+    it("rejects a display label sent as the recipient with a clear 400", async() => {
+        // The picker bug: "Ana Reyes - City Office" posted as recipientId.
+        const findById = jest.spyOn(User, "findById");
+        const create = jest.spyOn(Conversation, "create");
+
+        const res = response();
+        await createConversation({
+            user: { id: ID.me, role: "city_admin" },
+            body: { recipientId: "Ana Reyes - City Office" }
+        }, res, jest.fn());
+
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.json.mock.calls[0][0].message).toBe("Invalid recipient ID");
+        // The guard runs BEFORE Mongoose, so no CastError is ever raised.
+        expect(findById).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+    });
+
     it("opens the City <-> Barangay conversation for a City account", async() => {
-        jest.spyOn(User, "findById").mockReturnValue(query({ _id: "brgy-1", name: "Brgy", role: "barangay_admin" }));
+        jest.spyOn(User, "findById").mockReturnValue(query({ _id: ID.brgy, name: "Brgy", role: "barangay_admin" }));
         jest.spyOn(Conversation, "findOne").mockResolvedValue(null);
-        const conversation = { _id: "c9", participants: ["me", "brgy-1"], populate: jest.fn().mockResolvedValue(undefined) };
+        const conversation = { _id: "c9", participants: [ID.me, ID.brgy], populate: jest.fn().mockResolvedValue(undefined) };
         const create = jest.spyOn(Conversation, "create").mockResolvedValue(conversation);
 
         const res = response();
         await createConversation({
-            user: { id: "me", role: "city_admin" },
-            body: { recipientId: "brgy-1", subject: "Residency re-check" }
+            user: { id: ID.me, role: "city_admin" },
+            body: { recipientId: ID.brgy, subject: "Residency re-check" }
         }, res, jest.fn());
 
-        expect(create).toHaveBeenCalledWith({ participants: ["me", "brgy-1"], subject: "Residency re-check" });
+        expect(create).toHaveBeenCalledWith({ participants: [ID.me, ID.brgy], subject: "Residency re-check" });
+        expect(res.status).toHaveBeenCalledWith(201);
+    });
+
+    it("opens the City <-> Super Admin conversation for a City account", async() => {
+        jest.spyOn(User, "findById").mockReturnValue(query({ _id: ID.superAdmin, name: "System Administrator", role: "super_admin" }));
+        jest.spyOn(Conversation, "findOne").mockResolvedValue(null);
+        const create = jest.spyOn(Conversation, "create").mockResolvedValue({
+            _id: "c11",
+            participants: [ID.me, ID.superAdmin],
+            populate: jest.fn().mockResolvedValue(undefined)
+        });
+
+        const res = response();
+        await createConversation({
+            user: { id: ID.me, role: "city_admin" },
+            body: { recipientId: ID.superAdmin, subject: "Budget release" }
+        }, res, jest.fn());
+
+        expect(create).toHaveBeenCalledWith({ participants: [ID.me, ID.superAdmin], subject: "Budget release" });
         expect(res.status).toHaveBeenCalledWith(201);
     });
 
@@ -225,17 +375,17 @@ describe("starting a conversation (backend role enforcement)", () => {
         // The student record resolves on the first lookup, the staff account on
         // the address lookup — mirroring the real id-based queries.
         jest.spyOn(User, "findById").mockImplementation((id) =>
-            id === "me" ? query({ barangay: "brgy-9" }) : query({ _id: "staff-9", name: "Staff", role: "barangay_staff" })
+            id === ID.me ? query({ barangay: ID.brgy9 }) : query({ _id: ID.brgyStaff, name: "Staff", role: "barangay_staff" })
         );
-        const staff = jest.spyOn(User, "findOne").mockReturnValue(query({ _id: "staff-9", role: "barangay_staff" }));
+        const staff = jest.spyOn(User, "findOne").mockReturnValue(query({ _id: ID.brgyStaff, role: "barangay_staff" }));
         jest.spyOn(Conversation, "findOne").mockResolvedValue(null);
-        const conversation = { _id: "c10", participants: ["me", "staff-9"], populate: jest.fn().mockResolvedValue(undefined) };
+        const conversation = { _id: "c10", participants: [ID.me, ID.brgyStaff], populate: jest.fn().mockResolvedValue(undefined) };
         jest.spyOn(Conversation, "create").mockResolvedValue(conversation);
 
         const res = response();
-        await createConversation({ user: { id: "me", role: "student" }, body: { recipientType: "barangay" } }, res, jest.fn());
+        await createConversation({ user: { id: ID.me, role: "student" }, body: { recipientType: "barangay" } }, res, jest.fn());
 
-        expect(staff).toHaveBeenCalledWith(expect.objectContaining({ barangay: "brgy-9" }));
+        expect(staff).toHaveBeenCalledWith(expect.objectContaining({ barangay: ID.brgy9 }));
         expect(res.status).toHaveBeenCalledWith(201);
     });
 });
@@ -244,15 +394,15 @@ describe("sending a message", () => {
     afterEach(() => jest.restoreAllMocks());
 
     it("refuses a reply between disallowed roles", async() => {
-        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: "c3", participants: ["me", "stu-1"] });
-        jest.spyOn(User, "findOne").mockReturnValue(query({ _id: "stu-1", name: "Student", role: "student" }));
+        jest.spyOn(Conversation, "findOne").mockResolvedValue({ _id: "6a9e4c34f86766b456a32233", participants: [ID.me, ID.student] });
+        jest.spyOn(User, "findOne").mockReturnValue(query({ _id: ID.student, name: "Student", role: "student" }));
         const create = jest.spyOn(Message, "create");
 
         const res = response();
         await sendMessage({
-            params: { conversationId: "c3" },
+            params: { conversationId: "6a9e4c34f86766b456a32233" },
             body: { body: "hello" },
-            user: { id: "me", role: "city_admin" }
+            user: { id: ID.me, role: "city_admin" }
         }, res, jest.fn());
 
         expect(res.status).toHaveBeenCalledWith(403);
@@ -261,13 +411,13 @@ describe("sending a message", () => {
 
     it("stores recipient, sender role and notifies the recipient's bell", async() => {
         const conversation = {
-            _id: "c1",
-            participants: ["me", "brgy-1"],
+            _id: ID.conversation,
+            participants: [ID.me, ID.brgy],
             lastMessageAt: null,
             save: jest.fn().mockResolvedValue(undefined)
         };
         jest.spyOn(Conversation, "findOne").mockResolvedValue(conversation);
-        jest.spyOn(User, "findOne").mockReturnValue(query({ _id: "brgy-1", name: "Barangay Office", role: "barangay_admin" }));
+        jest.spyOn(User, "findOne").mockReturnValue(query({ _id: ID.brgy, name: "Barangay Office", role: "barangay_admin" }));
         const create = jest.spyOn(Message, "create").mockResolvedValue({
             _id: "m1",
             body: "Please send the residency slip",
@@ -279,21 +429,21 @@ describe("sending a message", () => {
 
         const res = response();
         await sendMessage({
-            params: { conversationId: "c1" },
+            params: { conversationId: ID.conversation },
             body: { body: "Please send the residency slip" },
-            user: { id: "me", role: "city_admin", name: "City Reviewer" }
+            user: { id: ID.me, role: "city_admin", name: "City Reviewer" }
         }, res, jest.fn());
 
         expect(create).toHaveBeenCalledWith(expect.objectContaining({
-            conversation: "c1",
-            sender: "me",
-            recipient: "brgy-1",
+            conversation: ID.conversation,
+            sender: ID.me,
+            recipient: ID.brgy,
             senderRole: "city_admin",
             body: "Please send the residency slip"
         }));
         expect(conversation.save).toHaveBeenCalled();
         expect(notify).toHaveBeenCalledWith(expect.objectContaining({
-            recipient: "brgy-1",
+            recipient: ID.brgy,
             type: "message",
             link: "/barangay/messages",
             title: "New message from City Reviewer"

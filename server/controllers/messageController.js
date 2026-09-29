@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const Notification = require("../models/Notification");
@@ -42,6 +43,31 @@ const sameId = (a, b) => String(a) === String(b);
 
 const otherParticipants = (conversation, userId) =>
     (conversation.participants || []).filter((participant) => !sameId(participant._id || participant, userId));
+
+// A recipient id arrives straight from the client, so a display label ("Ana
+// Reyes — City Office") must be rejected with a clear 400 BEFORE it reaches
+// Mongoose — otherwise findById raises a CastError and a 500 lands in the logs.
+const isValidUserId = (value) => typeof value === "string" || value instanceof mongoose.Types.ObjectId
+    ? mongoose.Types.ObjectId.isValid(value)
+    : false;
+
+// A Barangay office can be shared by several accounts (barangay_admin +
+// barangay_staff on the same barangay). A student thread is created against ONE
+// of those accounts, so the other account of the same office could not see it.
+// The office — not the individual login — is the conversation owner, so a
+// Barangay account also sees the threads held by its colleagues on the same
+// barangay. Every other role keeps the strict "participants: me" rule.
+const isBarangayGroup = (role) => messagingGroup(role) === "barangay";
+
+const barangayOfficeIds = async(user) => {
+    if (!isBarangayGroup(user.role)) return [String(user.id)];
+    const ownBarangay = user.barangay?._id || user.barangay || user.account?.barangay || null;
+    if (!ownBarangay) return [String(user.id)];
+    const colleagues = await User.find({ role: { $in: GROUP_ROLES.barangay }, barangay: ownBarangay })
+        .select("_id")
+        .lean();
+    return [...new Set([String(user.id), ...colleagues.map((colleague) => String(colleague._id))])];
+};
 
 // ==========================================================
 // GET /api/messages/recipients
@@ -107,12 +133,20 @@ const listRecipients = async(req, res, next) => {
 // ==========================================================
 const listConversations = async(req, res, next) => {
     try {
-        const conversations = await Conversation.find({ participants: req.user.id })
+        // A Barangay office sees the threads of every account on its barangay, so
+        // student threads created against a colleague account still show up.
+        const officeIds = await barangayOfficeIds(req.user);
+        const officeSet = new Set(officeIds);
+
+        const conversations = await Conversation.find({ participants: { $in: officeIds } })
             .populate(PARTICIPANT_POPULATE)
             .sort({ lastMessageAt: -1, updatedAt: -1 });
 
         const visible = conversations.filter((conversation) => {
-            const others = otherParticipants(conversation, req.user.id);
+            // Colleagues of the same office are not "the other side" of the
+            // thread, so they are excluded before the role-pair check.
+            const others = otherParticipants(conversation, req.user.id)
+                .filter((participant) => !officeSet.has(String(participant._id || participant)));
             return others.length > 0 &&
                 others.every((participant) => canViewConversationWith(req.user.role, participant.role));
         });
@@ -203,6 +237,12 @@ const createConversation = async(req, res, next) => {
             return res.status(400).json({ success: false, message: "Select one recipient for this conversation." });
         }
 
+        // The picker must send the account _id. A display label arriving here is
+        // a client bug, so answer 400 instead of letting findById throw.
+        if (!isValidUserId(recipientIds[0])) {
+            return res.status(400).json({ success: false, message: "Invalid recipient ID" });
+        }
+
         const recipient = await User.findById(recipientIds[0]).select("name role");
         if (!recipient) {
             return res.status(404).json({ success: false, message: "Recipient account not found." });
@@ -235,10 +275,18 @@ const createConversation = async(req, res, next) => {
 // ==========================================================
 const listMessages = async(req, res, next) => {
     try {
-        const conversation = await Conversation.findOne({ _id: req.params.conversationId, participants: req.user.id });
+        if (!isValidUserId(req.params.conversationId)) {
+            return res.status(400).json({ success: false, message: "Invalid conversation ID" });
+        }
+
+        // Same office rule as the list: a Barangay account may open a thread
+        // held by a colleague account on its barangay (student threads).
+        const officeIds = await barangayOfficeIds(req.user);
+
+        const conversation = await Conversation.findOne({ _id: req.params.conversationId, participants: { $in: officeIds } });
         if (!conversation) return res.status(404).json({ success: false, message: "Conversation not found" });
 
-        const others = await User.find({ _id: { $in: conversation.participants, $ne: req.user.id } }).select("name role");
+        const others = await User.find({ _id: { $in: conversation.participants, $nin: officeIds } }).select("name role");
         if (!others.length) return res.status(404).json({ success: false, message: "Conversation not found" });
         if (others.some((participant) => !canViewConversationWith(req.user.role, participant.role))) {
             return res.status(403).json({ success: false, message: messagingPolicyMessage(req.user.role) });
@@ -275,10 +323,21 @@ const sendMessage = async(req, res, next) => {
             return res.status(400).json({ success: false, message: `Messages are limited to ${MAX_MESSAGE_LENGTH} characters.` });
         }
 
-        const conversation = await Conversation.findOne({ _id: req.params.conversationId, participants: req.user.id });
+        if (!isValidUserId(req.params.conversationId)) {
+            return res.status(400).json({ success: false, message: "Invalid conversation ID" });
+        }
+
+        // Same office rule as the list: a Barangay account may reply to a thread
+        // held by a colleague account on its barangay.
+        const officeIds = await barangayOfficeIds(req.user);
+
+        const conversation = await Conversation.findOne({ _id: req.params.conversationId, participants: { $in: officeIds } });
         if (!conversation) return res.status(404).json({ success: false, message: "Conversation not found" });
 
-        const recipient = await User.findOne({ _id: { $in: conversation.participants, $ne: req.user.id } }).select("name role");
+        // The recipient is the counterparty on the other side of the office — a
+        // colleague of the same barangay is skipped, so a reply always reaches
+        // the student (or the City), never a co-worker.
+        const recipient = await User.findOne({ _id: { $in: conversation.participants, $nin: officeIds } }).select("name role");
         if (!recipient) {
             return res.status(400).json({ success: false, message: "This conversation has no recipient to reply to." });
         }

@@ -85,6 +85,18 @@ function staffRoleLabel(role?: string) {
   return STAFF_ROLE_LABELS[role || ''] || role || 'User';
 }
 
+// Staff accounts are provisioned by the Super Admin with an email only, so the
+// name can be blank — fall back to the email so a row is never unreadable.
+function personLabel(person: RecipientDto) {
+  const who = (person.name || '').trim() || person.email || 'Unnamed account';
+  const where = person.barangay?.name ? ` (Brgy. ${person.barangay.name})` : '';
+  return `${who} — ${staffRoleLabel(person.role)}${where}`;
+}
+
+// A MongoDB _id is 24 hex characters. createConversation needs the real _id, so
+// this guards against ever posting a display label.
+const OBJECT_ID = /^[a-f\d]{24}$/i;
+
 function initials(name: string) {
   return name.split(' ').filter(Boolean).map(word => word[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
@@ -258,6 +270,11 @@ export default function StaffMessages({
 
   const startConversation = async () => {
     if (!recipientId || composeSending) return;
+    // Never post a display label: createConversation needs the account _id.
+    if (!OBJECT_ID.test(recipientId)) {
+      setComposeError('Please choose a recipient from the list.');
+      return;
+    }
     setComposeSending(true);
     setComposeError('');
     try {
@@ -484,9 +501,12 @@ export default function StaffMessages({
                 className="w-full px-3.5 py-2.5 rounded-lg border border-[#E5E7EB] text-sm outline-none focus:ring-2 focus:ring-[#163A63]/20 bg-white mb-4"
               >
                 <option value="">Select a recipient…</option>
+                {/* The option VALUE is the account _id — that is what
+                    createConversation expects. The "name — role" text is only a
+                    label; never bind it to the value. */}
                 {directory.map(person => (
                   <option key={person._id} value={person._id}>
-                    {person.name} — {staffRoleLabel(person.role)}{person.barangay?.name ? ` (Brgy. ${person.barangay.name})` : ''}
+                    {personLabel(person)}
                   </option>
                 ))}
               </select>
