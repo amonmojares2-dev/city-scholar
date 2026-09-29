@@ -40,12 +40,16 @@ interface MessageDto {
   isRead?: boolean;
 }
 
+// GET /api/messages/recipients returns each account with `id` (the string form
+// of the Mongo _id) — NOT `_id`, which is undefined on the wire. `barangay`
+// comes back as a plain name string for the same reason.
 interface RecipientDto {
-  _id: string;
+  id: string;
   name: string;
   email?: string;
   role: string;
-  barangay?: { _id: string; name: string } | null;
+  roleLabel?: string;
+  barangay?: string;
 }
 
 interface ConversationsResponse {
@@ -89,8 +93,9 @@ function staffRoleLabel(role?: string) {
 // name can be blank — fall back to the email so a row is never unreadable.
 function personLabel(person: RecipientDto) {
   const who = (person.name || '').trim() || person.email || 'Unnamed account';
-  const where = person.barangay?.name ? ` (Brgy. ${person.barangay.name})` : '';
-  return `${who} — ${staffRoleLabel(person.role)}${where}`;
+  const role = person.roleLabel || staffRoleLabel(person.role);
+  const where = person.barangay ? ` (Brgy. ${person.barangay})` : '';
+  return `${who} — ${role}${where}`;
 }
 
 // A MongoDB _id is 24 hex characters. createConversation needs the real _id, so
@@ -259,8 +264,14 @@ export default function StaffMessages({
     setDirectoryLoading(true);
     try {
       const result = await api<RecipientsResponse>('/messages/recipients');
-      setDirectory(result.recipients || []);
+      // Guard the contract: an entry without a usable id cannot be selected, and
+      // a <option> with a missing value falls back to its own text — which would
+      // post a display label. Drop those rows instead of offering them.
+      const usable = (result.recipients || []).filter((person) => OBJECT_ID.test(String(person.id || '')));
+      setDirectory(usable);
       setDirectoryHint(result.summary || result.message || '');
+      // Clear a selection that is no longer in the list.
+      setRecipientId(current => (usable.some(person => person.id === current) ? current : ''));
     } catch (requestError) {
       setComposeError(requestError instanceof Error ? requestError.message : 'Unable to load recipients.');
     } finally {
@@ -270,9 +281,12 @@ export default function StaffMessages({
 
   const startConversation = async () => {
     if (!recipientId || composeSending) return;
-    // Never post a display label: createConversation needs the account _id.
+    // createConversation needs the account id. If this ever trips, the selection
+    // is stale or malformed — say so honestly instead of implying nothing is
+    // selected, and let the user pick again.
     if (!OBJECT_ID.test(recipientId)) {
-      setComposeError('Please choose a recipient from the list.');
+      setRecipientId('');
+      setComposeError('That recipient could not be read. Please select one from the list again.');
       return;
     }
     setComposeSending(true);
@@ -501,11 +515,11 @@ export default function StaffMessages({
                 className="w-full px-3.5 py-2.5 rounded-lg border border-[#E5E7EB] text-sm outline-none focus:ring-2 focus:ring-[#163A63]/20 bg-white mb-4"
               >
                 <option value="">Select a recipient…</option>
-                {/* The option VALUE is the account _id — that is what
+                {/* The option VALUE is the account id from the API — that is what
                     createConversation expects. The "name — role" text is only a
                     label; never bind it to the value. */}
                 {directory.map(person => (
-                  <option key={person._id} value={person._id}>
+                  <option key={person.id} value={person.id}>
                     {personLabel(person)}
                   </option>
                 ))}

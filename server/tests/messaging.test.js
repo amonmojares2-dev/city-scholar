@@ -491,4 +491,25 @@ describe("recipient directory", () => {
 
         expect(find.mock.calls[0][0].role.$in.slice().sort()).toEqual(["admin_staff", "city_admin"].sort());
     });
+
+    // The compose picker binds <option value={person.id}> from this response. It
+    // used to read `_id`, which this endpoint does not return: React omits the
+    // value attribute, the browser then falls back to the option TEXT, and the
+    // label got posted as the recipient id (CastError / false validation).
+    it("returns `id` (not `_id`) so the picker can bind a real recipient id", async() => {
+        jest.spyOn(User, "find").mockReturnValue(query([
+            { _id: "6ab2739e666b6702ec87592e", name: "", email: "city@x.gov", role: "city_admin", barangay: { name: "Bonuan" } }
+        ]));
+
+        const r = response();
+        await listRecipients({ user: { id: "6aa7e06fbc979e7d4a243049", role: "super_admin" } }, r, jest.fn());
+
+        const person = r.json.mock.calls[0][0].recipients[0];
+        expect(person.id).toBe("6ab2739e666b6702ec87592e");
+        expect(person._id).toBeUndefined();
+        // A blank name must still produce a usable, human-readable label.
+        expect(person.name).toBe("city@x.gov");
+        expect(person.barangay).toBe("Bonuan");
+        expect(person.roleLabel).toBe("City Scholarship Office");
+    });
 });
