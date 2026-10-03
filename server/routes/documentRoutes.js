@@ -1,8 +1,10 @@
 const express = require("express");
 const { protect, authorize } = require("../middleware/authMiddleware");
 const { uploadSingleDocument, validateDocumentUpload } = require("../middleware/uploadMiddleware");
+const { aiLimiter } = require("../middleware/rateLimiter");
 const { listDocuments, uploadDocument, updateDocument, serveDocumentFile } = require("../controllers/documentController");
-const { SUPER_ADMIN_ROLES } = require("../utils/validation");
+const { analyzeDocument } = require("../controllers/gradeRecordController");
+const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES } = require("../utils/validation");
 
 const router = express.Router();
 router.use(protect);
@@ -16,5 +18,9 @@ router.get("/:id/file", (req, res, next) => {
     serveDocumentFile(req, res, next);
 });
 router.post("/", uploadSingleDocument, validateDocumentUpload, uploadDocument);
+// AI grade extraction. City/Super Admin only, and behind aiLimiter because
+// every call bills the OpenAI account. Declared after "/:id/file" so "analyze"
+// is not swallowed by that route.
+router.post("/:id/analyze", authorize(...CITY_ADMIN_ROLES, ...SUPER_ADMIN_ROLES), aiLimiter, analyzeDocument);
 router.patch("/:id", authorize("barangay_staff", "city_admin", "admin_staff", ...SUPER_ADMIN_ROLES), updateDocument);
 module.exports = router;

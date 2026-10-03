@@ -17,8 +17,10 @@ const barangayRoutes = require("./routes/barangayRoutes");
 const superAdminRoutes = require("./routes/superAdminRoutes");
 const scholarApprovalRoutes = require("./routes/scholarApprovalRoutes");
 const scholarsRoutes = require("./routes/scholarsRoutes");
+const gradeRecordRoutes = require("./routes/gradeRecordRoutes");
 const userRoutes = require("./routes/userRoutes");
 const Document = require("./models/Document");
+const GradeRecord = require("./models/GradeRecord");
 const programRoutes = require("./routes/programRoutes");
 const citySettingsRoutes = require("./routes/citySettingsRoutes");
 const publicContentRoutes = require("./routes/publicContentRoutes");
@@ -139,6 +141,7 @@ app.use("/api/barangays", barangayRoutes);
 app.use("/api/super-admin", superAdminRoutes);
 app.use("/api/city/scholar-approval", scholarApprovalRoutes);
 app.use("/api/scholars", scholarsRoutes);
+app.use("/api/academic-records", gradeRecordRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/programs", programRoutes);
 app.use("/api/city/settings", citySettingsRoutes);
@@ -180,6 +183,13 @@ async function startServer() {
                 await Document.createIndexes();
             } catch (error) {
                 console.error("Document index initialization failed:", error.message);
+            }
+            // Same reason: GradeRecord's unique `document` index is what keeps
+            // a re-analyzed file from producing duplicate academic records.
+            try {
+                await GradeRecord.createIndexes();
+            } catch (error) {
+                console.error("GradeRecord index initialization failed:", error.message);
             }
             console.log('DATABASE_CONNECTED');
             return;

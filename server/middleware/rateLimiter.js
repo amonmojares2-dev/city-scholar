@@ -48,4 +48,29 @@ const apiLimiter = rateLimit({
     }
 });
 
-module.exports = { authLimiter, apiLimiter };
+// ==========================================
+// AI vision rate limiter
+// ==========================================
+//
+// Every AI extraction costs real money per call, so this bucket is much
+// tighter than the general apiLimiter (300 per 15 min). 20 analyses per 15
+// minutes per reviewer is far more than a City Office working through a
+// backlog of grade documents by hand, while still stopping a runaway script
+// or a double-clicking user from draining the provider quota in minutes.
+// ==========================================
+const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        code: "ai_rate_limited",
+        message: "Too many AI analyses in a short period. Please wait a few minutes before trying again."
+    },
+    handler: (req, res, _next, options) => {
+        res.status(options.statusCode).json(options.message);
+    }
+});
+
+module.exports = { authLimiter, apiLimiter, aiLimiter };
