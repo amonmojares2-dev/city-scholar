@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const { GRADING } = require("../utils/gradingConfig");
 
 // ==========================================
 // GradeRecord — the academic record extracted from an uploaded grade document
@@ -10,11 +10,14 @@ const mongoose = require("mongoose");
 // Application submission apart from a Renewal one.
 //
 // GRADE SCALES
-//   grades / averageGrade / highestGrade / lowestGrade  → 0-100 percentage marks
-//   computedGwa                                          → 1.00-5.00 Philippine scale
-// They are stored separately and never mixed, because the portal's pass/fail
-// thresholds (1.75 / 2.25) and the existing GWA chart all use the 1.00-5.00
-// scale while the per-subject breakdown reads far more naturally as a percent.
+//   Every grade field below lives on ONE of two scales, recorded per record
+//   in `gradingScale` (see utils/aiVision.js):
+//     "A" — 1.00-5.00 inverse (1.00 best, 3.00 passes, 5.00 failed)
+//     "B" — 0-100 percentage (70 passes)
+//   grades / averageGrade / highestGrade / lowestGrade are on that record's
+//   own scale; highestGrade = the student's BEST mark (lowest number on
+//   Scale A, highest number on Scale B). computedGwa is ALWAYS 1.00-5.00, so
+//   the GWA chart and pass thresholds never mix scales.
 //
 // PROVENANCE (this is the whole point of the model)
 //   aiExtracted  = true  → the numbers came from the AI, not a human
@@ -37,6 +40,10 @@ const gradeRecordSchema = new mongoose.Schema({
     context: { type: String, enum: ["application", "renewal"], default: "application" },
 
     // ---- Extracted academic data ----
+    // Which grading scale the source document used: "A" (1.00-5.00 inverse)
+    // or "B" (0-100 percentage). Records extracted before this field existed
+    // carry no value and are treated as "B" by the UI (legacy behaviour).
+    gradingScale: { type: String, enum: ["A", "B"], default: null },
     studentName: { type: String, default: "" },
     school: { type: String, default: "" },
     gradeLevel: { type: String, default: "" },
@@ -47,7 +54,7 @@ const gradeRecordSchema = new mongoose.Schema({
     averageGrade: { type: Number, default: null },
     // 1.00-5.00. Validated in this range so a 0-100 value can never land here.
     computedGwa: { type: Number, default: null, min: 1, max: 5 },
-    passingMark: { type: Number, default: 75, min: 0, max: 100 },
+    passingMark: { type: Number, default: () => GRADING.percentage.passingMark, min: 0, max: 100 },
     subjectsFailed: { type: [String], default: [] },
     overallStatus: { type: String, default: "" },
 

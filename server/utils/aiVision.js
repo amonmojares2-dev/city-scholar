@@ -24,15 +24,26 @@ const MAX_OUTPUT_TOKENS = 1500;
 // document cannot produce an unbounded row.
 const MAX_SUBJECTS = 30;
 
-// Grades are percentages on the Philippine 1.00-5.00 GWA system: a raw mark of
-// 100 is the ceiling and 0 is the floor. Anything outside is a misread.
+// Two grading scales can appear on a Dagupan college grade document, and the
+// system must never assume one for every document:
+//   "A" — 1.00-5.00 INVERSE scale: 1.00 is the best grade (Excellent), a
+//         subject passes at 3.00 or below, 5.00 means Failed. LOWER is BETTER.
+//   "B" — 0-100 percentage scale: 80 is the passing mark (equivalent to 3.00
+//         on Scale A). HIGHER is BETTER.
+// The prompt asks the model to detect the scale and echo it back as
+// `gradingScale`; detection below is the safety net when it does not.
+const { GRADING, SCALE_PASSING_MARKS, SCALE_KEY, defaultPassingMark: configDefaultPassingMark, isFailingGrade: configIsFailingGrade } = require("./gradingConfig");
+
+// Scale A bounds (1.00-5.00, inverse).
+const SCALE_A_MIN = 1;
+const SCALE_A_MAX = 5;
+// Scale B bounds (percentages).
 const GRADE_MIN = 0;
 const GRADE_MAX = 100;
 
-// The passing mark defaults to 75 (the usual "passed" bar in the PH system)
-// but schools differ, so the model is asked to read the real one off the
-// document when it is printed there.
-const DEFAULT_PASSING_MARK = 75;
+// Scale A / Scale B identifiers, still used by detection and pass/fail logic.
+const SCALE_A = "A";
+const SCALE_B = "B";
 
 class AiVisionError extends Error {
     constructor(message, statusCode = 502) {
@@ -81,23 +92,35 @@ SCOPE OF THE DOCUMENT
 Read every subject row you can see. If the document shows several semesters or years, read the most recent complete term and note the others in the term description. Ignore subjects that are not graded (e.g. "PE", "MAPEH", "ESP" with no mark) only if they carry no numeric grade at all.
 
 GRADE SCALES — THIS IS THE MOST COMMON ERROR, READ CAREFULLY
-The Philippine system uses a 1.00 (highest) to 5.00 (lowest) General Weighted Average. Marks are also shown as a percentage or as a raw score.
-- "grade"  = the mark on a 0-100 percentage scale. If the document shows a raw score like 95, or a percentage like 95%, use 95.
-- "gwa"    = the same performance expressed on the 1.00-5.00 scale. A 100 mark is a GWA of 1.00; a 75 mark is a GWA of 2.00. The conversion is: gwa = 1 + ((100 - grade) / 100) * 4, rounded to 2 decimals.
-- If the document PRINTS a General Weighted Average or "GWA" explicitly, use that printed number for "gwa" instead of converting. It is authoritative.
-NEVER report a 0-100 number in the "gwa" field, and never report a 1.00-5.00 number in the "grade" field.
+Philippine college grading in this system uses ONE of two scales, and you must detect which one applies to the document you are reading:
+
+SCALE A (1.00–5.00, inverse): 1.00 is the highest/best grade (Excellent), ${SCALE_PASSING_MARKS.A} is the lowest passing grade, and 5.00 means Failed. A LOWER number is a BETTER grade. A subject is passed if its grade is ${SCALE_PASSING_MARKS.A} or below, failed if above ${SCALE_PASSING_MARKS.A}.
+
+SCALE B (0–100, percentage): grades range from 0 to 100, where ${SCALE_PASSING_MARKS.B} is the passing mark (equivalent to ${SCALE_PASSING_MARKS.A} on Scale A). A HIGHER number is a BETTER grade. A subject is passed if its grade is ${SCALE_PASSING_MARKS.B} or above.
+
+Detect which scale the document uses based on the grade values shown, and add a field 'gradingScale': 'A' or 'B' to your JSON response. Apply the correct highest-grade, lowest-grade, and pass/fail logic for whichever scale is detected — do not mix the two.
+
+Detection hints: decimal values such as 1.25, 1.75, or 2.50 mean SCALE A; whole numbers in the 75–100 range mean SCALE B. Never convert marks between scales — report each grade exactly as printed.
+
+Detect which scale the document uses based on the grade values shown, and add a field 'gradingScale': 'A' or 'B' to your JSON response. Apply the correct highest-grade, lowest-grade, and pass/fail logic for whichever scale is detected — do not mix the two.
+
+Detection hints: decimal values such as 1.25, 1.75, or 2.50 mean SCALE A; whole numbers in the 75–100 range mean SCALE B. Never convert marks between scales — report each grade exactly as printed.
 
 OTHER RULES
 - Copy the student's name and school exactly as printed. If the name is not on the document, return an empty string rather than a guess.
-- "passingMark" is the passing grade used by that school (commonly 75). Read it from the document if printed, otherwise use 75.
-- "subjectsFailed" lists the names of subjects graded below the passing mark.
-- "computedGwa" is the GWA you calculate from the listed grades. If the document prints its own GWA, use the printed one here too.
+- "passingMark" is the passing grade printed on the document. If none is printed, use 3.00 on Scale A and 80 on Scale B.
+- "highestGrade" is the student's BEST grade: the LOWEST number on Scale A (closest to 1.00), the HIGHEST number on Scale B. "lowestGrade" is their WORST grade: the HIGHEST number on Scale A (closest to 5.00), the LOWEST number on Scale B.
+- "subjectsFailed" lists the names of subjects that FAILED on the detected scale: above the passing mark on Scale A, below the passing mark on Scale B.
+- "averageGrade" is the mean of the subject grades on the document's own scale (1.00-5.00 on Scale A, 0-100 on Scale B).
+- "computedGwa" is always on the 1.00-5.00 scale. On Scale A the subject grades ARE already 1.00-5.00, so their average is the GWA (or use the printed one). On Scale B convert with: gwa = 1 + ((100 - grade) / 10), rounded to 2 decimals and never above 5.00 (so 100 → 1.00 and the 80 passing mark → 3.00). If the document PRINTS a General Weighted Average or "GWA" explicitly, use that printed number — it is authoritative.
+- NEVER report a 0-100 number in the "gwa" field, and never mix marks from one scale into a field that belongs to the other scale.
 - If the document is unreadable or is not a grade document at all, return readable: false, an empty subjects array, and null for all numbers, and put the reason in "extractionNote".
 
 RESPOND WITH ONLY VALID JSON MATCHING THIS EXACT STRUCTURE, NO EXTRA TEXT, NO MARKDOWN FENCES:
 {
   "readable": true,
   "extractionNote": "",
+  "gradingScale": "B",
   "studentName": "",
   "school": "",
   "gradeLevel": "",
@@ -107,9 +130,9 @@ RESPOND WITH ONLY VALID JSON MATCHING THIS EXACT STRUCTURE, NO EXTRA TEXT, NO MA
   ],
   "highestGrade": 95,
   "lowestGrade": 80,
-  "computedGwa": 1.46,
+  "computedGwa": 2.00,
   "averageGrade": 88.5,
-  "passingMark": 75,
+  "passingMark": 80,
   "subjectsFailed": [],
   "overallStatus": "Passed"
 }`;
@@ -172,11 +195,40 @@ function parseModelJson(text) {
     }
 }
 
-function clampGrade(value) {
+function clampGrade(value, scale = SCALE_B) {
     const parsed = typeof value === "number" ? value : parseFloat(value);
     if (!Number.isFinite(parsed)) return null;
-    if (parsed >= GRADE_MIN && parsed <= GRADE_MAX) return Math.round(parsed * 100) / 100;
+    const min = scale === SCALE_A ? SCALE_A_MIN : GRADE_MIN;
+    const max = scale === SCALE_A ? SCALE_A_MAX : GRADE_MAX;
+    if (parsed >= min && parsed <= max) return Math.round(parsed * 100) / 100;
     return null;
+}
+
+// Which of the two scales a record uses when a reviewer can override it.
+// Falls back to the record's own detected scale, and finally to Scale B (the
+// legacy percentage behaviour) so older rows without the field still validate.
+function resolveScale(value, fallback = SCALE_B) {
+    const declared = String(value || "").trim().toUpperCase();
+    if (declared === SCALE_A || declared === SCALE_B) return declared;
+    const stored = String(fallback || "").trim().toUpperCase();
+    return stored === SCALE_A ? SCALE_A : SCALE_B;
+}
+
+// Which of the two scales a document uses. The model is asked to declare it
+// as 'gradingScale'; when it does not, infer from the raw marks themselves —
+// 1.00-5.00 decimals mean Scale A, anything above 5 means Scale B. With no
+// marks at all there is nothing to infer from, so fall back to Scale B (the
+// legacy percentage behaviour) rather than guessing the inverse scale.
+function detectGradingScale(payload, rawGrades) {
+    const declared = String(payload?.gradingScale || "").trim().toUpperCase();
+    if (declared === SCALE_A || declared === SCALE_B) return declared;
+    if (rawGrades.length === 0) return SCALE_B;
+    return rawGrades.every((grade) => grade <= SCALE_A_MAX) ? SCALE_A : SCALE_B;
+}
+
+// Passing mark for a scale when the document does not print one.
+function defaultPassingMark(scale) {
+    return scale === configDefaultPassingMark(scale);
 }
 
 // A GWA is 1.00-5.00. Values outside that are the classic symptom of the model
@@ -189,11 +241,58 @@ function clampGwa(value) {
     return null;
 }
 
-// 0-100 average -> 1.00-5.00 GWA. Used only to fill a gap the model left.
+// 0-100 average -> 1.00-5.00 GWA (Scale B only; on Scale A the marks already
+// live on 1.00-5.00 and are used directly). Anchored on the system's own
+// equivalence: 100 -> 1.00 and the configurable percentage passing mark -> 3.00
+// (config defaults to 70), so the divisor is 10, not 25.
 function gradeToGwa(grade) {
     if (typeof grade !== "number" || !Number.isFinite(grade)) return null;
     const clamped = Math.min(GRADE_MAX, Math.max(GRADE_MIN, grade));
-    return Math.round((1 + ((GRADE_MAX - clamped) / GRADE_MAX) * 4) * 100) / 100;
+    return Math.round(Math.min(5, 1 + ((GRADE_MAX - clamped) / 10)) * 100) / 100;
+}
+
+// One shared pass/fail decision, defined in gradingConfig.js. Scale A is
+// inverse (fails ABOVE the passing mark), Scale B fails BELOW it.
+function isFailingGrade(grade, passingMark, scale) {
+    return configIsFailingGrade(grade, passingMark, scale);
+}
+
+// Recompute every derived figure from a subject list on a known scale. Used
+// when a City reviewer corrects the marks by hand, so the summary columns and
+// the pass/fail list can never drift from the subject table City actually sees.
+// Highest = BEST mark, which is the LOWEST number on inverse Scale A and the
+// HIGHEST number on Scale B.
+function summarizeSubjects(subjects, scale, passingMark) {
+    const grades = (subjects || [])
+        .map((subject) => (subject && typeof subject === "object" ? Number(subject.grade) : NaN))
+        .filter((grade) => Number.isFinite(grade));
+
+    if (grades.length === 0) {
+        return {
+            highestGrade: null,
+            lowestGrade: null,
+            averageGrade: null,
+            computedGwa: null,
+            subjectsFailed: []
+        };
+    }
+
+    const mark = Number.isFinite(Number(passingMark)) ? Number(passingMark) : defaultPassingMark(scale);
+    const average = grades.reduce((sum, grade) => sum + grade, 0) / grades.length;
+
+    return {
+        highestGrade: scale === SCALE_A ? Math.min(...grades) : Math.max(...grades),
+        lowestGrade: scale === SCALE_A ? Math.max(...grades) : Math.min(...grades),
+        averageGrade: Math.round(average * 100) / 100,
+        // On Scale A the marks are already 1.00-5.00, so the average IS the
+        // GWA; on Scale B the percentage has to be converted first.
+        computedGwa: scale === SCALE_A ? clampGwa(average) : gradeToGwa(average),
+        subjectsFailed: (subjects || [])
+            .filter((subject) => subject && typeof subject === "object" &&
+                isFailingGrade(Number(subject.grade), mark, scale))
+            .map((subject) => subject.name)
+            .filter(Boolean)
+    };
 }
 
 function cleanText(value, maxLength = 200) {
@@ -212,6 +311,9 @@ function normalizeExtraction(payload) {
     const notReadable = (note) => ({
         readable: false,
         extractionNote: cleanText(note, 400) || "The AI could not read this document.",
+        // Scale is unknown for an unreadable document; trust a declared value
+        // if one arrived, otherwise the neutral (legacy) Scale B.
+        gradingScale: detectGradingScale(payload, []),
         studentName: "",
         school: "",
         gradeLevel: "",
@@ -233,12 +335,22 @@ function normalizeExtraction(payload) {
     }
 
     const rawSubjects = Array.isArray(payload.subjects) ? payload.subjects : [];
+    // Raw (pre-clamp) marks, used only to detect the grading scale: clamping
+    // is scale-aware, so the scale has to be known before it runs.
+    const rawGrades = rawSubjects
+        .map((subject) => (subject && typeof subject === "object"
+            ? (typeof subject.grade === "number" ? subject.grade : parseFloat(subject.grade))
+            : NaN))
+        .filter(Number.isFinite);
+    const gradingScale = detectGradingScale(payload, rawGrades);
+
     const subjects = rawSubjects
         .map((subject) => {
             if (!subject || typeof subject !== "object") return null;
             const name = cleanText(subject.name, 120);
-            const grade = clampGrade(subject.grade);
-            // A row without a usable name or mark is noise, not data.
+            const grade = clampGrade(subject.grade, gradingScale);
+            // A row without a usable name or mark is noise, not data. Marks
+            // outside the detected scale's range are misreads, dropped here.
             if (!name || grade === null) return null;
             return { name, grade };
         })
@@ -255,27 +367,43 @@ function normalizeExtraction(payload) {
             school: cleanText(payload.school, 160),
             gradeLevel: cleanText(payload.gradeLevel, 80),
             term: cleanText(payload.term, 80),
-            passingMark: clampGrade(payload.passingMark) ?? DEFAULT_PASSING_MARK
+            gradingScale,
+            passingMark: clampGrade(payload.passingMark, gradingScale) ?? defaultPassingMark(gradingScale)
         };
     }
 
     const grades = subjects.map((subject) => subject.grade);
-    const passingMark = clampGrade(payload.passingMark) ?? DEFAULT_PASSING_MARK;
+    const passingMark = clampGrade(payload.passingMark, gradingScale) ?? defaultPassingMark(gradingScale);
 
-    // Prefer the model's own high/low when present, but recompute from the
-    // subject list when they are missing — the per-subject grades are the data
-    // we can actually trust, since they are the ones City will see.
-    const highestGrade = clampGrade(payload.highestGrade) ?? Math.max(...grades);
-    const lowestGrade = clampGrade(payload.lowestGrade) ?? Math.min(...grades);
-    const averageGrade = clampGrade(payload.averageGrade) ??
+    // "Highest" means BEST grade, which points in different numeric directions
+    // per scale: on inverse Scale A the best mark is the LOWEST number, on
+    // Scale B it is the HIGHEST. Recompute from the subject list whenever the
+    // model's reported pair is missing or points the wrong way for the
+    // detected scale — the per-subject grades are what City will actually see.
+    const bestFromGrades = gradingScale === SCALE_A ? Math.min(...grades) : Math.max(...grades);
+    const worstFromGrades = gradingScale === SCALE_A ? Math.max(...grades) : Math.min(...grades);
+    const reportedHighest = clampGrade(payload.highestGrade, gradingScale);
+    const reportedLowest = clampGrade(payload.lowestGrade, gradingScale);
+    const reportedDirectionOk = reportedHighest !== null && reportedLowest !== null &&
+        (gradingScale === SCALE_A
+            ? reportedHighest <= reportedLowest
+            : reportedHighest >= reportedLowest);
+    const highestGrade = reportedDirectionOk ? reportedHighest : bestFromGrades;
+    const lowestGrade = reportedDirectionOk ? reportedLowest : worstFromGrades;
+
+    const averageGrade = clampGrade(payload.averageGrade, gradingScale) ??
         Math.round((grades.reduce((sum, grade) => sum + grade, 0) / grades.length) * 100) / 100;
 
-    const computedGwa = clampGwa(payload.computedGwa) ?? gradeToGwa(averageGrade);
+    // computedGwa is always 1.00-5.00: on Scale A the average already is the
+    // GWA; on Scale B convert the percentage average.
+    const computedGwa = clampGwa(payload.computedGwa) ??
+        (gradingScale === SCALE_A ? clampGwa(averageGrade) : gradeToGwa(averageGrade));
 
     // Derive the failed list from the marks when the model did not supply a
     // usable one, so "subjectsFailed" can never contradict the subject table.
+    // Pass/fail direction follows the detected scale (inverse on Scale A).
     const derivedFailed = subjects
-        .filter((subject) => subject.grade < passingMark)
+        .filter((subject) => isFailingGrade(subject.grade, passingMark, gradingScale))
         .map((subject) => subject.name);
     const reportedFailed = Array.isArray(payload.subjectsFailed) ?
         payload.subjectsFailed.map((name) => cleanText(name, 120)).filter(Boolean) :
@@ -288,6 +416,7 @@ function normalizeExtraction(payload) {
     return {
         readable: true,
         extractionNote: cleanText(payload.extractionNote, 400),
+        gradingScale,
         studentName: cleanText(payload.studentName, 120),
         school: cleanText(payload.school, 160),
         gradeLevel: cleanText(payload.gradeLevel, 80),
@@ -380,8 +509,16 @@ module.exports = {
     analyzeGradeDocument,
     normalizeExtraction,
     parseModelJson,
+    detectGradingScale,
+    resolveScale,
+    isFailingGrade,
+    summarizeSubjects,
+    clampGrade,
     GRADE_MIN,
     GRADE_MAX,
-    DEFAULT_PASSING_MARK,
+    SCALE_A,
+    SCALE_B,
+    GRADING,
+    defaultPassingMark,
     MAX_SUBJECTS
 };

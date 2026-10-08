@@ -8,10 +8,13 @@ import { api, ApiError } from '../../lib/api';
 import {
   AcademicRecord,
   PendingDocument,
+  compareByBest,
   displayName,
+  formatGradeLabel,
   formatGwa,
   needsReview,
   passedStatus,
+  scaleOf,
   verificationBadge,
 } from '../../lib/academicRecords';
 
@@ -43,7 +46,7 @@ interface GradedScholar extends ApprovedScholar {
 
 interface Bucket { range: string; label: string; count: number }
 
-type SortKey = 'name' | 'gwa' | 'school' | 'status' | 'recent';
+type SortKey = 'name' | 'gwa' | 'school' | 'status' | 'recent' | 'highest' | 'lowest';
 type StatusFilter = 'all' | 'pending' | 'verified' | 'failed';
 
 const BUCKETS: { max: number; range: string; label: string }[] = [
@@ -169,6 +172,23 @@ export default function CityAcademic() {
         if (a.computedGwa === null) return 1;
         if (b.computedGwa === null) return -1;
         return a.computedGwa - b.computedGwa;
+      }
+      // "Highest"/"lowest" grade columns are on each record's OWN scale, and
+      // that scale may be inverse (1.00-5.00) or percentage (0-100). Sorting the
+      // raw numbers would put the BEST student at the bottom of every Scale A
+      // record, so each side is compared in its own direction. Records on
+      // different scales are grouped by scale first: their numbers are not
+      // directly comparable, and pretending otherwise would rank a 1.25 above
+      // a 98 for no meaningful reason.
+      if (sortKey === 'highest' || sortKey === 'lowest') {
+        const field = sortKey === 'highest' ? a.highestGrade : a.lowestGrade;
+        const otherField = sortKey === 'highest' ? b.highestGrade : b.lowestGrade;
+        const scaleA = scaleOf(a);
+        const scaleB = scaleOf(b);
+        if (scaleA !== scaleB) return scaleA === 'A' ? -1 : 1;
+        // "lowest grade" means the WORST mark, so reverse the direction.
+        const result = compareByBest(field, otherField, scaleA);
+        return sortKey === 'lowest' ? -result : result;
       }
       return new Date(b.extractedAt || 0).getTime() - new Date(a.extractedAt || 0).getTime();
     });
@@ -325,6 +345,8 @@ export default function CityAcademic() {
             <option value="recent">Newest first</option>
             <option value="name">Name (A–Z)</option>
             <option value="gwa">GWA (best first)</option>
+            <option value="highest">Highest grade (best first)</option>
+            <option value="lowest">Lowest grade (worst first)</option>
             <option value="school">School (A–Z)</option>
             <option value="status">Pass/Fail</option>
           </select>
@@ -365,7 +387,11 @@ export default function CityAcademic() {
                       <td className="px-4 py-3.5 text-sm text-[#6B7280]">{record.school || '—'}</td>
                       <td className="px-4 py-3.5 text-sm text-[#6B7280]">{record.subjects.length}</td>
                       <td className="px-4 py-3.5 text-sm text-[#1F2937]">
-                        {record.highestGrade === null ? '—' : Math.round(record.highestGrade)}
+                        {/* Scale-aware: a Scale A "1.25" must not be rounded to "1"
+                            and rendered like a percentage. The scale tag makes the
+                            direction explicit (Scale A: lower is better). */}
+                        {record.highestGrade === null ? '—' : formatGradeLabel(record.highestGrade, record)}
+                        <div className="text-xs text-[#9CA3AF]">Scale {scaleOf(record)}</div>
                       </td>
                       <td className="px-4 py-3.5 text-sm text-[#1F2937]" style={{ fontWeight: 700 }}>{formatGwa(record.computedGwa)}</td>
                       <td className="px-4 py-3.5">

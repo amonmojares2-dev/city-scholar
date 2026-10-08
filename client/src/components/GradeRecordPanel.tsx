@@ -7,8 +7,15 @@ import {
   SubjectGrade,
   displayName,
   formatGrade,
+  formatGradeLabel,
   formatGwa,
+  isBestGrade,
+  isSubjectFailed,
+  isWorstGrade,
+  passingMarkOf,
   passedStatus,
+  scaleLabel,
+  scaleOf,
   verificationBadge,
 } from '../lib/academicRecords';
 
@@ -35,7 +42,9 @@ function toEditState(record: AcademicRecord): EditState {
     gradeLevel: record.gradeLevel || '',
     term: record.term || '',
     computedGwa: record.computedGwa === null ? '' : String(record.computedGwa),
-    passingMark: String(record.passingMark ?? 75),
+    // Fall back to the scale's own passing mark (3.00 on inverse Scale A), not
+    // a hardcoded percentage, so the edit form opens with a sensible value.
+    passingMark: String(passingMarkOf(record)),
     subjects: (record.subjects || []).map((subject) => ({ ...subject })),
   };
 }
@@ -101,7 +110,10 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
   };
 
   const addSubject = () => {
-    setDraft((current) => ({ ...current, subjects: [...current.subjects, { name: '', grade: 0 }] }));
+    // Seed with the scale's own passing mark so a new row is never born
+    // looking like a failure (0 is invalid on inverse Scale A).
+    const seed = scaleOf(record) === 'A' ? passingMarkOf(record) : 0;
+    setDraft((current) => ({ ...current, subjects: [...current.subjects, { name: '', grade: seed }] }));
   };
 
   const removeSubject = (index: number) => {
@@ -113,6 +125,11 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
 
   const badge = verificationBadge(record);
   const status = passedStatus(record);
+  // Every mark below is read on the record's own scale. Scale A (1.00-5.00) is
+  // INVERSE, so "highest grade" is the lowest number and a subject fails when
+  // its mark is ABOVE the passing mark — the exact opposite of Scale B.
+  const scale = scaleOf(record);
+  const gradeBounds = scale === 'A' ? { min: 1, max: 5, step: '0.25' } : { min: 0, max: 100, step: '1' };
   const inputCls = 'w-full px-3 py-2 rounded-lg border border-[#E5E7EB] text-sm bg-white disabled:bg-[#F9FAFB] disabled:text-[#6B7280]';
   const labelCls = 'block text-xs text-[#6B7280] mb-1';
 
@@ -130,6 +147,10 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
             <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium mt-2 ${badge.className}`}>
               <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60" />
               {badge.label}
+            </span>
+            {/* Makes the scale explicit so an inverse mark is never misread as a percentage. */}
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#F6F7F9] text-[#6B7280] px-2.5 py-1 text-xs font-medium mt-2 ml-2">
+              Scale {scale} · {scaleLabel(scale)} · passes at {passingMarkOf(record)}
             </span>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-[#F6F7F9] text-[#6B7280]" aria-label="Close panel">
@@ -151,10 +172,12 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
           {/* Summary figures */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
+              // GWA is always 1.00-5.00; the other three live on the record's
+              // own scale, so they carry the scale's format (1.25 stays "1.25").
               { label: 'GWA', value: formatGwa(record.computedGwa) },
-              { label: 'Average', value: formatGrade(record.averageGrade) },
-              { label: 'Highest', value: formatGrade(record.highestGrade) },
-              { label: 'Lowest', value: formatGrade(record.lowestGrade) },
+              { label: 'Average', value: formatGradeLabel(record.averageGrade, record) },
+              { label: 'Highest', value: formatGradeLabel(record.highestGrade, record) },
+              { label: 'Lowest', value: formatGradeLabel(record.lowestGrade, record) },
             ].map((stat) => (
               <div key={stat.label} className="rounded-xl border border-[#E5E7EB] p-3 text-center">
                 <div className="text-lg text-[#1F2937]" style={{ fontWeight: 700 }}>{stat.value}</div>
@@ -210,7 +233,11 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
                   </thead>
                   <tbody className="divide-y divide-[#E5E7EB]">
                     {draft.subjects.map((subject, index) => {
-                      const failing = subject.grade < (record.passingMark ?? 75);
+                      // Scale-aware: on inverse Scale A a mark ABOVE the
+                      // passing mark fails, on Scale B one below it does.
+                      const failing = isSubjectFailed(subject.grade, record);
+                      const best = !editing && isBestGrade(subject.grade, record);
+                      const worst = !editing && isWorstGrade(subject.grade, record);
                       return (
                         <tr key={index}>
                           <td className="px-4 py-2.5">
@@ -230,14 +257,21 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
                               <input
                                 className={inputCls + ' text-right'}
                                 type="number"
-                                min={0}
-                                max={100}
+                                min={gradeBounds.min}
+                                max={gradeBounds.max}
+                                step={gradeBounds.step}
                                 value={subject.grade}
                                 onChange={(e) => setSubject(index, { grade: Number(e.target.value) })}
                               />
                             ) : (
-                              <span className={`text-sm ${failing ? 'text-red-600' : 'text-[#1F2937]'}`} style={{ fontWeight: 600 }}>
-                                {formatGrade(subject.grade)}
+                              <span
+                                className={`text-sm ${failing ? 'text-red-600' : 'text-[#1F2937]'}`}
+                                style={{ fontWeight: 600 }}
+                                title={best ? 'Best grade this term' : worst ? 'Lowest grade this term' : undefined}
+                              >
+                                {formatGradeLabel(subject.grade, record)}
+                                {best && <span className="ml-1 text-[#22A06B] text-xs">▲</span>}
+                                {worst && <span className="ml-1 text-[#D97706] text-xs">▼</span>}
                               </span>
                             )}
                           </td>
@@ -289,12 +323,13 @@ export default function GradeRecordPanel({ record, onClose, onSaved }: GradeReco
               />
             </div>
             <div>
-              <label className={labelCls}>Passing mark (0 – 100)</label>
+              <label className={labelCls}>Passing mark ({scaleLabel(scale)})</label>
               <input
                 className={inputCls}
                 type="number"
-                min={0}
-                max={100}
+                min={gradeBounds.min}
+                max={gradeBounds.max}
+                step={gradeBounds.step}
                 value={draft.passingMark}
                 disabled={!editing}
                 onChange={(e) => setDraft({ ...draft, passingMark: e.target.value })}

@@ -2,7 +2,7 @@ const fs = require("fs");
 const GradeRecord = require("../models/GradeRecord");
 const Document = require("../models/Document");
 const { resolveStoredFile } = require("../config/storage");
-const { analyzeGradeDocument, isAiConfigured, AiVisionError } = require("../utils/aiVision");
+const { analyzeGradeDocument, isAiConfigured, AiVisionError, resolveScale, summarizeSubjects } = require("../utils/aiVision");
 const { logAudit } = require("../utils/audit");
 
 // ==========================================================
@@ -158,6 +158,7 @@ const analyzeDocument = async(req, res, next) => {
                 gradeLevel: extraction.gradeLevel,
                 term: extraction.term,
                 subjects: extraction.subjects,
+                gradingScale: extraction.gradingScale,
                 highestGrade: extraction.highestGrade,
                 lowestGrade: extraction.lowestGrade,
                 averageGrade: extraction.averageGrade,
@@ -203,13 +204,22 @@ const analyzeDocument = async(req, res, next) => {
 // GET /api/academic-records — the Academic Monitoring list
 // ==========================================================
 //
+// SCOPE: RENEWAL SUBMISSIONS ONLY. Academic Monitoring is about ongoing
+// scholar performance, so it reads grade documents that arrived with a
+// Renewal (Document.context === "renewal") — never the original Application
+// upload. Students who have never renewed do not appear here at all.
+// When a student has renewed more than once, only their MOST RECENT
+// renewal's record is returned (see latestRenewalApplicationByStudent).
+//
 // Returns every extracted record joined to its student and source document,
 // plus the documents that have NO record yet so City still sees an "Analyze"
 // action for students nobody has run the AI on. The un-analyzed list is what
 // makes the page useful on day one instead of showing an empty table.
 const listRecords = async(req, res, next) => {
     try {
-        const filter = {};
+        // Renewal-only scope is not a query parameter on purpose: the page's
+        // contract is "renewal grade documents", so the filter is fixed here.
+        const filter = { context: "renewal" };
 
         // Optional filters, kept server-side so the client never has to pull
         // everything and filter in the browser.
@@ -218,19 +228,25 @@ const listRecords = async(req, res, next) => {
             filter.verifiedByCity = rawStatus === "verified";
         }
         if (req.query.application) filter.application = req.query.application;
-        const rawContext = String(req.query.context || "").trim().toLowerCase();
-        if (rawContext === "renewal" || rawContext === "application") filter.context = rawContext;
 
         const records = await GradeRecord.find(filter)
             .populate("student", "name email barangay")
-            .populate("document", "type originalName status mimeType")
+            .populate("document", "type originalName status mimeType createdAt updatedAt")
             .sort({ createdAt: -1 })
             .lean();
 
+        // Keep only records whose source document belongs to the student's
+        // most recent renewal — older renewals drop out of the default view.
+        const latest = await latestRenewalApplicationByStudent();
+        const scoped = records.filter((record) => {
+            const entry = latest.get(String(record.student?._id ?? record.student));
+            return entry && entry.application === String(record.application);
+        });
+
         res.json({
             success: true,
-            count: records.length,
-            records: records.map(publicRecord),
+            count: scoped.length,
+            records: scoped.map(publicRecord),
             // Lets the page explain itself when the provider key is missing.
             aiConfigured: isAiConfigured()
         });
@@ -238,18 +254,60 @@ const listRecords = async(req, res, next) => {
 };
 
 // ==========================================================
+// Renewal scope helpers (shared by both list endpoints)
+// ==========================================================
+// Academic Monitoring reads RENEWAL grade documents only. Two questions the
+// endpoints must agree on, so both are answered here:
+//
+//   1. Which documents count? Document.context === "renewal" (uploaded from
+//      the Renewal page) AND readable by the vision model AND a grade slot.
+//      New Applicants only ever have context "application" documents, so they
+//      never show up on this page.
+//
+//   2. Which renewal, when a student renewed more than once? Re-uploading a
+//      renewal slot replaces the same Document row (unique index on
+//      application+context+type), so a single Application can only ever hold
+//      its newest renewal files. Older Application rows may still carry an
+//      older renewal's files — those are grouped by application, and each
+//      student keeps only the application holding their most recently
+//      updated renewal grade document.
+//
+// FUTURE/NOT REQUIRED NOW: a history view listing past renewals' grade
+// documents per student. The grouping below already separates renewals by
+// application, so a history view can reuse latestRenewalApplicationByStudent
+// without changing the data model.
+async function latestRenewalApplicationByStudent() {
+    const documents = await Document.find({
+        context: "renewal",
+        mimeType: { $in: ["image/png", "image/jpeg", "application/pdf"] }
+    })
+        .select("student application type createdAt updatedAt")
+        .lean();
+
+    const latest = new Map(); // studentId -> { application, stamp }
+    for (const document of documents) {
+        if (!isGradeDocumentType(document.type)) continue;
+        const student = String(document.student);
+        const stamp = new Date(document.updatedAt || document.createdAt).getTime() || 0;
+        const current = latest.get(student);
+        if (!current || stamp > current.stamp) {
+            latest.set(student, { application: String(document.application), stamp });
+        }
+    }
+    return latest;
+}
+
+// ==========================================================
 // GET /api/academic-records/pending — grade documents not yet analyzed
 // ==========================================================
 //
-// Separate from the list above on purpose: this is "documents waiting to be
-// analyzed" (not records), so it needs its own query — it joins Document
-// against GradeRecord to find the gap.
+// Same renewal-only scope as the list above: only Renewal grade documents are
+// ever offered for analysis from Academic Monitoring, and only those from
+// each student's most recent renewal.
 const listPendingDocuments = async(req, res, next) => {
     try {
-        const filter = {};
+        const filter = { context: "renewal" };
         if (req.query.application) filter.application = req.query.application;
-        const rawContext = String(req.query.context || "").trim().toLowerCase();
-        if (rawContext === "renewal" || rawContext === "application") filter.context = rawContext;
 
         // Only files a vision model can actually read.
         filter.mimeType = { $in: ["image/png", "image/jpeg", "application/pdf"] };
@@ -259,7 +317,14 @@ const listPendingDocuments = async(req, res, next) => {
             .sort({ createdAt: -1 })
             .lean();
 
-        const analyzed = await GradeRecord.find({ document: { $in: documents.map((doc) => doc._id) } })
+        // Drop documents that belong to an older renewal of the same student.
+        const latest = await latestRenewalApplicationByStudent();
+        const latestDocuments = documents.filter((doc) => {
+            const entry = latest.get(String(doc.student?._id ?? doc.student));
+            return entry && entry.application === String(doc.application);
+        });
+
+        const analyzed = await GradeRecord.find({ document: { $in: latestDocuments.map((doc) => doc._id) } })
             .select("document verifiedByCity extractionStatus")
             .lean();
 
@@ -267,7 +332,7 @@ const listPendingDocuments = async(req, res, next) => {
             analyzed.map((row) => [String(row.document), row])
         );
 
-        const pending = documents
+        const pending = latestDocuments
             .map((doc) => {
                 const record = byDocument.get(String(doc._id));
                 const student = doc.student && typeof doc.student === "object" ? doc.student : null;
@@ -327,15 +392,23 @@ const updateRecord = async(req, res, next) => {
             if (typeof body[field] === "string") patch[field] = body[field].trim().slice(0, 200);
         }
 
+        // The scale this record's marks live on. A reviewer may correct it (the
+        // AI sometimes misreads a 1.25 as 1,250), but validation below always
+        // follows the resulting scale so a 1.00-5.00 record can never accept a
+        // 0-100 mark and vice versa.
+        const scale = resolveScale(body.gradingScale, record.gradingScale);
+        const bounds = scale === "A" ? { min: 1, max: 5 } : { min: 0, max: 100 };
+        const inScale = (value) => Number.isFinite(value) && value >= bounds.min && value <= bounds.max;
+
         if (typeof body.passingMark === "number" || typeof body.passingMark === "string") {
             const mark = Number(body.passingMark);
-            if (Number.isFinite(mark) && mark >= 0 && mark <= 100) patch.passingMark = mark;
+            if (inScale(mark)) patch.passingMark = mark;
         }
 
         for (const field of ["averageGrade", "highestGrade", "lowestGrade"]) {
             if (body[field] === null) { patch[field] = null; continue; }
             const value = Number(body[field]);
-            if (Number.isFinite(value) && value >= 0 && value <= 100) patch[field] = value;
+            if (inScale(value)) patch[field] = value;
         }
 
         if (body.computedGwa === null) {
@@ -359,13 +432,32 @@ const updateRecord = async(req, res, next) => {
                     if (!subject || typeof subject !== "object") return null;
                     const name = String(subject.name || "").trim().slice(0, 120);
                     const grade = Number(subject.grade);
-                    if (!name || !Number.isFinite(grade) || grade < 0 || grade > 100) return null;
+                    // Range-checked against the record's scale: a 0-100 mark can
+                    // never be saved onto a 1.00-5.00 record.
+                    if (!name || !inScale(grade)) return null;
                     return { name, grade: Math.round(grade * 100) / 100 };
                 })
                 .filter(Boolean)
                 .slice(0, 30);
             patch.subjects = subjects;
         }
+
+        // When the reviewer corrected the marks, the summary columns and the
+        // failed list are recomputed from those marks so they cannot contradict
+        // the subject table. Direction follows the scale: on inverse Scale A a
+        // mark ABOVE the passing mark fails.
+        if (patch.subjects) {
+            const summary = summarizeSubjects(patch.subjects, scale, patch.passingMark ?? record.passingMark);
+            patch.highestGrade = summary.highestGrade;
+            patch.lowestGrade = summary.lowestGrade;
+            patch.averageGrade = summary.averageGrade;
+            patch.subjectsFailed = summary.subjectsFailed;
+            if (body.computedGwa === undefined) patch.computedGwa = summary.computedGwa;
+            if (summary.subjectsFailed.length > 0) patch.overallStatus = "Failed";
+            else if (body.overallStatus === undefined) patch.overallStatus = "Passed";
+        }
+
+        if (scale !== (record.gradingScale || null)) patch.gradingScale = scale;
 
         if (Array.isArray(body.subjectsFailed)) {
             patch.subjectsFailed = body.subjectsFailed
