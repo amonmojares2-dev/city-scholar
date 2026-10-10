@@ -5,7 +5,7 @@ const User = require("../models/User");
 const fs = require("fs");
 const { resolveStoredFile, removeStoredFileByFilename } = require("../config/storage");
 const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES, BARANGAY_ADMIN_ROLES } = require("../utils/validation");
-const { normalizeReviewStatus } = require("../utils/documentReview");
+const { normalizeReviewStatus, isGradeDocumentType } = require("../utils/documentReview");
 
 // Strip the deprecated raw filesystem path before a Document leaves the
 // server — clients must never see the server's directory structure.
@@ -111,6 +111,136 @@ const updateDocument = async(req, res, next) => {
 };
 
 // ==========================================================
+// Failed-grade appeal: City asks the student to resubmit
+// POST /api/documents/:id/request-resubmission (City / Super Admin)
+// ==========================================================
+// Academic Monitoring's Failed Students section sends this when a grade copy
+// did not survive the scale check. The request lives in the requestedReissue /
+// request* fields instead of overwriting the review status, so the student
+// sees WHY a new copy is needed and BY WHEN on their Documents and Renewal
+// pages while the original decision history stays intact.
+const requestResubmission = async(req, res, next) => {
+    try {
+        const document = await Document.findById(req.params.id);
+        if (!document) return res.status(404).json({ success: false, message: "Document not found" });
+
+        const explanation = String(req.body.explanation || "").trim();
+        if (explanation.length < 10) {
+            return res.status(400).json({ success: false, message: "Explain what the student must fix (at least 10 characters)." });
+        }
+
+        const deadline = new Date(req.body.deadline || "");
+        if (Number.isNaN(deadline.getTime())) {
+            return res.status(400).json({ success: false, message: "A valid replacement deadline is required." });
+        }
+        // The UI sends a date-only string (UTC midnight). Require at least
+        // tomorrow's calendar date so the student is never asked for a
+        // same-day miracle.
+        const startOfToday = new Date();
+        startOfToday.setUTCHours(0, 0, 0, 0);
+        if (deadline.getTime() <= startOfToday.getTime()) {
+            return res.status(400).json({ success: false, message: "The replacement deadline must be a future date." });
+        }
+
+        document.requestedReissue = true;
+        document.requestedBy = req.user.id;
+        document.requestedAt = new Date();
+        document.requestExplanation = explanation;
+        document.requestDeadline = deadline;
+        // A fresh request reopens the cycle: the student has NOT answered yet.
+        document.appealStatus = null;
+        await document.save();
+
+        // Best effort — failing to notify must never undo a request City made.
+        try {
+            await Notification.create({
+                recipient: document.student,
+                title: "Resubmission requested",
+                message: `${document.type} must be replaced. ${explanation} Submit a new copy before ${deadline.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}.`,
+                type: "document",
+                link: document.context === "renewal" ? "/student/renewal" : "/student/documents"
+            });
+        } catch (notificationError) {
+            console.error("Resubmission request notification error:", notificationError.message);
+        }
+
+        res.json({ success: true, document: publicDocument(document) });
+    } catch (error) { next(error); }
+};
+
+
+// ==========================================================
+// Student answers a replacement request (or a rejection)
+// POST /api/documents/:id/replace — owner student, file in "file"
+// ==========================================================
+// Swaps the stored file on the EXISTING Document row instead of creating a
+// second one: the unique application+context+type index allows one file per
+// slot, and Academic Monitoring keeps pointing at this same row so the appeal
+// lifecycle (request -> resubmission -> re-analysis) stays on one record.
+const replaceDocument = async(req, res, next) => {
+    try {
+        if (!req.file) return res.status(400).json({ success: false, message: "A PDF, JPEG, or PNG file is required" });
+
+        const document = await Document.findById(req.params.id);
+        if (!document) {
+            removeStoredFileByFilename(req.file.filename);
+            return res.status(404).json({ success: false, message: "Document not found" });
+        }
+
+        // Only the owning student may replace their own file.
+        if (!document.student || document.student.toString() !== req.user.id) {
+            removeStoredFileByFilename(req.file.filename);
+            return res.status(403).json({ success: false, message: "You can only replace your own documents." });
+        }
+
+        const openRequest = Boolean(document.requestedReissue) && document.appealStatus !== "resubmitted";
+        const isRejected = document.status === "rejected";
+        if (!openRequest && !isRejected) {
+            removeStoredFileByFilename(req.file.filename);
+            return res.status(409).json({ success: false, message: "This document does not need to be replaced right now." });
+        }
+
+        // The deadline only gates City-requested resubmissions; an ordinary
+        // rejection can be fixed whenever the student gets to it.
+        if (openRequest && document.requestDeadline && new Date(document.requestDeadline).getTime() < Date.now()) {
+            removeStoredFileByFilename(req.file.filename);
+            return res.status(410).json({
+                success: false,
+                message: `The replacement deadline (${new Date(document.requestDeadline).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}) has passed. Contact the City Scholarship Office.`
+            });
+        }
+
+        const previousFilename = document.filename;
+        document.originalName = req.file.originalname;
+        document.filename = req.file.filename;
+        document.mimeType = req.file.mimetype;
+        // The new file is unreviewed: reset the old decision and trail.
+        document.status = "pending";
+        document.remarks = "";
+        document.reviewedBy = null;
+        document.reviewedAt = null;
+        document.replacementDate = new Date();
+        // Record that the answer arrived — for a grade copy this is the appeal
+        // resubmission Academic Monitoring waits for.
+        if (document.requestedReissue || isGradeDocumentType(document.type)) {
+            document.appealStatus = "resubmitted";
+        }
+        await document.save();
+
+        // Delete the superseded file only after the swap has committed.
+        if (previousFilename && previousFilename !== document.filename) {
+            removeStoredFileByFilename(previousFilename);
+        }
+
+        res.json({ success: true, document: publicDocument(document) });
+    } catch (error) {
+        removeStoredFileByFilename(req.file && req.file.filename);
+        next(error);
+    }
+};
+
+
+// ==========================================================
 // Dedicated file endpoint — GET /api/documents/:id/file
 //
 // Streams the stored file for one Document row. The client addresses the
@@ -151,4 +281,4 @@ const serveDocumentFile = async(req, res, next) => {
     } catch (error) { next(error); }
 };
 
-module.exports = { listDocuments, uploadDocument, updateDocument, serveDocumentFile };
+module.exports = { listDocuments, uploadDocument, updateDocument, serveDocumentFile, requestResubmission, replaceDocument };

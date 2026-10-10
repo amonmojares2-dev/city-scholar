@@ -12,8 +12,10 @@ import {
   displayName,
   formatGradeLabel,
   formatGwa,
+  isSubjectFailed,
   needsReview,
   passedStatus,
+  passingMarkOf,
   scaleOf,
   verificationBadge,
 } from '../../lib/academicRecords';
@@ -47,7 +49,7 @@ interface GradedScholar extends ApprovedScholar {
 interface Bucket { range: string; label: string; count: number }
 
 type SortKey = 'name' | 'gwa' | 'school' | 'status' | 'recent' | 'highest' | 'lowest';
-type StatusFilter = 'all' | 'pending' | 'verified' | 'failed';
+type StatusFilter = 'all' | 'pending' | 'verified' | 'failed' | 'failing';
 
 const BUCKETS: { max: number; range: string; label: string }[] = [
   { max: 1.5, range: '1.00-1.50', label: 'Exceptional' },
@@ -62,6 +64,11 @@ function parseGwa(value: string): number | null {
   return Number.isFinite(parsed) && parsed >= 1 && parsed <= 5 ? parsed : null;
 }
 
+// A date-only string (YYYY-MM-DD) for <input type="date">, built from LOCAL
+// date parts — toISOString() would shift the day for evening timezones.
+const toInputDate = (date: Date): string =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
 export default function CityAcademic() {
   const [scholars, setScholars] = useState<ApprovedScholar[]>([]);
   const [records, setRecords] = useState<AcademicRecord[]>([]);
@@ -72,6 +79,14 @@ export default function CityAcademic() {
   const [notice, setNotice] = useState('');
   const [analyzingId, setAnalyzingId] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Failed-grade appeal: the Request Resubmission modal on the Failed
+  // Students section. One modal is shared by every row.
+  const [requestFor, setRequestFor] = useState<AcademicRecord | null>(null);
+  const [requestExplanation, setRequestExplanation] = useState('');
+  const [requestDeadline, setRequestDeadline] = useState('');
+  const [requestError, setRequestError] = useState('');
+  const [sendingRequest, setSendingRequest] = useState(false);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -133,6 +148,55 @@ export default function CityAcademic() {
     setRecords((current) => current.map((record) => (record.id === updated.id ? updated : record)));
   };
 
+  // Students with at least one failing subject on their latest renewal record.
+  // Names stay listed here — this is a work queue, not an archive. The pass/
+  // fail decision itself comes from passedStatus -> isSubjectFailed, i.e. the
+  // shared passing marks (isFailingGrade/passingMarkOf), so the section can
+  // never disagree with the table.
+  const failedStudents = useMemo(
+    () => records.filter((record) => passedStatus(record) === 'Failed'),
+    [records],
+  );
+
+  const openRequestModal = (record: AcademicRecord) => {
+    setRequestFor(record);
+    setRequestExplanation('');
+    const due = new Date();
+    due.setDate(due.getDate() + 7);
+    setRequestDeadline(toInputDate(due));
+    setRequestError('');
+  };
+
+  const sendResubmissionRequest = async () => {
+    if (!requestFor) return;
+    const explanation = requestExplanation.trim();
+    if (explanation.length < 10) {
+      setRequestError('Describe what the student must fix (at least 10 characters).');
+      return;
+    }
+    if (!requestDeadline) {
+      setRequestError('Pick a replacement deadline.');
+      return;
+    }
+    setSendingRequest(true);
+    setRequestError('');
+    setError('');
+    setNotice('');
+    try {
+      await api(`/documents/${requestFor.documentId}/request-resubmission`, {
+        method: 'POST',
+        body: JSON.stringify({ explanation, deadline: requestDeadline }),
+      });
+      setNotice(`Replacement requested from ${displayName(requestFor)}. They will be notified with your explanation and deadline.`);
+      setRequestFor(null);
+      await loadRecords();
+    } catch (err) {
+      setRequestError(err instanceof ApiError ? err.message : 'Unable to send the request. Please try again.');
+    } finally {
+      setSendingRequest(false);
+    }
+  };
+
   const graded: GradedScholar[] = scholars
     .map((scholar) => ({ ...scholar, gwaValue: parseGwa(scholar.gwa) }))
     .filter((scholar): scholar is GradedScholar => scholar.gwaValue !== null);
@@ -156,6 +220,7 @@ export default function CityAcademic() {
       if (statusFilter === 'pending' && !needsReview(record)) return false;
       if (statusFilter === 'verified' && !record.verifiedByCity) return false;
       if (statusFilter === 'failed' && record.extractionStatus !== 'failed') return false;
+      if (statusFilter === 'failing' && passedStatus(record) !== 'Failed') return false;
       return true;
     });
 
@@ -336,6 +401,7 @@ export default function CityAcademic() {
             <option value="pending">Pending review</option>
             <option value="verified">Verified</option>
             <option value="failed">Extraction failed</option>
+            <option value="failing">Failed subjects</option>
           </select>
           <select value={schoolFilter} onChange={(e) => setSchoolFilter(e.target.value)} className={selectCls} aria-label="Filter by school">
             <option value="">All schools</option>
@@ -420,6 +486,84 @@ export default function CityAcademic() {
         )}
       </div>
 
+      {/* ---- Failed Students: at least one failing subject on the latest renewal ---- */}
+      <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden mb-5">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#E5E7EB]">
+          <div>
+            <h3 className="text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>Failed Students</h3>
+            <p className="text-xs text-[#6B7280] mt-0.5">
+              Students with at least one failing subject under the shared passing marks for their record's scale. Names stay listed here until the replacement is analyzed.
+            </p>
+          </div>
+          <span className="px-2.5 py-1 bg-red-50 text-red-700 text-xs rounded-full shrink-0" style={{ fontWeight: 600 }}>
+            {failedStudents.length} student{failedStudents.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        {failedStudents.length === 0 ? (
+          <p className="p-8 text-center text-sm text-[#6B7280]">
+            No student has a failing subject on the current renewal records.
+          </p>
+        ) : (
+          <div className="divide-y divide-[#E5E7EB] max-h-[28rem] overflow-y-auto">
+            {failedStudents.map((record) => {
+              // Same shared decision as the table's Status column.
+              const failedSubjects = record.subjects.filter((subject) => isSubjectFailed(subject.grade, record));
+              const awaitingAnswer = Boolean(record.documentRequestedReissue) && !record.documentAppealStatus;
+              const deadline = record.documentRequestDeadline ? new Date(record.documentRequestDeadline) : null;
+              const expired = awaitingAnswer && deadline !== null && deadline.getTime() < Date.now();
+              return (
+                <div key={record.id} className="px-5 py-4">
+                  <div className="flex items-start gap-4">
+                    <div className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center flex-shrink-0">
+                      <Icon name="alert-triangle" size={16} className="text-[#DC2626]" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>{displayName(record)}</div>
+                      <div className="text-xs text-[#6B7280]">
+                        {record.school || 'School not recorded'} · GWA {formatGwa(record.computedGwa)} ·
+                        Scale {scaleOf(record)}, passing mark {passingMarkOf(record)}
+                        {failedSubjects.length > 0
+                          ? ` · ${failedSubjects.length} failing subject${failedSubjects.length === 1 ? '' : 's'}`
+                          : ''}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {failedSubjects.map((subject) => (
+                          <span
+                            key={`${subject.name}-${subject.grade}`}
+                            className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs"
+                            style={{ fontWeight: 600 }}
+                          >
+                            {subject.name} · {formatGradeLabel(subject.grade, record)}
+                          </span>
+                        ))}
+                      </div>
+                      {record.documentRequestedReissue && (
+                        <div className={`mt-2 text-xs ${expired ? 'text-[#DC2626]' : record.documentAppealStatus ? 'text-[#2563EB]' : 'text-[#B45309]'}`}>
+                          {record.documentAppealStatus
+                            ? 'Replacement submitted — awaiting re-analysis.'
+                            : expired
+                              ? `Resubmission deadline passed${deadline ? ` (${deadline.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })})` : ''}. Contact the student.`
+                              : `Resubmission requested — due ${deadline ? deadline.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => openRequestModal(record)}
+                      disabled={!record.documentId}
+                      className="px-3 py-2 rounded-lg bg-[#163A63] text-white text-xs hover:bg-[#0B1F3A] disabled:opacity-50 shrink-0"
+                      style={{ fontWeight: 600 }}
+                      title={!record.documentId ? 'This record has no source document attached.' : 'Ask the student to upload a corrected grade copy'}
+                    >
+                      {awaitingAnswer ? 'Resend request' : 'Request Resubmission'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="bg-white rounded-2xl border border-[#E5E7EB] p-5 mb-5">
         <h3 className="text-sm text-[#1F2937] mb-4" style={{ fontWeight: 700 }}>GWA Distribution ({graded.length} scholars with GWA records)</h3>
         {graded.length === 0 ? (
@@ -474,6 +618,73 @@ export default function CityAcademic() {
           </div>
         )}
       </div>
+
+      {/* Failed-grade appeal: ask the student to replace a grade copy. One
+          modal is shared by every Failed Students row. */}
+      {requestFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#E5E7EB]">
+              <h3 className="text-sm text-[#1F2937]" style={{ fontWeight: 700 }}>
+                Request Resubmission — {displayName(requestFor)}
+              </h3>
+              <button
+                onClick={() => setRequestFor(null)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[#F6F7F9] text-[#6B7280]"
+                aria-label="Close"
+              >
+                <Icon name="x" size={15} />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-xs text-[#6B7280] mb-4">
+                The student is notified with your explanation and deadline and can upload a new copy from their
+                Documents or Renewal page. The record stays listed under Failed Students until the replacement
+                is analyzed.
+              </p>
+              <label className="block text-xs text-[#6B7280] mb-3" style={{ fontWeight: 600 }}>
+                Why must it be replaced?
+                <textarea
+                  value={requestExplanation}
+                  onChange={(event) => setRequestExplanation(event.target.value)}
+                  rows={3}
+                  maxLength={500}
+                  placeholder="e.g. The scanned grades do not show the failing mark for the latest semester."
+                  className="mt-1 w-full px-3 py-2 rounded-xl border border-[#E5E7EB] text-sm text-[#1F2937] resize-none"
+                />
+              </label>
+              <label className="block text-xs text-[#6B7280] mb-3" style={{ fontWeight: 600 }}>
+                Replacement deadline
+                <input
+                  type="date"
+                  value={requestDeadline}
+                  min={toInputDate(new Date(Date.now() + 86400000))}
+                  onChange={(event) => setRequestDeadline(event.target.value)}
+                  className="mt-1 w-full px-3 py-2 rounded-xl border border-[#E5E7EB] text-sm text-[#1F2937]"
+                />
+              </label>
+              {requestError && <p className="text-xs text-red-600 mb-3">{requestError}</p>}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setRequestFor(null)}
+                  className="flex-1 py-2.5 border border-[#E5E7EB] rounded-xl text-sm text-[#6B7280] hover:bg-[#F6F7F9]"
+                  style={{ fontWeight: 600 }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={sendResubmissionRequest}
+                  disabled={sendingRequest}
+                  className="flex-1 py-2.5 bg-[#163A63] text-white rounded-xl text-sm hover:bg-[#0B1F3A] disabled:opacity-50"
+                  style={{ fontWeight: 600 }}
+                >
+                  {sendingRequest ? 'Sending…' : 'Send request'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Drill-down: full subject breakdown, editing, and the Verify action. */}
       {selectedRecord && (

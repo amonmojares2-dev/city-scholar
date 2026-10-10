@@ -149,6 +149,18 @@ const uploadStudentDocument = async(req, res, next) => {
             context,
             type: documentType
         };
+        // City-requested resubmission deadline: enforced here too, so the
+        // deadline means the same thing whether the student replaces from the
+        // Renewal page popup or the Documents page popup.
+        const requestedDocument = await Document.findOne(filter);
+        if (requestedDocument && requestedDocument.requestedReissue &&
+            requestedDocument.appealStatus !== "resubmitted" &&
+            requestedDocument.requestDeadline && new Date(requestedDocument.requestDeadline).getTime() < Date.now()) {
+            removeStoredFileByFilename(req.file.filename);
+            const passedDeadline = new Date(requestedDocument.requestDeadline).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+            return sendError(410, `The replacement deadline (${passedDeadline}) has passed. Contact the City Scholarship Office.`);
+        }
+
         const replacement = {
             student: req.user.id,
             originalName: req.file.originalname,
@@ -195,6 +207,14 @@ const uploadStudentDocument = async(req, res, next) => {
 
         const document = await Document.findOne(filter);
         uploadCommitted = true;
+        // Answering a City replacement request through this (existing) Renewal
+        // popup also moves the appeal cycle to "resubmitted", so Academic
+        // Monitoring sees the student's answer no matter which popup was used.
+        if (previousDocument && previousDocument.requestedReissue && previousDocument.appealStatus !== "resubmitted") {
+            document.appealStatus = "resubmitted";
+            document.replacementDate = new Date();
+            await document.save();
+        }
         const replacedFilename = String(previousDocument?.filename || "");
         if (replacedFilename && replacedFilename !== req.file.filename) {
             removeStoredFile({ filename: replacedFilename });

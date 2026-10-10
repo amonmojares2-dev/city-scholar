@@ -143,11 +143,21 @@ async function documentReviewSummary(application, options = {}) {
     return summary;
 }
 
+// Grade-document slot hints, shared by the Analyze list
+// (gradeRecordController) and the resubmission flows (documentController), so
+// both always agree on which slots hold grades.
+const GRADE_DOCUMENT_HINTS = /report card|transcript|grades|\btor\b/i;
+
+function isGradeDocumentType(type) {
+    return GRADE_DOCUMENT_HINTS.test(String(type || ""));
+}
+
 module.exports = {
     APPROVED_DOCUMENT_STATUSES,
     DOCUMENT_REVIEW_STATUSES,
     isDocumentApproved,
     normalizeReviewStatus,
+    isGradeDocumentType,
     documentReviewContext,
     requiredDocumentKeys,
     documentReviewSummary,

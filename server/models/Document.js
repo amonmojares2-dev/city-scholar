@@ -40,7 +40,32 @@ const documentSchema = new mongoose.Schema({
     // Reviewer trail for the single-document decision, plus the moment the
     // document was flagged as needing a replacement.
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-    reviewedAt: { type: Date, default: null }
+    reviewedAt: { type: Date, default: null },
+
+    // ---- Replacement / appeal-requested reuse (student Documents section) ----
+    // `requestedReissue: true` means City opened a "Request Resubmission"
+    // (e.g. from Academic Monitoring's Failed Students flow). `requestExplanation`
+    // and `requestDeadline` carry the City explanation and the retry deadline.
+    // Once the student resubmits, this document is again `pending` review and
+    // the linked appeal is marked so Academic Monitoring can analyze it.
+    requestedReissue: { type: Boolean, default: false },
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    requestedAt: { type: Date, default: null },
+    requestExplanation: { type: String, default: "" },
+    requestDeadline: { type: Date, default: null },
+
+    // What happened after the replacement was uploaded:
+    //   null              – no appeal / no grade-copy resubmission
+    //   "resubmitted"     – the student uploaded a replacement grade copy
+    //   "passed"          – the new copy verified / passed
+    //   "still_fails"     – the replacement still failed the scale check
+    appealStatus: {
+        type: String,
+        enum: ["resubmitted", "passed", "still_fails"],
+        default: null
+    },
+
+    replacementDate: { type: Date, default: null }
 }, { timestamps: true });
 
 // One stored file per document slot and portal flow. This supports replacement

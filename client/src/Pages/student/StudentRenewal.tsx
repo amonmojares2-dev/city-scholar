@@ -24,7 +24,7 @@ type UploadStatus = 'not-uploaded' | 'under-review' | 'verified' | 'rejected';
 // endpoint serves the Application page (default context "application"), so
 // both the list and the upload must carry context=renewal or the two flows
 // share rows on the same application record.
-interface ServerDoc { _id?: string; type?: string; status?: string; filename?: string; mimeType?: string; createdAt?: string; updatedAt?: string }
+interface ServerDoc { _id?: string; type?: string; status?: string; filename?: string; mimeType?: string; createdAt?: string; updatedAt?: string; requestedReissue?: boolean; requestExplanation?: string; requestDeadline?: string | null; appealStatus?: string | null }
 
 interface DocRow {
   docType: string;
@@ -34,6 +34,12 @@ interface DocRow {
   documentId: string;
   filename: string;
   mimeType: string;
+  // City's replacement request (failed-grade appeal flow): shown above the
+  // existing Replace popup and enforced by the upload endpoints.
+  requestExplanation: string;
+  requestDeadline: string;
+  requestOpen: boolean;
+  deadlinePassed: boolean;
 }
 
 const mapServerStatus = (status?: string): UploadStatus => {
@@ -62,7 +68,7 @@ const getRenewalWindow = () => {
 };
 
 export default function StudentRenewal() {
-  const [docs, setDocs] = useState<DocRow[]>(RENEWAL_DOCS.map(d => ({ ...d, status: 'not-uploaded' as const, uploaded: '', documentId: '', filename: '', mimeType: '' })));
+  const [docs, setDocs] = useState<DocRow[]>(RENEWAL_DOCS.map(d => ({ ...d, status: 'not-uploaded' as const, uploaded: '', documentId: '', filename: '', mimeType: '', requestExplanation: '', requestDeadline: '', requestOpen: false, deadlinePassed: false })));
   const [loading, setLoading] = useState(true);
   const [uploadFor, setUploadFor] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -106,6 +112,10 @@ export default function StudentRenewal() {
           documentId: found?._id || '',
           filename: found?.filename || '',
           mimeType: found?.mimeType || '',
+          requestExplanation: found?.requestExplanation || '',
+          requestDeadline: found?.requestDeadline || '',
+          requestOpen: Boolean(found?.requestedReissue && !found?.appealStatus),
+          deadlinePassed: Boolean(found?.requestedReissue && !found?.appealStatus && found?.requestDeadline && new Date(found.requestDeadline).getTime() < Date.now()),
         };
       }));
         } catch (err) {
@@ -180,6 +190,10 @@ export default function StudentRenewal() {
       setConfirmSubmit(false);
     }
   };
+
+  // Resolved once for the open popup so the City request banner below does not
+  // repeat the lookup inside JSX.
+  const uploadTarget = uploadFor ? docs.find(d => d.docType === uploadFor) : undefined;
 
   return (
     <div>
@@ -291,10 +305,21 @@ export default function StudentRenewal() {
                 <p className="text-xs text-[#9CA3AF]">{doc.note}</p>
                 {doc.uploaded && <p className="text-xs text-[#9CA3AF] mt-0.5">Submitted {doc.uploaded}</p>}
                 {doc.status !== 'not-uploaded' && <div className="mt-1"><StatusBadge status={doc.status} size="sm" /></div>}
+                {doc.requestOpen && (
+                  <div className={`mt-1.5 text-xs rounded-lg px-2.5 py-1.5 ${doc.deadlinePassed ? 'bg-red-50 text-[#DC2626]' : 'bg-amber-50 text-[#92400E]'}`}>
+                    <span style={{ fontWeight: 600 }}>
+                      {doc.deadlinePassed ? 'Replacement deadline passed' : 'City requires a replacement'}
+                      {doc.requestDeadline ? (doc.deadlinePassed ? ` (${formatDate(doc.requestDeadline)})` : ` — due ${formatDate(doc.requestDeadline)}`) : ''}.
+                    </span>
+                    {doc.requestExplanation ? ` ${doc.requestExplanation}` : ''}
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => openUpload(doc.docType)}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-600 transition-colors ${
+                disabled={doc.deadlinePassed}
+                title={doc.deadlinePassed ? 'The replacement deadline has passed. Contact the City Scholarship Office.' : undefined}
+                className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   doc.status === 'not-uploaded'
                     ? 'bg-[#0B1F3A] text-white hover:bg-[#163A63]'
                     : 'border border-[#E5E7EB] text-[#6B7280] hover:text-[#1F2937]'
@@ -332,6 +357,15 @@ export default function StudentRenewal() {
               </button>
             </div>
             <div className="p-6">
+              {uploadTarget?.requestOpen && (
+                <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-xs text-[#92400E]">
+                  <span style={{ fontWeight: 600 }}>Why this replacement is required: </span>
+                  {uploadTarget.requestExplanation || 'The City Scholarship Office asked for a new copy of this document.'}
+                  {uploadTarget.requestDeadline && (
+                    <div className="mt-1">Deadline: {formatDate(uploadTarget.requestDeadline)}</div>
+                  )}
+                </div>
+              )}
               <input
                 ref={fileRef}
                 type="file"

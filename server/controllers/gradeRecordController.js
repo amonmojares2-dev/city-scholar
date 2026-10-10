@@ -4,6 +4,9 @@ const Document = require("../models/Document");
 const { resolveStoredFile } = require("../config/storage");
 const { analyzeGradeDocument, isAiConfigured, AiVisionError, resolveScale, summarizeSubjects } = require("../utils/aiVision");
 const { logAudit } = require("../utils/audit");
+// Grade-slot predicate is shared with documentController so the Analyze list
+// and the resubmission flows can never disagree on which slots hold grades.
+const { isGradeDocumentType } = require("../utils/documentReview");
 
 // ==========================================================
 // Shared helpers
@@ -13,15 +16,8 @@ const { logAudit } = require("../utils/audit");
 // else is rejected before we spend a paid API call on it.
 const ANALYZABLE_TYPES = new Set(["image/png", "image/jpeg", "application/pdf"]);
 
-// Document slot keys that hold grades (see KNOWN_DOC_TYPES in
-// studentDocController.js). Only used to label/hide the Analyze button in the
-// UI — the endpoint accepts any supported file type so a City Office that
-// configured different slots still works.
-const GRADE_DOCUMENT_HINTS = /report card|transcript|grades|\btor\b/i;
-
-function isGradeDocumentType(type) {
-    return GRADE_DOCUMENT_HINTS.test(String(type || ""));
-}
+// Grade-slot predicate lives in utils/documentReview.js so every consumer
+// shares one definition; it is re-exported below for existing callers.
 
 // Shape a record for the client. Never expose mongoose internals.
 function publicRecord(record) {
@@ -47,6 +43,12 @@ function publicRecord(record) {
         plain.documentType = document.type || "";
         plain.documentName = document.originalName || "";
         plain.documentStatus = document.status || "";
+        // City's replacement request state (Failed Students flow) so the page
+        // can show "requested / resubmitted" without a second round trip.
+        plain.documentRequestedReissue = Boolean(document.requestedReissue);
+        plain.documentRequestExplanation = document.requestExplanation || "";
+        plain.documentRequestDeadline = document.requestDeadline || null;
+        plain.documentAppealStatus = document.appealStatus || null;
         // Strip the server-side filename; clients address files by id only.
         delete plain.document;
         delete plain.filename;
@@ -231,7 +233,7 @@ const listRecords = async(req, res, next) => {
 
         const records = await GradeRecord.find(filter)
             .populate("student", "name email barangay")
-            .populate("document", "type originalName status mimeType createdAt updatedAt")
+            .populate("document", "type originalName status mimeType createdAt updatedAt requestedReissue requestExplanation requestDeadline appealStatus")
             .sort({ createdAt: -1 })
             .lean();
 

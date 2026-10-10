@@ -80,10 +80,18 @@ export interface AcademicRecord {
   documentType: string;
   documentName: string;
   documentStatus: string;
+
+  // City's replacement request on the source document (Failed Students flow).
+  // Present only when the record was loaded through GET /api/academic-records.
+  documentRequestedReissue?: boolean;
+  documentRequestExplanation?: string;
+  documentRequestDeadline?: string | null;
+  documentAppealStatus?: 'resubmitted' | 'passed' | 'still_fails' | null;
+
   barangay: string;
 }
 
-import { GRADING } from './gradingConfig';
+import { GRADING, isFailingGrade } from './gradingConfig';
 
 // --- Display helpers -------------------------------------------------------
 
@@ -136,7 +144,9 @@ export function isSubjectFailed(
 ): boolean {
   const scale = scaleOf(record);
   const mark = passingMarkOf(record);
-  return scale === 'A' ? grade > mark : grade < mark;
+  // Single shared implementation (gradingConfig.isFailingGrade): Scale A is
+  // inverse (fails ABOVE the mark), Scale B fails BELOW it.
+  return isFailingGrade(grade, scale, mark);
 }
 
 /** Did this subject pass? Inverse of isSubjectFailed. */
