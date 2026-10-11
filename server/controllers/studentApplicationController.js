@@ -193,12 +193,14 @@ const updateStudentApplication = async (req, res, next) => {
     application.school = university;
     // Support submitting through PATCH (draft -> submitted only).
     if (req.body.status === 'submitted') {
-      if (application.status !== 'draft') {
+      const isRenewalScholar = req.user.account?.scholarType === 'existing_scholar' && req.user.account?.scholarVerificationStatus === 'approved';
+      const isApprovedRenewal = isRenewalScholar && application.status === 'approved';
+      if (application.status !== 'draft' && !isApprovedRenewal) {
         return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
       }
       // Required fields are validated here rather than at the schema level
       // so drafts may stay incomplete. The university was refreshed above.
-      const isRenewalFlow = req.user.account?.scholarType === 'existing_scholar';
+      const isRenewalFlow = isRenewalScholar;
       if (!isRenewalFlow) {
         const missingDocuments = await missingRequiredApplicationDocuments(application._id);
         if (missingDocuments.length) {
@@ -214,7 +216,7 @@ const updateStudentApplication = async (req, res, next) => {
         return sendValidationError(res, errors);
       }
       if (!isRenewalFlow) await linkBarangay(application);
-      application.status = 'submitted';
+      application.status = isApprovedRenewal ? 'renewal' : 'submitted';
       application.submittedAt = req.body.submittedAt ? new Date(req.body.submittedAt) : new Date();
     }
     await application.save();

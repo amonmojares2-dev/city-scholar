@@ -1,0 +1,122 @@
+FAIL server/tests/studentApplicationController.renewalStatus.test.js
+  renewal submit path - status becomes 'renewal' for existing scholars
+    × updateStudentApplication: existing scholar submitting renews -> status 'renewal' (16 ms)
+    × updateStudentApplication: new applicant still gets status 'submitted' (2 ms)
+    × updateStudentApplication: refuses a second submission (3 ms)
+    × submitStudentApplication: renewal flow -> status 'renewal' (3 ms)
+    × submitStudentApplication: already submitted blocks the renewal (3 ms)
+    × submitStudentApplication: new applicant still gets status 'submitted' (2 ms)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › updateStudentApplication: existing scholar submitting renews -> status 'renewal'
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 200
+
+    Number of calls: 0
+
+    [0m [90m 65 |[39m     )[33m;[39m
+     [90m 66 |[39m
+    [31m[1m>[22m[39m[90m 67 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m200[39m)[33m;[39m
+     [90m    |[39m                        [31m[1m^[22m[39m
+     [90m 68 |[39m     expect(res[33m.[39mjson)[33m.[39mtoHaveBeenCalledWith(
+     [90m 69 |[39m       expect[33m.[39mobjectContaining({
+     [90m 70 |[39m         success[33m:[39m [36mtrue[39m[33m,[39m[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:67:24)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › updateStudentApplication: new applicant still gets status 'submitted'
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 200
+
+    Number of calls: 0
+
+    [0m [90m  99 |[39m     )[33m;[39m
+     [90m 100 |[39m
+    [31m[1m>[22m[39m[90m 101 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m200[39m)[33m;[39m
+     [90m     |[39m                        [31m[1m^[22m[39m
+     [90m 102 |[39m     expect(res[33m.[39mjson)[33m.[39mtoHaveBeenCalledWith(
+     [90m 103 |[39m       expect[33m.[39mobjectContaining({
+     [90m 104 |[39m         application[33m:[39m expect[33m.[39mobjectContaining({ status[33m:[39m [32m"submitted"[39m })[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:101:24)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › updateStudentApplication: refuses a second submission
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 409
+
+    Number of calls: 0
+
+    [0m [90m 118 |[39m     )[33m;[39m
+     [90m 119 |[39m
+    [31m[1m>[22m[39m[90m 120 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m409[39m)[33m;[39m
+     [90m     |[39m                        [31m[1m^[22m[39m
+     [90m 121 |[39m     expect(findOne)[33m.[39mtoHaveBeenCalledWith({ student[33m:[39m [32m"student-1"[39m })[33m;[39m
+     [90m 122 |[39m   })[33m;[39m
+     [90m 123 |[39m[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:120:24)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › submitStudentApplication: renewal flow -> status 'renewal'
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 200
+
+    Number of calls: 0
+
+    [0m [90m 137 |[39m     )[33m;[39m
+     [90m 138 |[39m
+    [31m[1m>[22m[39m[90m 139 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m200[39m)[33m;[39m
+     [90m     |[39m                        [31m[1m^[22m[39m
+     [90m 140 |[39m     expect(res[33m.[39mjson)[33m.[39mtoHaveBeenCalledWith(
+     [90m 141 |[39m       expect[33m.[39mobjectContaining({
+     [90m 142 |[39m         application[33m:[39m expect[33m.[39mobjectContaining({ status[33m:[39m [32m"renewal"[39m[33m,[39m submittedAt[33m:[39m expect[33m.[39many([33mDate[39m) })[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:139:24)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › submitStudentApplication: already submitted blocks the renewal
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 409
+
+    Number of calls: 0
+
+    [0m [90m 156 |[39m     )[33m;[39m
+     [90m 157 |[39m
+    [31m[1m>[22m[39m[90m 158 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m409[39m)[33m;[39m
+     [90m     |[39m                        [31m[1m^[22m[39m
+     [90m 159 |[39m     expect(findOne)[33m.[39mtoHaveBeenCalledWith({ student[33m:[39m [32m"student-1"[39m })[33m;[39m
+     [90m 160 |[39m   })[33m;[39m
+     [90m 161 |[39m[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:158:24)
+
+  ● renewal submit path - status becomes 'renewal' for existing scholars › submitStudentApplication: new applicant still gets status 'submitted'
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: 200
+
+    Number of calls: 0
+
+    [0m [90m 175 |[39m     )[33m;[39m
+     [90m 176 |[39m
+    [31m[1m>[22m[39m[90m 177 |[39m     expect(res[33m.[39mstatus)[33m.[39mtoHaveBeenCalledWith([35m200[39m)[33m;[39m
+     [90m     |[39m                        [31m[1m^[22m[39m
+     [90m 178 |[39m     expect(res[33m.[39mjson)[33m.[39mtoHaveBeenCalledWith(
+     [90m 179 |[39m       expect[33m.[39mobjectContaining({
+     [90m 180 |[39m         application[33m:[39m expect[33m.[39mobjectContaining({ status[33m:[39m [32m"submitted"[39m })[0m
+
+      at Object.toHaveBeenCalledWith (server/tests/studentApplicationController.renewalStatus.test.js:177:24)
+
+Test Suites: 1 failed, 1 total
+Tests:       6 failed, 6 total
+Snapshots:   0 total
+Time:        3.713 s
+Ran all test suites matching server/tests/studentApplicationController.renewalStatus.test.js.
