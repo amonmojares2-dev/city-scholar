@@ -177,6 +177,33 @@ const updateStudentApplication = async (req, res, next) => {
   try {
     const application = await Application.findOne({ student: req.user.id }).sort({ createdAt: -1 });
     if (!application) return res.status(404).json({ success: false, message: 'No application found.' });
+
+    // A submission (draft -> submitted) or a renewal is requested through the
+    // same PATCH.
+    //   * Label: an existing scholar's submission is a 'renewal'; a first-time
+    //     applicant's is 'submitted'. scholarType alone is enough to choose the
+    //     label, and that is the only thing it decides here.
+    //   * Gate: the only way an already-approved application may move to
+    //     'renewal' is for an existing scholar whose City Office claim is
+    //     *approved* (scholarVerificationStatus === 'approved'). A pending
+    //     scholar or a new applicant is refused with 409. A record that is
+    //     already 'renewal' is a repeated submit (double click): a no-op that
+    //     returns 200, not a 409 or a second write. Every other transition out
+    //     of a non-draft state is refused with 409. This guard runs before any
+    //     account write so a locked record never mutates the User.
+    const wantsSubmit = req.body.status === 'submitted' || req.body.status === 'renewal';
+    const account = req.user.account || {};
+    const isRenewalScholar = account.scholarType === 'existing_scholar';
+    const isApprovedRenewal = isRenewalScholar
+      && account.scholarVerificationStatus === 'approved'
+      && application.status === 'approved';
+    if (wantsSubmit && application.status !== 'draft' && !isApprovedRenewal) {
+      if (application.status === 'renewal') {
+        await application.populate('student', 'name email');
+        return res.json({ success: true, application });
+      }
+      return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
+    }
     // Full Name edits the account itself, not the application document.
     if (typeof req.body.fullName === 'string' && req.body.fullName.trim()) {
       await User.findByIdAndUpdate(req.user.id, { name: req.body.fullName.trim() });
@@ -188,35 +215,55 @@ const updateStudentApplication = async (req, res, next) => {
     if (!university) {
       return sendValidationError(res, { university: 'No university found on your account. Please contact the scholarship office to have it corrected.' });
     }
-    // Ignore any client school/university payload: MongoDB User is authoritative.
     application.university = university;
     application.school = university;
-    // Support submitting through PATCH (draft -> submitted only).
-    if (req.body.status === 'submitted') {
-      const isRenewalScholar = req.user.account?.scholarType === 'existing_scholar' && req.user.account?.scholarVerificationStatus === 'approved';
-      const isApprovedRenewal = isRenewalScholar && application.status === 'approved';
-      if (application.status !== 'draft' && !isApprovedRenewal) {
-        return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
-      }
+
+    if (wantsSubmit) {
+      const isRenewalFlow = isRenewalScholar;
       // Required fields are validated here rather than at the schema level
       // so drafts may stay incomplete. The university was refreshed above.
-      const isRenewalFlow = isRenewalScholar;
+      const errors = submissionErrors(application, isRenewalFlow, req.body.fullName || req.user.name, req.user.email);
+      if (Object.keys(errors).length) {
+        return sendValidationError(res, errors);
+      }
       if (!isRenewalFlow) {
         const missingDocuments = await missingRequiredApplicationDocuments(application._id);
         if (missingDocuments.length) {
           return sendValidationError(res, { documents: 'Please upload all required documents before submitting.' }, 'Please upload all required documents before submitting.');
         }
-      }
-      if (!isRenewalFlow) {
         const windowBlock = await applicationWindowBlockReason();
         if (windowBlock) return sendValidationError(res, { application: windowBlock }, windowBlock);
       }
-      const errors = submissionErrors(application, isRenewalFlow, req.body.fullName || req.user.name, req.user.email);
-      if (Object.keys(errors).length) {
-        return sendValidationError(res, errors);
-      }
       if (!isRenewalFlow) await linkBarangay(application);
-      application.status = isApprovedRenewal ? 'renewal' : 'submitted';
+
+      if (isApprovedRenewal) {
+        // Atomic approved -> renewal. The current status is pinned in the
+        // filter so two near-simultaneous submits (a double click) can only
+        // match once: the winner flips approved -> renewal, the loser finds no
+        // 'approved' row and is answered with the already-renewed record (200,
+        // no second write). The refreshed applicant/barangay/university values
+        // ride along in this same single write.
+        const submittedAt = req.body.submittedAt ? new Date(req.body.submittedAt) : new Date();
+        const updated = await Application.findOneAndUpdate(
+          { _id: application._id, status: 'approved' },
+          {
+            $set: {
+              status: 'renewal',
+              submittedAt,
+              applicant: application.applicant,
+              barangay: application.barangay,
+              university: application.university,
+              school: application.school
+            }
+          },
+          { new: true }
+        );
+        const renewed = updated || (await Application.findById(application._id)) || application;
+        await renewed.populate('student', 'name email');
+        return res.json({ success: true, application: renewed });
+      }
+
+      application.status = isRenewalFlow ? 'renewal' : 'submitted';
       application.submittedAt = req.body.submittedAt ? new Date(req.body.submittedAt) : new Date();
     }
     await application.save();
@@ -257,7 +304,7 @@ const submitStudentApplication = async (req, res, next) => {
         return sendValidationError(res, errors);
     }
     if (!isRenewalFlow) await linkBarangay(application);
-    application.status = 'submitted';
+    application.status = isRenewalFlow ? 'renewal' : 'submitted';
     application.submittedAt = new Date();
     await application.save();
     await application.populate('student', 'name email');
