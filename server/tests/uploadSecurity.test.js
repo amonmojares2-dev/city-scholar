@@ -12,12 +12,22 @@ function runUploadMiddleware(middleware, file) {
     return nextError;
 }
 
+const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const User = require("../models/User");
 const Application = require("../models/Application");
 const Document = require("../models/Document");
 const { validateRegistration } = require("../utils/validation");
 const { updateStudentApplication } = require("../controllers/studentApplicationController");
 const { uploadStudentDocument, missingRequiredApplicationDocuments } = require("../controllers/studentDocController");
+
+// GridFS writes/reads need a live DB. Keep the real validation helpers but stub
+// the async persistence so uploadStudentDocument proceeds to the DB upsert.
+jest.mock("../config/storage", () => ({
+    ...jest.requireActual("../config/storage"),
+    persistUpload: jest.fn().mockResolvedValue("gridfs-file-id"),
+    removeStoredFileByFilename: jest.fn(),
+    removeStoredFile: jest.fn()
+}));
 
 const applicationId = "507f1f77bcf86cd799439011";
 const studentId = "507f191e810c19729de860ea";
@@ -246,12 +256,10 @@ describe("upload security rules", () => {
     });
 
     it("accepts a real PNG document by MIME, extension, and magic bytes", () => {
-        const filename = path.join(directory, "valid.png");
-        fs.writeFileSync(filename, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-
+        // With GridFS the bytes never touch disk — multer keeps them in
+        // req.file.buffer and the validator reads the signature from there.
         const error = runUploadMiddleware(validateDocumentUpload, {
-            path: filename,
-            filename: path.basename(filename),
+            buffer: Buffer.from(PNG_BYTES),
             originalname: "valid.png",
             mimetype: "image/png",
             size: 8
@@ -261,12 +269,8 @@ describe("upload security rules", () => {
     });
 
     it("rejects an executable renamed as JPEG", () => {
-        const filename = path.join(directory, "renamed.jpg");
-        fs.writeFileSync(filename, Buffer.from("MZ executable"));
-
         const error = runUploadMiddleware(validateDocumentUpload, {
-            path: filename,
-            filename: path.basename(filename),
+            buffer: Buffer.from("MZ executable"),
             originalname: "renamed.jpg",
             mimetype: "image/jpeg",
             size: 13
@@ -274,26 +278,19 @@ describe("upload security rules", () => {
 
         expect(error?.statusCode).toBe(400);
         expect(error?.message).toContain("not a valid");
-        expect(fs.existsSync(filename)).toBe(false);
     });
 
     it("rejects PDF for a profile photo and files larger than 5 MB", () => {
-        const pdf = path.join(directory, "document.pdf");
-        fs.writeFileSync(pdf, "%PDF-1.7");
         const pdfError = runUploadMiddleware(validateProfilePhotoUpload, {
-            path: pdf,
-            filename: path.basename(pdf),
+            buffer: Buffer.from("%PDF-1.7"),
             originalname: "document.pdf",
             mimetype: "application/pdf",
             size: 8
         });
         expect(pdfError?.statusCode).toBe(400);
 
-        const oversized = path.join(directory, "large.png");
-        fs.writeFileSync(oversized, "png");
         const sizeError = runUploadMiddleware(validateDocumentUpload, {
-            path: oversized,
-            filename: path.basename(oversized),
+            buffer: Buffer.from(PNG_BYTES),
             originalname: "large.png",
             mimetype: "image/png",
             size: 5 * 1024 * 1024 + 1

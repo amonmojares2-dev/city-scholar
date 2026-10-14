@@ -8,7 +8,10 @@ const { isGradeDocumentType } = require("../utils/documentReview");
 // real function is replaced via jest.mock (hoisted before the require above).
 jest.mock("../config/storage", () => ({
     ...jest.requireActual("../config/storage"),
-    removeStoredFileByFilename: jest.fn()
+    removeStoredFileByFilename: jest.fn(),
+    // GridFS writes need a live DB; in these unit tests the persist step is
+    // stubbed to succeed so the controller proceeds to the swap it asserts on.
+    persistUpload: jest.fn().mockResolvedValue("gridfs-file-id")
 }));
 
 function response() {

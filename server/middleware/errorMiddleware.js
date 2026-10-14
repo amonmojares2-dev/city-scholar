@@ -1,4 +1,3 @@
-const fs = require("fs");
 const { removeStoredFileByFilename } = require("../config/storage");
 const multer = require("multer");
 
@@ -47,8 +46,10 @@ const errorHandler = (error, req, res, _next) => {
     console.error(error);
 
     if (req.file?.filename) {
+        // Best-effort cleanup of an uncommitted upload. With GridFS nothing was
+        // written to disk, so there is no temp file to unlink; if the controller
+        // had already persisted the buffer this removes it.
         removeStoredFileByFilename(req.file.filename);
-        try { if (req.file.path) fs.unlinkSync(req.file.path); } catch { /* already removed */ }
     }
 
     const messageByCode = {

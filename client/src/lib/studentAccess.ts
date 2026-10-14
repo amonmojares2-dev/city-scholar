@@ -190,6 +190,20 @@ export function studentPageLock(access: StudentAccess, pathname: string): string
   return null;
 }
 
+// ==========================================
+// Attendance proof eligibility (SINGLE SOURCE OF TRUTH on the client)
+//
+// Mirrors isApprovedExistingScholar() in server/utils/attendanceProof.js. Both
+// require scholarType === 'existing_scholar' AND scholarVerificationStatus ===
+// 'approved'. scholarType alone is NOT enough (a pending scholar is refused),
+// matching the renewal gate. The gate is only for showing/hiding the upload UI;
+// the server enforces the identical rule authoritatively.
+// ==========================================
+export function canSubmitAttendanceProof(access: StudentAccess): boolean {
+  return access.scholarType === 'existing_scholar'
+    && access.scholarVerificationStatus === 'approved';
+}
+
 // Which of the student sidebar entries this account can see, and which of
 // the visible ones are still locked (shown disabled, with a lock icon).
 export function studentSidebarFor(access: StudentAccess): {

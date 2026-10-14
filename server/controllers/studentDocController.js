@@ -1,7 +1,7 @@
 const Application = require("../models/Application");
 const Document = require("../models/Document");
 const User = require("../models/User");
-const { removeStoredFile, removeStoredFileByFilename } = require("../config/storage");
+const { removeStoredFile, removeStoredFileByFilename, persistUpload } = require("../config/storage");
 const {
     applicationDocumentTypes,
     missingRequiredApplicationDocuments: missingRequiredFromSettings
@@ -175,6 +175,13 @@ const uploadStudentDocument = async(req, res, next) => {
             reviewedBy: null,
             reviewedAt: null
         };
+
+        // Persist the bytes to GridFS now that every access check has passed,
+        // and only then write the DB record that references this filename.
+        const stored = await persistUpload(req.file);
+        if (!stored) {
+            return sendError(503, "Storage is temporarily unavailable. Please try again.");
+        }
 
         let previousDocument;
         try {

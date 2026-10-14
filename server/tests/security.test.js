@@ -1,8 +1,5 @@
-const fs = require("fs");
-const path = require("path");
 const request = require("supertest");
 const { app } = require("../server");
-const { profilePhotoDirectory } = require("../config/storage");
 const { UNIVERSITY_OPTIONS } = require("../config/universities");
 
 const securityHeaders = [
@@ -16,19 +13,14 @@ describe("security headers", () => {
     });
 
     it("does not expose uploaded files through the public static path", async() => {
-        const filename = "security-profile-photo-test.txt";
-        const filePath = path.join(profilePhotoDirectory, filename);
-        fs.writeFileSync(filePath, "temporary test image");
+        // Files now live in GridFS (never on disk), so there is no uploads
+        // directory to serve and any guessed public path is a 404. Files are
+        // reachable only through their authenticated endpoints.
+        const response = await request(app)
+            .get(`/uploads/anything.png`)
+            .set("Origin", "http://localhost:5173");
 
-        try {
-            const response = await request(app)
-                .get(`/uploads/${filename}`)
-                .set("Origin", "http://localhost:5173");
-
-            expect(response.status).toBe(404);
-        } finally {
-            fs.unlinkSync(filePath);
-        }
+        expect(response.status).toBe(404);
     });
 
     it("serves public sorted University options without database or rate-limit gating", async() => {

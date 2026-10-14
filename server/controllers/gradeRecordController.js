@@ -1,7 +1,6 @@
-const fs = require("fs");
 const GradeRecord = require("../models/GradeRecord");
 const Document = require("../models/Document");
-const { resolveStoredFile } = require("../config/storage");
+const { readStoredBuffer } = require("../config/storage");
 const { analyzeGradeDocument, isAiConfigured, AiVisionError, resolveScale, summarizeSubjects } = require("../utils/aiVision");
 const { logAudit } = require("../utils/audit");
 // Grade-slot predicate is shared with documentController so the Analyze list
@@ -92,15 +91,16 @@ const analyzeDocument = async(req, res, next) => {
             });
         }
 
-        const fullPath = resolveStoredFile(document);
-        if (!fullPath || !fs.existsSync(fullPath)) {
+        // Read the file straight out of GridFS into memory — never a disk copy.
+        const buffer = await readStoredBuffer(document.filename);
+        if (!buffer) {
             return res.status(404).json({
                 success: false,
                 message: "This file is no longer available on the server, so it cannot be analyzed."
             });
         }
 
-        const base64 = fs.readFileSync(fullPath).toString("base64");
+        const base64 = buffer.toString("base64");
 
         let extraction;
         try {

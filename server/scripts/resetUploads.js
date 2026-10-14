@@ -1,17 +1,17 @@
 require("dotenv").config();
 
-const fs = require("fs");
-const path = require("path");
 const mongoose = require("mongoose");
 const Document = require("../models/Document");
-const { uploadDirectory } = require("../config/storage");
+const { getBucket } = require("../config/storage");
 
 const confirmed = process.argv.includes("--confirm");
 
 async function main() {
     if (!confirmed) {
         console.error("Refusing to reset uploads without --confirm.");
-        console.error("This command permanently deletes all files in server/uploads and all Document records.");
+        console.error(
+            "This command permanently deletes all files in the GridFS uploads bucket and all Document records."
+        );
         process.exitCode = 1;
         return;
     }
@@ -22,19 +22,24 @@ async function main() {
 
     await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
 
+    // Force the lazy GridFS bucket to initialize against the connected datastore.
+    const bucket = getBucket();
     let filesRemoved = 0;
-    if (fs.existsSync(uploadDirectory)) {
-        for (const entry of fs.readdirSync(uploadDirectory, { withFileTypes: true })) {
-            const entryPath = path.join(uploadDirectory, entry.name);
-            if (entry.isFile()) {
-                fs.unlinkSync(entryPath);
-                filesRemoved += 1;
-            }
+    if (bucket) {
+        const files = await new Promise((resolve, reject) => {
+            bucket.list({}, { batchSize: 0 }).toArray((err, files) => (err ? reject(err) : resolve(files)));
+        });
+        filesRemoved = files.length;
+        for (const file of files) {
+            await new Promise((resolve, reject) => {
+                bucket.delete(file._id, (err) => (err ? reject(err) : resolve()));
+            });
         }
+        console.log(`Removed ${filesRemoved} upload file(s) from the GridFS bucket.`);
     }
 
     const result = await Document.deleteMany({});
-    console.log(`Removed ${filesRemoved} upload file(s) and ${result.deletedCount} Document record(s).`);
+    console.log(`Removed ${result.deletedCount} Document record(s).`);
     await mongoose.disconnect();
 }
 

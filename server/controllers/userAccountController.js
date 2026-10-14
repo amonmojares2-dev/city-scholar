@@ -1,5 +1,3 @@
-const fs = require("fs");
-const path = require("path");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Application = require("../models/Application");
@@ -16,7 +14,8 @@ const {
     removeStoredFile,
     removeStoredFileByFilename,
     isSafeGeneratedFilename,
-    profilePhotoDirectory
+    persistUpload,
+    openStoredDownload
 } = require("../config/storage");
 
 const uploadProfilePhoto = async(req, res, next) => {
@@ -28,13 +27,18 @@ const uploadProfilePhoto = async(req, res, next) => {
         const mimeType = (req.file.mimetype || "").toLowerCase();
         const user = await User.findById(req.user.id);
         if (!user) {
-            removeStoredFileByFilename(req.file.filename, profilePhotoDirectory);
+            removeStoredFileByFilename(req.file.filename);
             return res.status(404).json({ success: false, message: "User account not found." });
         }
 
         const oldFilename = user.profilePhoto?.filename || "";
         const uploadedAt = new Date();
         const photoUrl = "/api/users/me/photo";
+        // Persist the bytes to GridFS before the user record references them.
+        const stored = await persistUpload(req.file);
+        if (!stored) {
+            return res.status(503).json({ success: false, message: "Storage is temporarily unavailable. Please try again." });
+        }
         user.profilePhoto = {
             filename: req.file.filename,
             url: photoUrl,
@@ -43,7 +47,7 @@ const uploadProfilePhoto = async(req, res, next) => {
         };
         await user.save();
         if (oldFilename && oldFilename !== req.file.filename) {
-            removeStoredFileByFilename(oldFilename, profilePhotoDirectory);
+            removeStoredFileByFilename(oldFilename);
         }
 
         const publicUser = {
@@ -62,7 +66,7 @@ const uploadProfilePhoto = async(req, res, next) => {
             user: publicUser
         });
     } catch (error) {
-        removeStoredFileByFilename(req.file && req.file.filename, profilePhotoDirectory);
+        removeStoredFileByFilename(req.file && req.file.filename);
         return next(error);
     }
 };
@@ -73,15 +77,19 @@ const getProfilePhoto = async(req, res) => {
         return res.status(404).json({ success: false, message: "Profile photo not found." });
     }
 
-    const fullPath = path.join(profilePhotoDirectory, user.profilePhoto.filename);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: "Profile photo file not found." });
+    const download = await openStoredDownload(user.profilePhoto.filename);
+    if (!download) {
+        return res.status(404).json({ success: false, message: "Profile photo missing, please re-upload." });
     }
 
     res.setHeader("Content-Type", user.profilePhoto.mimeType || "application/octet-stream");
     res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     res.setHeader("Cache-Control", "private, no-store");
-    return res.sendFile(fullPath);
+    download.on("error", () => {
+        if (!res.headersSent) return res.status(404).json({ success: false, message: "Profile photo missing, please re-upload." });
+        res.destroy();
+    });
+    download.pipe(res);
 };
 
 const deleteCurrentUser = async(req, res, next) => {
@@ -110,7 +118,7 @@ const deleteCurrentUser = async(req, res, next) => {
         const conversationIds = conversations.map(conversation => conversation._id);
 
         documents.forEach(document => removeStoredFile(document));
-        if (user.profilePhoto?.filename) removeStoredFileByFilename(user.profilePhoto.filename, profilePhotoDirectory);
+        if (user.profilePhoto?.filename) removeStoredFileByFilename(user.profilePhoto.filename);
 
         await Promise.all([
             Document.deleteMany(documentFilter),

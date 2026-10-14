@@ -2,8 +2,7 @@ const Document = require("../models/Document");
 const Application = require("../models/Application");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
-const fs = require("fs");
-const { resolveStoredFile, removeStoredFileByFilename } = require("../config/storage");
+const { removeStoredFileByFilename, persistUpload, openStoredDownload } = require("../config/storage");
 const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES, BARANGAY_ADMIN_ROLES } = require("../utils/validation");
 const { normalizeReviewStatus, isGradeDocumentType } = require("../utils/documentReview");
 
@@ -43,6 +42,12 @@ const uploadDocument = async(req, res, next) => {
         if (req.user.role === "student" && application.student.toString() !== req.user.id) {
             removeStoredFileByFilename(req.file.filename);
             return res.status(403).json({ success: false, message: "Access denied" });
+        }
+        // Write the bytes to GridFS now that every access check has passed, and
+        // only then create the DB record that references this filename.
+        const stored = await persistUpload(req.file);
+        if (!stored) {
+            return res.status(503).json({ success: false, message: "Storage is temporarily unavailable. Please try again." });
         }
         // Store only the hashed filename — never the raw absolute path.
         // `originalName` keeps the human-readable label for the UI.
@@ -225,6 +230,12 @@ const replaceDocument = async(req, res, next) => {
         if (document.requestedReissue || isGradeDocumentType(document.type)) {
             document.appealStatus = "resubmitted";
         }
+        // Persist the new bytes to GridFS before the DB record points at them,
+        // and remove the superseded GridFS file only after the swap commits.
+        const stored = await persistUpload(req.file);
+        if (!stored) {
+            return res.status(503).json({ success: false, message: "Storage is temporarily unavailable. Please try again." });
+        }
         await document.save();
 
         // Delete the superseded file only after the swap has committed.
@@ -265,19 +276,20 @@ const serveDocumentFile = async(req, res, next) => {
             return res.status(403).json({ success: false, message: "Access denied" });
         }
 
-        const fullPath = resolveStoredFile(document);
-        if (!fullPath || !fs.existsSync(fullPath)) {
-            return res.status(404).json({ success: false, message: "File not found on the server." });
+        const download = await openStoredDownload(document.filename);
+        if (!download) {
+            return res.status(404).json({ success: false, message: "File missing, please re-upload." });
         }
 
-        // Fetch and display through an authenticated Blob URL; a raw URL
-        // would require putting the JWT in the query string.
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         res.setHeader("Cache-Control", "private, no-store");
         res.setHeader("Content-Type", document.mimeType || "application/octet-stream");
-        // Display the human-readable name, not the hashed stored name.
         res.setHeader("Content-Disposition", `inline; filename="${String(document.originalName || "file").replace(/"/g, "")}"`);
-        return res.sendFile(fullPath);
+        download.on("error", () => {
+            if (!res.headersSent) return res.status(404).json({ success: false, message: "File missing, please re-upload." });
+            res.destroy();
+        });
+        download.pipe(res);
     } catch (error) { next(error); }
 };
 
