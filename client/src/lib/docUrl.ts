@@ -1,7 +1,7 @@
 // Private application/renewal files are fetched with the Authorization header
 // and displayed through short-lived Blob URLs. JWTs are never placed in URLs.
 import { useEffect, useState } from 'react';
-import { fetchPrivateFile } from './api';
+import { ApiError, fetchPrivateFile } from './api';
 
 export function docFileUrl(documentId?: string | null): string | null {
   if (!documentId || !/^[a-f0-9]{24}$/i.test(String(documentId).trim())) return null;
@@ -31,7 +31,19 @@ export function usePrivateResourceUrl(resourcePath?: string | null): { url: stri
         objectUrl = URL.createObjectURL(blob);
         setUrl(objectUrl);
       })
-      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Unable to load file.'); })
+      .catch(reason => {
+        if (!active) return;
+        if (
+          normalizedPath.startsWith('/documents/') &&
+          normalizedPath.endsWith('/file') &&
+          reason instanceof ApiError &&
+          reason.status === 404
+        ) {
+          setError('File missing, please re-upload');
+          return;
+        }
+        setError(reason instanceof Error ? reason.message : 'Unable to load file.');
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => {
       active = false;

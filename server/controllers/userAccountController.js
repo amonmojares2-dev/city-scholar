@@ -11,23 +11,23 @@ const Announcement = require("../models/Announcement");
 const AuditLog = require("../models/AuditLog");
 const ProgramConfig = require("../models/ProgramConfig");
 const {
-    removeStoredFile,
-    removeStoredFileByFilename,
     isSafeGeneratedFilename,
     persistUpload,
     openStoredDownload
 } = require("../config/storage");
+const { cleanupStoredFile } = require("../utils/storageCleanup");
 
 const uploadProfilePhoto = async(req, res, next) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: "Please select a PNG or JPEG image." });
     }
 
+    let uploadCommitted = false;
     try {
         const mimeType = (req.file.mimetype || "").toLowerCase();
         const user = await User.findById(req.user.id);
         if (!user) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(404).json({ success: false, message: "User account not found." });
         }
 
@@ -46,8 +46,9 @@ const uploadProfilePhoto = async(req, res, next) => {
             uploadedAt
         };
         await user.save();
+        uploadCommitted = true;
         if (oldFilename && oldFilename !== req.file.filename) {
-            removeStoredFileByFilename(oldFilename);
+            await cleanupStoredFile(oldFilename);
         }
 
         const publicUser = {
@@ -66,7 +67,7 @@ const uploadProfilePhoto = async(req, res, next) => {
             user: publicUser
         });
     } catch (error) {
-        removeStoredFileByFilename(req.file && req.file.filename);
+        if (!uploadCommitted) await cleanupStoredFile(req.file && req.file.filename);
         return next(error);
     }
 };
@@ -117,8 +118,8 @@ const deleteCurrentUser = async(req, res, next) => {
         const conversations = await Conversation.find({ participants: user._id }).select("_id");
         const conversationIds = conversations.map(conversation => conversation._id);
 
-        documents.forEach(document => removeStoredFile(document));
-        if (user.profilePhoto?.filename) removeStoredFileByFilename(user.profilePhoto.filename);
+        const storedFilenames = documents.map(document => document.filename).filter(Boolean);
+        if (user.profilePhoto?.filename) storedFilenames.push(user.profilePhoto.filename);
 
         await Promise.all([
             Document.deleteMany(documentFilter),
@@ -141,6 +142,9 @@ const deleteCurrentUser = async(req, res, next) => {
         ]);
 
         await user.deleteOne();
+        for (const filename of storedFilenames) {
+            await cleanupStoredFile(filename);
+        }
         return res.json({
             success: true,
             message: "Your account and all related data have been permanently deleted."

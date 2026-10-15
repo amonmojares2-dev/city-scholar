@@ -56,6 +56,7 @@ export default function CityDashboard() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [scholars, setScholars] = useState<Scholar[]>([]);
   const [activity, setActivity] = useState<AuditEntry[]>([]);
+  const [activityUnavailable, setActivityUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -78,12 +79,15 @@ export default function CityDashboard() {
       )
       .finally(() => setLoading(false));
 
-    // Recent Activity is optional: if there's no city-scoped audit
-    // endpoint yet, the feed just stays empty instead of showing fake
-    // entries. Swap the path below once that route exists.
     api<{ logs: AuditEntry[] }>('/audit?scope=city&limit=6')
-      .then(result => setActivity(result.logs || []))
-      .catch(() => setActivity([]));
+      .then(result => {
+        setActivity(result.logs || []);
+        setActivityUnavailable(false);
+      })
+      .catch(() => {
+        setActivity([]);
+        setActivityUnavailable(true);
+      });
   }, []);
 
   const approved = applications.filter(a => a.status === 'approved').length;
@@ -302,7 +306,9 @@ export default function CityDashboard() {
           <div className="px-5 py-4 border-b border-[#E5E7EB]">
             <h2 className="font-600 text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>Recent Activity</h2>
           </div>
-          {activity.length === 0 ? (
+          {activityUnavailable ? (
+            <div className="p-10 text-center text-sm text-[#6B7280]">Activity unavailable</div>
+          ) : activity.length === 0 ? (
             <div className="p-10 text-center text-sm text-[#6B7280]">No recent activity logged.</div>
           ) : (
             <div className="divide-y divide-[#E5E7EB]">

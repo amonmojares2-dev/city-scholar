@@ -1,10 +1,10 @@
 const Event = require("../models/Event");
 const Notification = require("../models/Notification");
 const {
-    removeStoredFileByFilename,
     persistUpload,
     openStoredDownload
 } = require("../config/storage");
+const { cleanupStoredFile } = require("../utils/storageCleanup");
 const {
     isApprovedExistingScholar,
     canReviewAttendanceProof
@@ -118,6 +118,7 @@ function getProofDeadline(event) {
 
 // ---- attendance proof upload (student) -----------------------------------
 const uploadProof = async (req, res, next) => {
+    let uploadCommitted = false;
     try {
         if (!req.file) {
             return res.status(400).json({ success: false, message: "Please select an image file to upload." });
@@ -146,8 +147,8 @@ const uploadProof = async (req, res, next) => {
         const existing = (event.proofs || []).find(
             (item) => item.student && item.student.toString() === req.user.id
         );
+        const previousProofFilename = existing?.proof;
         if (existing) {
-            if (existing.proof) removeStoredFileByFilename(existing.proof);
             existing.proof = req.file.filename;
             existing.originalName = req.file.originalname;
             existing.mimeType = req.file.mimetype;
@@ -175,8 +176,13 @@ const uploadProof = async (req, res, next) => {
             return res.status(503).json({ success: false, message: "Storage is temporarily unavailable. Please try again." });
         }
         const saved = await event.save();
+        uploadCommitted = true;
+        if (previousProofFilename && previousProofFilename !== req.file.filename) {
+            await cleanupStoredFile(previousProofFilename);
+        }
         res.status(existing ? 200 : 201).json({ success: true, proof: ownProofSummary(saved, req.user.id) });
     } catch (error) {
+        if (!uploadCommitted) await cleanupStoredFile(req.file && req.file.filename);
         next(error);
     }
 };
@@ -192,9 +198,7 @@ const removeProof = async (req, res, next) => {
         if (proof.status !== "pending") {
             return res.status(409).json({ success: false, message: "A proof can only be removed while it is pending review." });
         }
-        if (proof.proof) {
-            removeStoredFileByFilename(proof.proof);
-        }
+        const oldFilename = proof.proof;
         proof.proof = null;
         proof.originalName = "";
         proof.mimeType = "";
@@ -202,6 +206,7 @@ const removeProof = async (req, res, next) => {
         proof.reviewedBy = null;
         proof.reviewedAt = null;
         await event.save();
+        if (oldFilename) await cleanupStoredFile(oldFilename);
         res.json({ success: true, message: "Proof removed." });
     } catch (error) {
         next(error);

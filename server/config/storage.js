@@ -46,7 +46,7 @@ async function persistUpload(file) {
             ? file.filename
             : hashedFilename(file.originalname || "upload");
         file.filename = filename;
-        return new Promise((resolve, reject) => {
+        return await new Promise((resolve, reject) => {
             const stream = bucket.openUploadStream(filename, {
                 contentType: file.mimetype || undefined,
                 metadata: { originalName: file.originalname || "" }
@@ -60,22 +60,33 @@ async function persistUpload(file) {
     }
 }
 
-// Delete the GridFS file identified by the hashed `filename`.
-function removeStoredFileByFilename(filename) {
-    const bucket = getBucket();
-    if (!bucket || !isSafeGeneratedFilename(filename)) return;
+// GridFS filenames are the stable application identifier; MongoDB generates
+// an ObjectId for each GridFS file's `_id`, which is used only for deletion.
+async function removeStoredFileByFilename(filename) {
+    if (!isSafeGeneratedFilename(filename)) return;
     try {
-        bucket.delete(filename);
-    } catch { /* best effort — already removed or never existed */ }
+        const bucket = getBucket();
+        if (!bucket) {
+            console.warn(`GridFS cleanup skipped because the database is unavailable: ${filename}`);
+            return;
+        }
+        const files = await bucket.find({ filename }).toArray();
+        if (files.length === 0) {
+            console.info(`GridFS file already missing: ${filename}`);
+            return;
+        }
+        await Promise.all(files.map((file) => bucket.delete(file._id)));
+    } catch (error) {
+        if (/File not found for id/i.test(error?.message || "")) {
+            console.info(`GridFS file already missing: ${filename}`);
+            return;
+        }
+        console.error(`GridFS cleanup failed for ${filename}:`, error);
+    }
 }
 
-// Best-effort removal of the file referenced by a Document/GradeRecord row.
-function removeStoredFile(document) {
-    if (!document || !document.filename) return;
-    removeStoredFileByFilename(document.filename);
-}
-
-// Stream the GridFS file for a hashed `filename`. Used by the authenticated
+// Resolve the GridFS filename (not its Mongo-generated ObjectId) and stream
+// the file. Used by the authenticated
 // profile-photo and attendance-proof endpoints: the client addresses files by
 // Document/proof id, the server resolves the hashed filename internally, and
 // the real filename is never exposed to the client.
@@ -83,7 +94,7 @@ function openStoredDownload(filename) {
     const bucket = getBucket();
     if (!bucket || !isSafeGeneratedFilename(filename)) return undefined;
     try {
-        return bucket.openDownloadStream(filename);
+        return bucket.openDownloadStreamByName(filename);
     } catch {
         return undefined;
     }
@@ -95,7 +106,7 @@ async function readStoredBuffer(filename) {
     const bucket = getBucket();
     if (!bucket || !isSafeGeneratedFilename(filename)) return undefined;
     try {
-        const stream = bucket.openDownloadStream(filename);
+        const stream = bucket.openDownloadStreamByName(filename);
         const chunks = [];
         for await (const chunk of stream) chunks.push(chunk);
         return Buffer.concat(chunks);
@@ -109,7 +120,6 @@ module.exports = {
     isSafeGeneratedFilename,
     persistUpload,
     removeStoredFileByFilename,
-    removeStoredFile,
     openStoredDownload,
     readStoredBuffer,
     getBucket

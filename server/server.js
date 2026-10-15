@@ -1,5 +1,4 @@
 const express = require("express");
-const cors = require("cors");
 const helmet = require("helmet");
 require("dotenv").config();
 
@@ -24,6 +23,8 @@ const GradeRecord = require("./models/GradeRecord");
 const programRoutes = require("./routes/programRoutes");
 const citySettingsRoutes = require("./routes/citySettingsRoutes");
 const publicContentRoutes = require("./routes/publicContentRoutes");
+const cityAuditRoutes = require("./routes/cityAuditRoutes");
+const { createCorsMiddleware } = require("./config/cors");
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const { authLimiter, apiLimiter } = require("./middleware/rateLimiter");
 
@@ -76,28 +77,8 @@ app.use((req, res, next) => {
     next();
 });
 
-// Middleware
-const allowedOrigins = new Set([
-    process.env.CLIENT_ORIGIN || "http://localhost:5173",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]);
-
-// [CHANGED] Local/private-network origins are now allowed only outside production
-const isDevelopmentOrigin = (origin) =>
-    !isProduction &&
-    /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+):\d+$/.test(origin);
-
-app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        return callback(null, allowedOrigins.has(origin) || isDevelopmentOrigin(origin) ? origin : false);
-    },
-    optionsSuccessStatus: 204,
-    credentials: true,
-    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type"]
-}));
+// CORS runs before any routes so error responses and 404s carry CORS headers.
+app.use(createCorsMiddleware());
 
 app.use(express.json());
 
@@ -145,6 +126,7 @@ app.use("/api/academic-records", gradeRecordRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/programs", programRoutes);
 app.use("/api/city/settings", citySettingsRoutes);
+app.use("/api/audit", cityAuditRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

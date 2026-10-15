@@ -136,6 +136,24 @@ describe("uploadProof — deadline window", () => {
     expect(event.proofs[0].proof).toBe("abc123.png");
   });
 
+  it("does not delete the new proof if response handling fails after the event save", async () => {
+    const event = makeEvent();
+    jest.spyOn(Event, "findById").mockResolvedValue(event);
+    const r = res();
+    r.json.mockImplementation(() => { throw new Error("response failure"); });
+    const next = jest.fn();
+
+    await uploadProof(
+      req(approvedScholar, { id: "event-1" }, { file: { filename: "abc123.png", originalname: "me.png", mimetype: "image/png" } }),
+      r,
+      next
+    );
+
+    expect(event.save).toHaveBeenCalled();
+    expect(storage.removeStoredFileByFilename).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: "response failure" }));
+  });
+
   it("blocks before the event starts (422)", async () => {
     const event = makeEvent({ startsAt: new Date(Date.now() + DAY) });
     jest.spyOn(Event, "findById").mockResolvedValue(event);
@@ -307,4 +325,3 @@ describe("removeProof", () => {
     expect(r.status).toHaveBeenCalledWith(409);
   });
 });
-

@@ -1,7 +1,8 @@
 const Application = require("../models/Application");
 const Document = require("../models/Document");
 const User = require("../models/User");
-const { removeStoredFile, removeStoredFileByFilename, persistUpload } = require("../config/storage");
+const { persistUpload } = require("../config/storage");
+const { cleanupStoredFile } = require("../utils/storageCleanup");
 const {
     applicationDocumentTypes,
     missingRequiredApplicationDocuments: missingRequiredFromSettings
@@ -97,7 +98,7 @@ const uploadStudentDocument = async(req, res, next) => {
             if (!application) {
                 const lockedApplication = await Application.findOne({ student: req.user.id })
                     .sort({ createdAt: -1 });
-                removeStoredFileByFilename(req.file.filename);
+                await cleanupStoredFile(req.file.filename);
                 if (lockedApplication) {
                     console.warn(`Document upload rejected for application ${lockedApplication._id}: status=${lockedApplication.status}`);
                     return sendError(409, "Documents can no longer be changed because your application was already submitted.");
@@ -110,20 +111,20 @@ const uploadStudentDocument = async(req, res, next) => {
         }
 
         if (!application) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return sendError(404, "No application found. Please create your application first, then upload documents.");
         }
 
         const ownsApplication = application.student &&
             application.student.toString() === req.user.id;
         if (!ownsApplication) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return sendError(403, "You can only upload documents for your own application.");
         }
 
         if (context === "application" && !REPLACEABLE_APPLICATION_STATUSES.includes(application.status)) {
             console.warn(`Document upload rejected for application ${application._id}: status=${application.status}`);
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return sendError(409, "Documents can no longer be changed because your application was already submitted.");
         }
 
@@ -131,7 +132,7 @@ const uploadStudentDocument = async(req, res, next) => {
         const originalName = String(req.body.originalName || req.file.originalname || "").trim();
         const documentType = requestedType || guessDocumentType(originalName);
         if (!documentType) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return sendError(400, "Please select a document type.");
         }
         // The City Office owns the application document slots (City Office >
@@ -139,7 +140,7 @@ const uploadStudentDocument = async(req, res, next) => {
         if (context === "application") {
             const { accepted } = await applicationDocumentTypes();
             if (!accepted.includes(documentType)) {
-                removeStoredFileByFilename(req.file.filename);
+                await cleanupStoredFile(req.file.filename);
                 return sendError(400, "Please select a valid Application document type.");
             }
         }
@@ -156,7 +157,7 @@ const uploadStudentDocument = async(req, res, next) => {
         if (requestedDocument && requestedDocument.requestedReissue &&
             requestedDocument.appealStatus !== "resubmitted" &&
             requestedDocument.requestDeadline && new Date(requestedDocument.requestDeadline).getTime() < Date.now()) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             const passedDeadline = new Date(requestedDocument.requestDeadline).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
             return sendError(410, `The replacement deadline (${passedDeadline}) has passed. Contact the City Scholarship Office.`);
         }
@@ -224,7 +225,7 @@ const uploadStudentDocument = async(req, res, next) => {
         }
         const replacedFilename = String(previousDocument?.filename || "");
         if (replacedFilename && replacedFilename !== req.file.filename) {
-            removeStoredFile({ filename: replacedFilename });
+            await cleanupStoredFile(replacedFilename);
         }
 
         const freshApplication = await Application.findById(application._id)
@@ -243,7 +244,7 @@ const uploadStudentDocument = async(req, res, next) => {
     } catch (error) {
         // An uncommitted upload is orphaned. Once the DB write succeeds, retain
         // the file even if a later response-building query fails.
-        if (!uploadCommitted) removeStoredFileByFilename(req.file && req.file.filename);
+        if (!uploadCommitted) await cleanupStoredFile(req.file && req.file.filename);
         next(error);
     }
 };

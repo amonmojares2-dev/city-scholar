@@ -2,7 +2,8 @@ const Document = require("../models/Document");
 const Application = require("../models/Application");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
-const { removeStoredFileByFilename, persistUpload, openStoredDownload } = require("../config/storage");
+const { persistUpload, openStoredDownload } = require("../config/storage");
+const { cleanupStoredFile } = require("../utils/storageCleanup");
 const { CITY_ADMIN_ROLES, SUPER_ADMIN_ROLES, BARANGAY_ADMIN_ROLES } = require("../utils/validation");
 const { normalizeReviewStatus, isGradeDocumentType } = require("../utils/documentReview");
 
@@ -32,15 +33,16 @@ const listDocuments = async(req, res, next) => {
 };
 
 const uploadDocument = async(req, res, next) => {
+    let uploadCommitted = false;
     try {
         if (!req.file) return res.status(400).json({ success: false, message: "A PDF, JPEG, or PNG file is required" });
         const application = await Application.findById(req.body.application);
         if (!application) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(404).json({ success: false, message: "Application not found" });
         }
         if (req.user.role === "student" && application.student.toString() !== req.user.id) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(403).json({ success: false, message: "Access denied" });
         }
         // Write the bytes to GridFS now that every access check has passed, and
@@ -52,9 +54,10 @@ const uploadDocument = async(req, res, next) => {
         // Store only the hashed filename — never the raw absolute path.
         // `originalName` keeps the human-readable label for the UI.
         const document = await Document.create({ application: application._id, student: application.student, type: req.body.type || "other", originalName: req.file.originalname, filename: req.file.filename, mimeType: req.file.mimetype });
+        uploadCommitted = true;
         res.status(201).json({ success: true, document: publicDocument(document) });
     } catch (error) {
-        removeStoredFileByFilename(req.file && req.file.filename);
+        if (!uploadCommitted) await cleanupStoredFile(req.file && req.file.filename);
         next(error);
     }
 };
@@ -183,32 +186,33 @@ const requestResubmission = async(req, res, next) => {
 // slot, and Academic Monitoring keeps pointing at this same row so the appeal
 // lifecycle (request -> resubmission -> re-analysis) stays on one record.
 const replaceDocument = async(req, res, next) => {
+    let uploadCommitted = false;
     try {
         if (!req.file) return res.status(400).json({ success: false, message: "A PDF, JPEG, or PNG file is required" });
 
         const document = await Document.findById(req.params.id);
         if (!document) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(404).json({ success: false, message: "Document not found" });
         }
 
         // Only the owning student may replace their own file.
         if (!document.student || document.student.toString() !== req.user.id) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(403).json({ success: false, message: "You can only replace your own documents." });
         }
 
         const openRequest = Boolean(document.requestedReissue) && document.appealStatus !== "resubmitted";
         const isRejected = document.status === "rejected";
         if (!openRequest && !isRejected) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(409).json({ success: false, message: "This document does not need to be replaced right now." });
         }
 
         // The deadline only gates City-requested resubmissions; an ordinary
         // rejection can be fixed whenever the student gets to it.
         if (openRequest && document.requestDeadline && new Date(document.requestDeadline).getTime() < Date.now()) {
-            removeStoredFileByFilename(req.file.filename);
+            await cleanupStoredFile(req.file.filename);
             return res.status(410).json({
                 success: false,
                 message: `The replacement deadline (${new Date(document.requestDeadline).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}) has passed. Contact the City Scholarship Office.`
@@ -237,15 +241,16 @@ const replaceDocument = async(req, res, next) => {
             return res.status(503).json({ success: false, message: "Storage is temporarily unavailable. Please try again." });
         }
         await document.save();
+        uploadCommitted = true;
 
         // Delete the superseded file only after the swap has committed.
         if (previousFilename && previousFilename !== document.filename) {
-            removeStoredFileByFilename(previousFilename);
+            await cleanupStoredFile(previousFilename);
         }
 
         res.json({ success: true, document: publicDocument(document) });
     } catch (error) {
-        removeStoredFileByFilename(req.file && req.file.filename);
+        if (!uploadCommitted) await cleanupStoredFile(req.file && req.file.filename);
         next(error);
     }
 };

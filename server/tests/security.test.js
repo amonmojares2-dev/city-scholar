@@ -1,6 +1,9 @@
 const request = require("supertest");
+const express = require("express");
 const { app } = require("../server");
 const { UNIVERSITY_OPTIONS } = require("../config/universities");
+const { createCorsMiddleware } = require("../config/cors");
+const { errorHandler } = require("../middleware/errorMiddleware");
 
 const securityHeaders = [
     "/",
@@ -56,8 +59,29 @@ describe("security headers", () => {
         expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
     });
 
+    it("normalizes CLIENT_ORIGIN and includes CORS headers on a 500 response", async() => {
+        const errorApp = express();
+        errorApp.use(createCorsMiddleware({
+            clientOrigin: "https://city-scholar.vercel.app/",
+            isProduction: true
+        }));
+        errorApp.get("/error", (_req, _res, next) => next(new Error("test failure")));
+        errorApp.use(errorHandler);
+        const logError = jest.spyOn(console, "error").mockImplementation(() => {});
+
+        const response = await request(errorApp)
+            .get("/error")
+            .set("Origin", "https://city-scholar.vercel.app");
+
+        expect(response.status).toBe(500);
+        expect(response.headers["access-control-allow-origin"]).toBe("https://city-scholar.vercel.app");
+        logError.mockRestore();
+    });
+
     it.each(securityHeaders)("sets the security headers for %s", async(route) => {
-        const response = await request(app).get(route);
+        const response = await request(app)
+            .get(route)
+            .set("Origin", "http://localhost:5173");
 
         if (route === "/does-not-exist") {
             expect(response.status).toBe(404);
@@ -70,5 +94,6 @@ describe("security headers", () => {
         expect(response.headers["content-security-policy"]).toContain("default-src 'none'");
         expect(response.headers["permissions-policy"]).toBeDefined();
         expect(response.headers["referrer-policy"]).toBe("no-referrer");
+        expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
     });
 });

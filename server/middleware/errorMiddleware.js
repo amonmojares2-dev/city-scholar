@@ -1,5 +1,5 @@
-const { removeStoredFileByFilename } = require("../config/storage");
 const multer = require("multer");
+const { cleanupStoredFile } = require("../utils/storageCleanup");
 
 function fieldErrorsFromMongoose(error) {
   const errors = {};
@@ -42,14 +42,14 @@ function friendlyValidationError(error) {
     return unique.join(" ");
 }
 
-const errorHandler = (error, req, res, _next) => {
+const errorHandler = async(error, req, res, _next) => {
     console.error(error);
 
     if (req.file?.filename) {
         // Best-effort cleanup of an uncommitted upload. With GridFS nothing was
         // written to disk, so there is no temp file to unlink; if the controller
         // had already persisted the buffer this removes it.
-        removeStoredFileByFilename(req.file.filename);
+        await cleanupStoredFile(req.file.filename);
     }
 
     const messageByCode = {
