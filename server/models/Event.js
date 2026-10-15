@@ -11,7 +11,7 @@ const attendanceProofSchema = new mongoose.Schema({
     // proof-independent concept tracked on the student's scholar account.
     status: { type: String, enum: ["pending", "verified", "rejected"], default: "pending" },
     reason: { type: String, default: "" },
-    // Hashed filename, resolved to disk only through the authenticated proof
+    // Hashed GridFS filename, resolved only through the authenticated proof
     // image endpoint. The raw filename is never exposed to the client.
     proof: { type: String, default: null },
     originalName: { type: String, default: "" },

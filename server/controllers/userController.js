@@ -365,7 +365,7 @@ const updateCurrentUser = async(req, res) => {
         const user = await User.findByIdAndUpdate(
                 req.user.id,
                 update, {
-                    new: true,
+                    returnDocument: "after",
                     runValidators: true
                 }
             )

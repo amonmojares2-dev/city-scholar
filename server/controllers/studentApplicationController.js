@@ -256,7 +256,7 @@ const updateStudentApplication = async (req, res, next) => {
               school: application.school
             }
           },
-          { new: true }
+          { returnDocument: "after" }
         );
         const renewed = updated || (await Application.findById(application._id)) || application;
         await renewed.populate('student', 'name email');

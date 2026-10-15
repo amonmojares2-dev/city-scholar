@@ -91,7 +91,7 @@ const updateDocument = async(req, res, next) => {
             { status, remarks, reviewedBy: null, reviewedAt: null } :
             { status, remarks, reviewedBy: req.user.id, reviewedAt: new Date() };
 
-        const document = await Document.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+        const document = await Document.findByIdAndUpdate(req.params.id, update, { returnDocument: "after", runValidators: true });
         if (!document) return res.status(404).json({ success: false, message: "Document not found" });
 
         // Notify the owner when their file was rejected (requirement: the student

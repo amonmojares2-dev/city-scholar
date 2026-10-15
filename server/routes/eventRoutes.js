@@ -17,7 +17,7 @@ router.post("/:id/attendance", authorize("student"), markAttendance);
 // secure upload pipeline the document flow uses: uploadSingleDocument (multer
 // image mimetype+extension+5 MB) followed by validateProfilePhotoUpload, which
 // reads the real file signature (magic bytes) so a renamed .exe or a spoofed
-// Content-Type is rejected and the temp file is removed. Field name is "file".
+// Content-Type is rejected before it is persisted. Field name is "file".
 router.post("/:id/attendance-proof", authorize("student"), uploadSingleDocument, validateProfilePhotoUpload, uploadProof);
 // City Office review list (city_admin, admin_staff, superadmin only).
 router.get("/:id/attendance-proofs", authorize("city_admin", "admin_staff", ...SUPER_ADMIN_ROLES), getEventAttendance);

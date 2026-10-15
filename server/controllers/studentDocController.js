@@ -196,7 +196,7 @@ const uploadStudentDocument = async(req, res, next) => {
                     type: documentType
                 }
             }, {
-                new: false,
+                returnDocument: "before",
                 upsert: true,
                 runValidators: true,
                 setDefaultsOnInsert: true
@@ -207,7 +207,7 @@ const uploadStudentDocument = async(req, res, next) => {
             // A parallel request created the same slot first. Re-run without
             // upsert so this legitimate re-upload becomes a replacement, never 409.
             previousDocument = await Document.findOneAndUpdate(filter, { $set: replacement }, {
-                new: false,
+                returnDocument: "before",
                 runValidators: true
             });
         }

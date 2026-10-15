@@ -58,14 +58,14 @@ async function seed() {
     await Barangay.updateMany({ name: { $nin: barangayNames } }, { $set: { status: "inactive" } });
     const barangays = {};
     for (const name of barangayNames) {
-        barangays[name] = await Barangay.findOneAndUpdate({ name }, { name, city: "Dagupan City", province: "Pangasinan", status: "active" }, { upsert: true, new: true, setDefaultsOnInsert: true });
+        barangays[name] = await Barangay.findOneAndUpdate({ name }, { name, city: "Dagupan City", province: "Pangasinan", status: "active" }, { upsert: true, returnDocument: "after", setDefaultsOnInsert: true });
     }
     const barangay = barangays["Bonuan Boquig"];
     const password = await bcrypt.hash("password123", 10);
     for (const account of accounts) {
         const update = {...account, password };
         if (account.role === "student" || account.role === "barangay_staff") update.barangay = barangay._id;
-        await User.findOneAndUpdate({ email: account.email }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
+        await User.findOneAndUpdate({ email: account.email }, update, { upsert: true, returnDocument: "after", setDefaultsOnInsert: true });
     }
     console.log(`${barangayNames.length} barangays and demo accounts seeded. Password: password123`);
     process.exit(0);

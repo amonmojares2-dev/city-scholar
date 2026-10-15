@@ -132,7 +132,7 @@ const analyzeDocument = async(req, res, next) => {
                         verifiedAt: null,
                         extractedAt: new Date()
                     },
-                    { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+                    { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
                 );
 
                 return res.status(error.statusCode || 502).json({
@@ -181,7 +181,7 @@ const analyzeDocument = async(req, res, next) => {
                 provider: "openai",
                 model: process.env.OPENAI_VISION_MODEL || "gpt-4o"
             },
-            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+            { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
         );
 
         res.json({

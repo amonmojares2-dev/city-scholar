@@ -77,7 +77,7 @@ const markAttendance = async (req, res, next) => {
         if (event.required) {
             return res.status(409).json({ success: false, message: "This event requires attendance proof. Please upload your proof instead." });
         }
-        await Event.findByIdAndUpdate(req.params.id, { $addToSet: { attendees: req.user.id } }, { new: true });
+        await Event.findByIdAndUpdate(req.params.id, { $addToSet: { attendees: req.user.id } }, { returnDocument: "after" });
         res.json({ success: true, marked: true });
     } catch (error) {
         next(error);
@@ -99,7 +99,7 @@ const createEvent = async (req, res, next) => {
 
 const updateEvent = async (req, res, next) => {
     try {
-        const event = await Event.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+        const event = await Event.findByIdAndUpdate(req.params.id, req.body, { returnDocument: "after", runValidators: true });
         if (!event) return res.status(404).json({ success: false, message: "Event not found" });
         res.json({ success: true, event });
     } catch (error) {

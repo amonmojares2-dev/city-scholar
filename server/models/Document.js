@@ -1,11 +1,6 @@
 const mongoose = require("mongoose");
 
-// IMPORTANT — STORAGE LIMITATION (launch blocker, do not ignore):
-// Documents are stored on the server's local disk (server/uploads/) via multer.
-// This WILL be lost on redeploy to Render, Railway, Vercel, Fly, or any
-// ephemeral-filesystem host. Before launching, migrate to Cloudinary / S3 /
-// another persistent object store and update server/config/storage.js + any
-// public-file serving logic in server.js.
+// Uploaded bytes are persisted in MongoDB GridFS by server/config/storage.js.
 //
 // context distinguishes which portal flow created the document:
 //   "application"  → uploaded from the Application page (default, backward-compatible)

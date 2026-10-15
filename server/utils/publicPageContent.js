@@ -343,7 +343,7 @@ async function updatePublicPages(payload = {}, updatedBy = null) {
     const document = await PublicPageContent.findOneAndUpdate(
         {},
         { $set: { scope: "public-pages", ...updates, updatedBy: updatedBy || null } },
-        { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+        { returnDocument: "after", upsert: true, setDefaultsOnInsert: true, runValidators: true }
     ).lean({ defaults: true });
 
     invalidatePublicPagesCache();
@@ -368,4 +368,3 @@ module.exports = {
     normalizeHome,
     mergePage
 };
-

@@ -56,8 +56,7 @@ const userSchema = new mongoose.Schema({
 
     lastLoginAt: { type: Date, default: null },
 
-    // Opaque generated filename and public URL for the user's profile image.
-    // The public URL is served from /uploads.
+    // Opaque GridFS filename and authenticated URL for the user's profile image.
     profilePhoto: {
         filename: { type: String, default: "" },
         url: { type: String, default: "" },

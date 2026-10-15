@@ -1,11 +1,62 @@
-const {
-    ALLOWED_IMAGE_TYPES,
+const path = require("path");
+const multer = require("multer");
+const { hashedFilename } = require("../config/storage");
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Map([
+    ["image/png", new Set([".png"])],
+    ["image/jpeg", new Set([".jpg", ".jpeg"])]
+]);
+const ALLOWED_DOCUMENT_TYPES = new Map([
+    ...ALLOWED_IMAGE_TYPES,
+    ["application/pdf", new Set([".pdf"])]
+]);
+
+function hasAllowedType(typeMap, file) {
+    const mimeType = (file.mimetype || "").toLowerCase();
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    return Boolean(typeMap.get(mimeType)?.has(extension));
+}
+
+function uploadTypeError(message) {
+    const error = new Error(message);
+    error.statusCode = 400;
+    return error;
+}
+
+const multerUploadOptions = [];
+
+function createUploadMiddleware(typeMap, rejectedTypeMessage) {
+    const storage = multer.memoryStorage();
+    const options = {
+        storage,
+        limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+        fileFilter: (_req, file, callback) => {
+            if (!hasAllowedType(typeMap, file)) {
+                return callback(uploadTypeError(rejectedTypeMessage));
+            }
+            return callback(null, true);
+        }
+    };
+    multerUploadOptions.push(options);
+
+    const parseSingleFile = multer(options).single("file");
+
+    return (req, res, next) => parseSingleFile(req, res, (error) => {
+        if (error) return next(error);
+        if (req.file) req.file.filename = hashedFilename(req.file.originalname);
+        return next();
+    });
+}
+
+const uploadSingleDocument = createUploadMiddleware(
     ALLOWED_DOCUMENT_TYPES,
-    hasAllowedType,
-    uploadTypeError,
-    MAX_UPLOAD_BYTES,
-    upload
-} = require("../config/storage");
+    "Only PNG, JPEG, and PDF documents are allowed."
+);
+const profilePhotoUpload = createUploadMiddleware(
+    ALLOWED_IMAGE_TYPES,
+    "Only PNG and JPEG images are allowed."
+);
 
 // Read the real file type from the first bytes (magic numbers). With GridFS the
 // bytes never touch disk — multer keeps them in req.file.buffer — so the
@@ -52,7 +103,9 @@ function validateStoredFile(typeMap, imageOnly) {
 }
 
 module.exports = {
-    uploadSingleDocument: upload.single("file"),
+    uploadSingleDocument,
+    profilePhotoUpload,
+    multerUploadOptions,
     validateDocumentUpload: validateStoredFile(ALLOWED_DOCUMENT_TYPES, false),
     validateProfilePhotoUpload: validateStoredFile(ALLOWED_IMAGE_TYPES, true),
     actualMimeTypeFromBuffer

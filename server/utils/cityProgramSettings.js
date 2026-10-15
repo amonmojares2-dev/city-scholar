@@ -330,7 +330,7 @@ async function updateProgramSettings(payload = {}, updatedBy = null) {
                 updatedBy: updatedBy || null
             }
         },
-        { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+        { returnDocument: "after", upsert: true, setDefaultsOnInsert: true, runValidators: true }
     ).lean();
 
     invalidateProgramSettingsCache();
@@ -372,7 +372,6 @@ module.exports = {
     FREQUENCIES,
     PAYMENT_METHODS
 };
-
 
 
 

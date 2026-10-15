@@ -1,8 +1,7 @@
 const express = require("express");
 const { protect, authorize } = require("../middleware/authMiddleware");
 const { SUPER_ADMIN_ROLES } = require("../utils/validation");
-const { profilePhotoUpload } = require("../config/storage");
-const { validateProfilePhotoUpload } = require("../middleware/uploadMiddleware");
+const { profilePhotoUpload, validateProfilePhotoUpload } = require("../middleware/uploadMiddleware");
 const {
     deleteCurrentUser,
     getProfilePhoto,
@@ -23,6 +22,6 @@ router.get("/", protect, authorize("city_admin", "admin_staff", ...SUPER_ADMIN_R
 // still request /api/users/me/photo.
 router.delete("/me", protect, authorize("student"), deleteCurrentUser);
 router.get("/me/photo", protect, getProfilePhoto);
-router.post("/me/photo", protect, profilePhotoUpload.single("file"), validateProfilePhotoUpload, uploadProfilePhoto);
+router.post("/me/photo", protect, profilePhotoUpload, validateProfilePhotoUpload, uploadProfilePhoto);
 
 module.exports = router;

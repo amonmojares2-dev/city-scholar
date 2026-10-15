@@ -258,7 +258,7 @@ describe("per-document review action", () => {
         expect(update).toHaveBeenCalledWith(
             "doc-1",
             expect.objectContaining({ status: "rejected", reviewedBy: "city-1", reviewedAt: expect.any(Date) }),
-            expect.objectContaining({ new: true })
+            expect.objectContaining({ returnDocument: "after" })
         );
         expect(notify).toHaveBeenCalledTimes(1);
         expect(notify.mock.calls[0][0]).toEqual(expect.objectContaining({

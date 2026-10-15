@@ -86,7 +86,7 @@ describe("student application document uploads", () => {
                 type: "Report Card"
             }),
             expect.objectContaining({ $set: expect.objectContaining({ filename: "new-report-card.png" }) }),
-            expect.objectContaining({ upsert: true, new: false })
+            expect.objectContaining({ upsert: true, returnDocument: "before" })
         );
         expect(res.status).toHaveBeenCalledWith(200);
         expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
@@ -113,7 +113,7 @@ describe("student application document uploads", () => {
 
         expect(next).not.toHaveBeenCalled();
         expect(update).toHaveBeenCalledTimes(2);
-        expect(update.mock.calls[1][2]).toEqual(expect.objectContaining({ new: false }));
+        expect(update.mock.calls[1][2]).toEqual(expect.objectContaining({ returnDocument: "before" }));
         expect(res.status).toHaveBeenCalledWith(200);
     });
 

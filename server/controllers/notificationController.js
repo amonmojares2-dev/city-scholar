@@ -10,7 +10,7 @@ const listNotifications = async(req, res, next) => {
 
 const markNotificationRead = async(req, res, next) => {
     try {
-        const notification = await Notification.findOneAndUpdate({ _id: req.params.id, recipient: req.user.id }, { readAt: new Date() }, { new: true });
+        const notification = await Notification.findOneAndUpdate({ _id: req.params.id, recipient: req.user.id }, { readAt: new Date() }, { returnDocument: "after" });
         if (!notification) return res.status(404).json({ success: false, message: "Notification not found" });
         res.json({ success: true, notification });
     } catch (error) { next(error); }

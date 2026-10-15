@@ -737,7 +737,7 @@ const saveProgramConfig = async(req, res) => {
         let program = null;
 
         if (id) {
-            program = await ProgramConfig.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+            program = await ProgramConfig.findByIdAndUpdate(id, payload, { returnDocument: "after", runValidators: true });
         } else {
             program = await ProgramConfig.findOneAndUpdate(
                 {
@@ -746,7 +746,7 @@ const saveProgramConfig = async(req, res) => {
                     semester: payload.semester
                 },
                 payload,
-                { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+                { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
             );
         }
 
@@ -858,9 +858,9 @@ const saveSchool = async(req, res) => {
         };
 
         const school = id ?
-            await School.findByIdAndUpdate(id, payload, { new: true, runValidators: true }) :
+            await School.findByIdAndUpdate(id, payload, { returnDocument: "after", runValidators: true }) :
             await School.findOneAndUpdate({ name: payload.name }, payload, {
-                new: true,
+                returnDocument: "after",
                 upsert: true,
                 runValidators: true,
                 setDefaultsOnInsert: true
@@ -917,9 +917,9 @@ const saveBarangay = async(req, res) => {
         };
 
         const barangay = id ?
-            await Barangay.findByIdAndUpdate(id, payload, { new: true, runValidators: true }) :
+            await Barangay.findByIdAndUpdate(id, payload, { returnDocument: "after", runValidators: true }) :
             await Barangay.findOneAndUpdate({ name: payload.name }, payload, {
-                new: true,
+                returnDocument: "after",
                 upsert: true,
                 runValidators: true,
                 setDefaultsOnInsert: true
