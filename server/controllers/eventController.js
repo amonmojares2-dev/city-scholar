@@ -29,15 +29,35 @@ function ownProofSummary(event, userId) {
 const listEvents = async (req, res, next) => {
     try {
         const events = await Event.find().sort({ startsAt: 1 });
-        const result = events.map((event) => ({
-            ...event.toObject(),
-            // Legacy "self-marked" flag for non-required events (the old
-            // Attended button). Required events use proofs instead.
-            attendanceStatus: event.attendees.some((attendee) => attendee.toString() === req.user.id) ? "attended" : null,
-            // Only THIS caller's own proof status; never other students'
-            // proofs and never the attendees list.
-            ownProof: ownProofSummary(event, req.user.id)
-        }));
+        const now = Date.now();
+        const result = events.map((event) => {
+            // Proof submission window: opens at startsAt, closes at endsAt + 48h
+            // (or startsAt + 7 days when the event has no end time).
+            const startsAt = new Date(event.startsAt).getTime();
+            const endsAt = event.endsAt ? new Date(event.endsAt).getTime() : null;
+            const deadline = endsAt
+                ? endsAt + 48 * 60 * 60 * 1000
+                : startsAt + 7 * 24 * 60 * 60 * 1000;
+            // Caller may only submit a proof while an approved existing scholar
+            // AND while the proof window is open. Recomputed here so the UI
+            // cannot disagree with the backend.
+            const approved = isApprovedExistingScholar(req);
+            const canSubmit = approved && now >= startsAt && now <= deadline;
+            return {
+                ...event.toObject(),
+                // Legacy "self-marked" flag for non-required events (the old
+                // Attended button). Required events use proofs instead.
+                attendanceStatus: event.attendees.some((attendee) => attendee.toString() === req.user.id) ? "attended" : null,
+                // Only THIS caller's own proof status; never other students'
+                // proofs and never the attendees list.
+                ownProof: ownProofSummary(event, req.user.id),
+                // Single-source-of-truth response contract for the attendance
+                // proof block that the client must not recompute itself.
+                approved,
+                canSubmit,
+                proofDeadline: new Date(deadline).toISOString()
+            };
+        });
         // proofs/attendees are raw ObjectId / proof docs that must not leak.
         result.forEach((event) => {
             delete event.proofs;

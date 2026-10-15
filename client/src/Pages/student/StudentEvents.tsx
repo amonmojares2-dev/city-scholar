@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api, uploadWithProgress, validateImageFile } from '../../lib/api';
@@ -14,6 +14,9 @@ type EventRecord = {
   endsAt?: string;
   location: string;
   required: boolean;
+  approved: boolean;
+  canSubmit: boolean;
+  proofDeadline: string;
   attendanceStatus?: string | null;
   ownProof?: OwnProof;
 };
@@ -21,16 +24,6 @@ type EventRecord = {
 const date = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const time = (value: string) => new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 const stamp = (value: string) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-
-// Mirrors the server proof window: endsAt + 48h, or startsAt + 7 days when the
-// event has no end time. Used only to show the deadline and to stop a late
-// replace in the UI; the server re-checks it authoritatively.
-function proofDeadline(event: EventRecord): Date {
-  const base = event.endsAt
-    ? new Date(event.endsAt).getTime() + 48 * 60 * 60 * 1000
-    : new Date(event.startsAt).getTime() + 7 * 24 * 60 * 60 * 1000;
-  return new Date(base);
-}
 
 const STATUS_STYLES: Record<ProofStatus, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -54,9 +47,8 @@ function ProofThumb({ eventId, proofId }: { eventId: string; proofId: string }) 
   if (error || !url) return <div className="w-16 h-16 rounded-lg bg-[#F3F4F6] flex items-center justify-center text-[10px] text-[#9CA3AF]">No image</div>;
   return <a href={url} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-lg overflow-hidden border border-[#E5E7EB] block"><img src={url} alt="Your attendance proof" className="w-full h-full object-cover" /></a>;
 }
-// Attendance proof uploader for a single required event. Only rendered for
-// eligible (approved existing scholar) students; ineligible students see a note
-// from the parent instead.
+// Attendance proof uploader for a single required event. The parent page
+// renders this only when the server reports the window is open (event.canSubmit).
 function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
@@ -66,12 +58,6 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  const deadline = useMemo(() => proofDeadline(event), [event]);
-  const started = new Date(event.startsAt).getTime() <= Date.now();
-  const open = started && Date.now() <= deadline.getTime();
-  const late = Date.now() > deadline.getTime();
-  const proof = event.ownProof || null;
 
   const pick = (chosen: File | undefined) => {
     setSubmitError('');
@@ -105,11 +91,11 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
   };
 
   const remove = async () => {
-    if (!proof) return;
+    if (!event.ownProof) return;
     setRemoving(true);
     setSubmitError('');
     try {
-      await api(`/events/${event._id}/attendance-proofs/${proof._id}`, { method: 'DELETE' });
+      await api(`/events/${event._id}/attendance-proofs/${event.ownProof._id}`, { method: 'DELETE' });
       onDone();
     } catch (requestError) {
       setSubmitError(requestError instanceof Error ? requestError.message : 'Unable to remove your proof.');
@@ -119,49 +105,35 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
   };
 
   return (
-    <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
-        {proof ? <StatusBadge status={proof.status} /> : <span className="text-xs text-[#9CA3AF]">Not submitted</span>}
-      </div>
-      <div className="text-xs text-[#6B7280] flex items-center gap-1.5">
-        <Icon name="clock" size={13} />
-        {late
-          ? <>Submission window closed on {stamp(deadline.toISOString())}.</>
-          : <>Upload a photo (PNG/JPEG, up to 5 MB) before <span className="font-600 text-[#374151]">{stamp(deadline.toISOString())}</span>.</>}
-      </div>
-      {proof && (
+    <>
+      <div className="text-xs text-[#6B7280]">Submit your proof by <span className="font-600 text-[#374151]">{stamp(event.proofDeadline)}</span></div>
+      {event.ownProof && (
         <div className="flex items-start gap-3">
-          <ProofThumb eventId={event._id} proofId={proof._id} />
+          <ProofThumb eventId={event._id} proofId={event.ownProof._id} />
           <div className="text-xs text-[#6B7280] space-y-1">
-            <div>Submitted {stamp(proof.submittedAt)}</div>
-            {proof.status === 'rejected' && proof.reason && <div className="text-red-600">Reason: {proof.reason}</div>}
-            {proof.status === 'verified' && <div className="text-emerald-600">Verified by the City Office.</div>}
+            <div>Submitted {stamp(event.ownProof.submittedAt)}</div>
+            {event.ownProof.status === 'rejected' && event.ownProof.reason && <div className="text-red-600">Reason: {event.ownProof.reason}</div>}
+            {event.ownProof.status === 'verified' && <div className="text-emerald-600">Verified by the City Office.</div>}
           </div>
         </div>
       )}
-      {open && (
-        <div className="flex items-center gap-3 flex-wrap">
-          <input ref={inputRef} type="file" accept="image/png,image/jpeg" onChange={e => pick(e.target.files?.[0])} className="text-xs" />
-          {preview && <img src={preview} alt="Selected preview" className="w-16 h-16 rounded-lg object-cover border border-[#E5E7EB]" />}
-          <button onClick={submit} disabled={saving || !file} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50 disabled:cursor-not-allowed">
-            {saving ? `Uploading ${progress}%` : proof ? 'Replace proof' : 'Submit proof'}
-          </button>
-          {proof && (
-            <button onClick={remove} disabled={removing} className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-600 text-[#6B7280] disabled:opacity-50">
-              {removing ? 'Removing…' : 'Remove'}
-            </button>
-          )}
-        </div>
-      )}
+      <div className="flex items-center gap-3 flex-wrap">
+        <input ref={inputRef} type="file" accept="image/png,image/jpeg" onChange={e => pick(e.target.files?.[0])} className="text-xs" />
+        {preview && <img src={preview} alt="Selected preview" className="w-16 h-16 rounded-lg object-cover border border-[#E5E7EB]" />}
+        <button onClick={submit} disabled={saving || !file} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          {saving ? `Uploading ${progress}%` : event.ownProof ? 'Replace proof' : 'Submit proof'}
+        </button>
+        {event.ownProof && (<button onClick={remove} disabled={removing} className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-600 text-[#6B7280] disabled:opacity-50">{removing ? 'Removing…' : 'Remove'}</button>)}
+      </div>
       {fileError && <div className="text-xs text-red-600">{fileError}</div>}
       {submitError && <div className="text-xs text-red-600">{submitError}</div>}
-    </div>
+    </>
   );
 }
 export default function StudentEvents() {
   const access = useStudentAccess();
-  const eligible = access ? canSubmitAttendanceProof(access) : false;
+  const isApproved = access ? canSubmitAttendanceProof(access) : false;
+  const now = Date.now();
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [error, setError] = useState('');
   const [attending, setAttending] = useState('');
@@ -213,9 +185,23 @@ export default function StudentEvents() {
                   : <button onClick={() => markAttendance(event._id)} disabled={attending === event._id} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50">{attending === event._id ? 'Saving…' : 'Mark attended'}</button>
               )}
             </div>
-            {event.required && (eligible
-              ? <ProofSection event={event} onDone={load} />
-              : <div className="mt-3 pt-3 border-t border-[#E5E7EB] text-xs text-[#6B7280]">Attendance proof is available to approved scholars. Contact the City Office if you believe this is an error.</div>)}
+            {event.required && (
+              <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
+                  {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
+                </div>
+                {event.canSubmit ? (
+                  <ProofSection event={event} onDone={load} />
+                ) : isApproved ? (
+                  now < new Date(event.startsAt).getTime()
+                    ? <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
+                    : <div className="text-xs text-[#6B7280]">Deadline passed on {date(event.proofDeadline)}</div>
+                ) : (
+                  <div className="text-xs text-[#6B7280]">Attendance proof is available to approved scholars</div>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -229,9 +215,23 @@ export default function StudentEvents() {
               <div className="font-600 text-sm text-[#1F2937]">{event.name} {event.required && <span className="text-xs text-red-600 ml-1">Required</span>}</div>
               <div className="text-xs text-[#6B7280]">{date(event.startsAt)} · {event.location}</div>
             </div>
-            {event.required
-              ? (event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>)
-              : (event.attendanceStatus === 'attended' ? <span className="text-xs font-600 text-emerald-700">Attended</span> : <span className="text-xs text-[#9CA3AF]">Not attended</span>)}
+            {event.required && (
+              <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
+                  {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
+                </div>
+                {event.canSubmit ? (
+                  <ProofSection event={event} onDone={load} />
+                ) : isApproved ? (
+                  now < new Date(event.startsAt).getTime()
+                    ? <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
+                    : <div className="text-xs text-[#6B7280]">Deadline passed on {date(event.proofDeadline)}</div>
+                ) : (
+                  <div className="text-xs text-[#6B7280]">Attendance proof is available to approved scholars</div>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
