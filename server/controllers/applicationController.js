@@ -17,22 +17,23 @@ const listApplications = async(req, res, next) => {
         // queue, in the dashboard counts, or in reports. Submitting is what
         // makes an application visible to the office.
         //
-        // Two-stage review: the City Office additionally only sees applications
-        // the applicant's Barangay Admin approved (barangayVerificationStatus
-        // === "approved"). Renewals are exempt — they belong to the
-        // existing-scholar renewal flow, which never passes barangay review.
-        // Barangay and Super Admin queues are not filtered here.
+        // City queues are explicitly separated: first-time applications must
+        // pass Barangay verification, while renewals bypass that stage.
+        // Barangay and Super Admin queues retain their broader visibility.
         let filter;
         if (req.user.role === "student") {
             filter = { student: req.user.id };
         } else if (CITY_ADMIN_ROLES.includes(req.user.role)) {
-            filter = {
-                status: { $ne: "draft" },
-                $or: [
-                    { barangayVerificationStatus: "approved" },
-                    { status: "renewal" }
-                ]
-            };
+            const queue = req.query.queue || "application";
+            if (queue !== "application" && queue !== "renewal") {
+                return res.status(400).json({ success: false, message: "Queue must be application or renewal." });
+            }
+            filter = queue === "renewal"
+                ? { status: "renewal" }
+                : {
+                    status: { $nin: ["draft", "renewal"] },
+                    barangayVerificationStatus: "approved"
+                };
         } else {
             filter = { status: { $ne: "draft" } };
         }

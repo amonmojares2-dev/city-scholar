@@ -52,7 +52,9 @@ function mockEvents(events) {
 }
 
 const approvedScholar = { id: "student-a", role: "student", account: { scholarType: "existing_scholar", scholarVerificationStatus: "approved" } };
+const pendingScholar = { id: "student-a", role: "student", account: { scholarType: "existing_scholar", scholarVerificationStatus: "pending" } };
 const newApplicant = { id: "student-a", role: "student", account: { scholarType: "new_applicant", scholarVerificationStatus: "not_required" } };
+const approvedApplicant = { id: "student-a", role: "student", account: { scholarType: "new_applicant", scholarVerificationStatus: "not_required", applicationApproved: true } };
 
 describe("listEvents", () => {
   it("returns the proof-window contract fields for an open window", async () => {
@@ -78,6 +80,22 @@ describe("listEvents", () => {
     const row = r.body.events[0];
     expect(row.approved).toBe(false);
     expect(row.canSubmit).toBe(false);
+  });
+
+  it("allows an existing scholar with pending verification to submit because Events is accessible", async () => {
+    mockEvents([makeEvent()]);
+    const r = res();
+    await listEvents(req(pendingScholar), r, () => {});
+    const row = r.body.events[0];
+    expect(row.approved).toBe(false);
+    expect(row.canSubmit).toBe(true);
+  });
+
+  it("allows an approved applicant with Events page access to submit", async () => {
+    mockEvents([makeEvent()]);
+    const r = res();
+    await listEvents(req(approvedApplicant), r, () => {});
+    expect(r.body.events[0].canSubmit).toBe(true);
   });
 
   it("keeps canSubmit:false before the event starts even for an approved scholar", async () => {

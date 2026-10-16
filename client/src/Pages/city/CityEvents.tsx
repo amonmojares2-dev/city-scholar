@@ -22,8 +22,9 @@ type AttendanceData = {
   selfMarkedAttendees: string[];
 };
 
-const date = (value: string) => new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-const stamp = (value?: string | null) => (value ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—');
+const PHILIPPINES_TIME_ZONE = 'Asia/Manila';
+const date = (value: string) => new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: PHILIPPINES_TIME_ZONE });
+const stamp = (value?: string | null) => (value ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: PHILIPPINES_TIME_ZONE }) : '—');
 
 const STATUS_STYLES: Record<ProofStatus, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -196,7 +197,14 @@ export default function CityEvents() {
     setSaving(true);
     setError('');
     try {
-      await api('/events', { method: 'POST', body: JSON.stringify(form) });
+      await api('/events', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...form,
+          startsAt: new Date(form.startsAt).toISOString(),
+          endsAt: form.endsAt ? new Date(form.endsAt).toISOString() : undefined,
+        }),
+      });
       setForm({ name: '', description: '', startsAt: '', endsAt: '', location: '', required: false });
       setOpen(false);
       await load();

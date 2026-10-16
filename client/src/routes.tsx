@@ -30,7 +30,7 @@ import BarangayMessages from './Pages/barangay/BarangayMessages';
 import BarangaySettings from './Pages/barangay/BarangaySettings';
 import CityDashboard from './Pages/city/CityDashboard';
 import CityApplications from './Pages/city/CityApplications';
-import CityApplicationDetail from './Pages/city/CityApplicationDetail';
+import CityApplicationDetail, { CityRenewalDetail } from './Pages/city/CityApplicationDetail';
 import CityScholarApproval from './Pages/city/CityScholarApproval';
 import CityScholars from './Pages/city/CityScholars';
 import CityAcademic from './Pages/city/CityAcademic';
@@ -295,6 +295,7 @@ export const router = createBrowserRouter([
           { path: 'academic', Component: CityAcademic },
           { path: 'events', Component: CityEvents },
           { path: 'renewals', Component: CityRenewals },
+          { path: 'renewals/:id', Component: CityRenewalDetail },
           { path: 'messages', Component: CityMessages },
           { path: 'announcements', Component: CityAnnouncements },
           { path: 'reports', Component: CityReports },

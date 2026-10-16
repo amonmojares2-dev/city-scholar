@@ -7,6 +7,7 @@ const {
 const { cleanupStoredFile } = require("../utils/storageCleanup");
 const {
     isApprovedExistingScholar,
+    canSubmitAttendanceProof,
     canReviewAttendanceProof
 } = require("../utils/attendanceProof");
 
@@ -38,11 +39,10 @@ const listEvents = async (req, res, next) => {
             const deadline = endsAt
                 ? endsAt + 48 * 60 * 60 * 1000
                 : startsAt + 7 * 24 * 60 * 60 * 1000;
-            // Caller may only submit a proof while an approved existing scholar
-            // AND while the proof window is open. Recomputed here so the UI
-            // cannot disagree with the backend.
+            // Preserve `approved` as the existing-scholar approval indicator;
+            // upload eligibility uses the shared Events page access rule below.
             const approved = isApprovedExistingScholar(req);
-            const canSubmit = approved && now >= startsAt && now <= deadline;
+            const canSubmit = canSubmitAttendanceProof(req) && now >= startsAt && now <= deadline;
             return {
                 ...event.toObject(),
                 // Legacy "self-marked" flag for non-required events (the old
@@ -128,8 +128,8 @@ const uploadProof = async (req, res, next) => {
         if (!event.required) {
             return res.status(400).json({ success: false, message: "Attendance proof is not required for this event." });
         }
-        if (!isApprovedExistingScholar(req)) {
-            return res.status(403).json({ success: false, message: "Attendance proof is available to approved scholars only." });
+        if (!canSubmitAttendanceProof(req)) {
+            return res.status(403).json({ success: false, message: "Event attendance access is required to upload proof." });
         }
         const now = new Date();
         const startsAt = new Date(event.startsAt);

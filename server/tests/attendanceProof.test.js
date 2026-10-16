@@ -173,18 +173,31 @@ describe("uploadProof — deadline window", () => {
   });
 });
 
-describe("uploadProof — only approved existing scholars", () => {
+describe("uploadProof — students with Events page access", () => {
   const file = { filename: "abc123.png", originalname: "me.png", mimetype: "image/png" };
-  it("refuses a pending scholar (403)", async () => {
+  it("allows an existing scholar with pending verification", async () => {
     const event = makeEvent();
     jest.spyOn(Event, "findById").mockResolvedValue(event);
     const r = res();
     await uploadProof(req(pendingScholar, { id: "event-1" }, { file }), r, () => {});
-    expect(r.status).toHaveBeenCalledWith(403);
-    expect(event.proofs.length).toBe(0);
+    expect(r.statusCode).toBe(201);
+    expect(event.proofs.length).toBe(1);
   });
 
-  it("refuses a new applicant (403)", async () => {
+  it("allows an applicant marked as eligible by the shared Events access rule", async () => {
+    const event = makeEvent();
+    const eligibleApplicant = {
+      ...newApplicant,
+      account: { ...newApplicant.account, applicationApproved: true }
+    };
+    jest.spyOn(Event, "findById").mockResolvedValue(event);
+    const r = res();
+    await uploadProof(req(eligibleApplicant, { id: "event-1" }, { file }), r, () => {});
+    expect(r.statusCode).toBe(201);
+    expect(event.proofs.length).toBe(1);
+  });
+
+  it("refuses an applicant who cannot open the Events page (403)", async () => {
     const event = makeEvent();
     jest.spyOn(Event, "findById").mockResolvedValue(event);
     const r = res();

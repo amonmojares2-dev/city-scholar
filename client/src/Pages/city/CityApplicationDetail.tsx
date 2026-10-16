@@ -1,5 +1,5 @@
 /* ============================================================
-   City Office — Application review page   (/city/applications/:id)
+   City Office — shared Application / Renewal review page.
 
    Everything shown here comes from real records — nothing is invented:
      GET   /api/applications/:id            application + student + barangay
@@ -20,7 +20,7 @@
    built from the record's own timestamps).
    ============================================================ */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, Navigate, useNavigate, useParams } from 'react-router';
 import Icon from '../../components/Icon';
 import { api } from '../../lib/api';
 import { isImageMime } from '../../lib/docUrl';
@@ -302,8 +302,12 @@ function DocStatusLabel({ status }: { status: DocViewStatus }) {
 // null = the check can't be answered from the record (shown as "waiting")
 const stateFrom = (value: boolean | null): CheckState => (value === null ? 'unknown' : value ? 'pass' : 'fail');
 
-export default function CityApplicationDetail() {
+type ReviewSection = 'applications' | 'renewals';
+
+export default function CityApplicationDetail({ section = 'applications' }: { section?: ReviewSection }) {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const listPath = section === 'renewals' ? '/city/renewals' : '/city/applications';
   const [application, setApplication] = useState<Application | null>(null);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [programs, setPrograms] = useState<ProgramConfig[]>([]);
@@ -598,13 +602,18 @@ export default function CityApplicationDetail() {
         }),
       });
       const name = application?.student?.name || 'The student';
+      const recordType = application?.status === 'renewal' ? 'renewal' : 'application';
       setNotice(decision === 'approved'
-        ? { kind: 'success', text: `${name}'s application is approved. The decision is now visible in the student portal.` }
+        ? { kind: 'success', text: `${name}'s ${recordType} is approved. The decision is now visible in the student portal.` }
         : decision === 'rejected'
-          ? { kind: 'danger', text: `${name}'s application is rejected and the reason was sent to the student portal.` }
+          ? { kind: 'danger', text: `${name}'s ${recordType} is rejected and the reason was sent to the student portal.` }
           : { kind: 'warning', text: `A request for additional documents was sent to ${name}${result.flaggedDocuments ? ` with ${result.flaggedDocuments} document${result.flaggedDocuments === 1 ? '' : 's'} marked for replacement` : ''}.` });
       setDecision(null);
-      await load();
+      if (decision === 'approved' || decision === 'rejected') {
+        navigate(listPath, { replace: true });
+      } else {
+        await load();
+      }
     } catch (requestError) {
       setModalError(requestError instanceof Error ? requestError.message : 'Unable to save the decision.');
     } finally {
@@ -708,9 +717,16 @@ export default function CityApplicationDetail() {
     return (
       <div className="py-16 text-center">
         <div className="text-sm text-red-700">{error || 'Application not found.'}</div>
-        <Link to="/city/applications" className="inline-block mt-4 text-sm text-[#163A63] hover:underline">Back to applications</Link>
+        <Link to={listPath} className="inline-block mt-4 text-sm text-[#163A63] hover:underline">
+          Back to {section === 'renewals' ? 'renewals' : 'applications'}
+        </Link>
       </div>
     );
+  }
+
+  const isRenewal = application.status === 'renewal';
+  if ((section === 'renewals') !== isRenewal) {
+    return <Navigate to={`${isRenewal ? '/city/renewals' : '/city/applications'}/${application._id}`} replace />;
   }
 
   // A draft is the student's unfinished work — the City Office reviews an
@@ -727,14 +743,17 @@ export default function CityApplicationDetail() {
         <p className="text-sm text-[#6B7280] mt-1.5 max-w-md mx-auto">
           {application.student?.name || 'This student'} is still working on this application. It enters the review queue the moment the student submits it.
         </p>
-        <Link to="/city/applications" className="inline-block mt-4 text-sm text-[#163A63] hover:underline">Back to applications</Link>
+        <Link to={listPath} className="inline-block mt-4 text-sm text-[#163A63] hover:underline">
+          Back to {section === 'renewals' ? 'renewals' : 'applications'}
+        </Link>
       </div>
     );
   }
 
   const studentName = application.student?.name || 'Unknown student';
   const displayId = applicationDisplayId(application);
-  const isRenewal = application.status === 'renewal';
+  const recordLabel = isRenewal ? 'renewal' : 'application';
+  const recordLabelTitle = isRenewal ? 'Renewal' : 'Application';
   const heroStatus = HERO_STATUS[application.status] || { label: STATUS_LABEL[application.status] || application.status, className: 'bg-white/10 text-white/70 border-white/20' };
   const decided = application.status === 'approved' || application.status === 'rejected';
   const programLine = [
@@ -771,8 +790,8 @@ export default function CityApplicationDetail() {
       : 'bg-amber-50 border-amber-100 text-[#92400E]';
 
   const decisionTitle: Record<Decision, string> = {
-    approved: 'Approve application',
-    rejected: 'Reject application',
+    approved: `Approve ${recordLabel}`,
+    rejected: `Reject ${recordLabel}`,
     additional_requirements: 'Request additional documents',
   };
 
@@ -791,15 +810,18 @@ export default function CityApplicationDetail() {
             <span className="text-[#1F2937]">#{displayId}</span>
           </nav>
           <h1 className="text-xl font-700 text-[#1F2937]" style={{ fontWeight: 700 }}>
-            {isRenewal ? 'Renewal' : 'Application'} #{displayId}
+            {recordLabelTitle} #{displayId}
           </h1>
+          <Link to={listPath} className="inline-block mt-2 text-xs text-[#163A63] hover:underline">
+            Back to {isRenewal ? 'renewals' : 'applications'}
+          </Link>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             onClick={() => openDecision('rejected')}
             disabled={saving || decided}
-            title={decided ? 'This application already has a final decision. Use “Request Docs” to reopen it.' : 'Reject this application'}
+            title={decided ? `This ${recordLabel} already has a final decision. Use “Request Docs” to reopen it.` : `Reject this ${recordLabel}`}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#FCA5A5] bg-white text-sm text-[#DC2626] hover:bg-red-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontWeight: 600 }}
           >
@@ -820,7 +842,7 @@ export default function CityApplicationDetail() {
             title={decided
               ? 'This application already has a final decision.'
               : canApproveDocuments
-                ? 'Approve this application'
+                ? `Approve this ${recordLabel}`
                 : `Cannot approve yet — ${gateReason}`}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#22A06B] text-sm text-white hover:bg-[#1B8457] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontWeight: 600 }}
@@ -853,7 +875,7 @@ export default function CityApplicationDetail() {
             <div className="text-sm text-[#166534]" style={{ fontWeight: 600 }}>
               Document review complete — all {docRows.length} documents approved
             </div>
-            <p className="text-xs text-[#166534]/80 mt-0.5">The application can now be approved.</p>
+            <p className="text-xs text-[#166534]/80 mt-0.5">The {recordLabel} can now be approved.</p>
           </div>
         </div>
       )}
@@ -1101,10 +1123,10 @@ export default function CityApplicationDetail() {
 
               <p className="text-sm text-[#6B7280]">
                 {decision === 'approved'
-                  ? `Approving records the decision on application #${displayId} and notifies ${studentName} in the student portal.`
+                  ? `Approving records the decision on ${recordLabel} #${displayId} and notifies ${studentName} in the student portal.`
                   : decision === 'rejected'
-                    ? `Rejecting closes application #${displayId}. ${studentName} is notified with the reason you write below.`
-                    : `The application returns to review and ${studentName} is asked for the documents you flag.`}
+                    ? `Rejecting closes ${recordLabel} #${displayId}. ${studentName} is notified with the reason you write below.`
+                    : `The ${recordLabel} returns to review and ${studentName} is asked for the documents you flag.`}
               </p>
 
               {decision === 'additional_requirements' && (
@@ -1178,7 +1200,7 @@ export default function CityApplicationDetail() {
                   }`}
                   style={{ fontWeight: 600 }}
                 >
-                  {saving ? 'Saving…' : decision === 'approved' ? 'Approve application' : decision === 'rejected' ? 'Reject application' : 'Send request'}
+                  {saving ? 'Saving…' : decision === 'approved' ? `Approve ${recordLabel}` : decision === 'rejected' ? `Reject ${recordLabel}` : 'Send request'}
                 </button>
               </div>
             </div>
@@ -1273,8 +1295,8 @@ export default function CityApplicationDetail() {
       })()}
       <ConfirmDialog
         open={confirmDecisionOpen && decision !== null}
-        title={decision === 'approved' ? 'Approve application?' : decision === 'rejected' ? 'Reject application?' : 'Request additional documents?'}
-        message={decision === 'approved' ? 'Do you want to approve this application and notify the student?' : decision === 'rejected' ? 'Do you want to reject this application? The student will receive the reason you entered.' : 'Do you want to send this request to the student?'}
+        title={decision === 'approved' ? `Approve ${recordLabel}?` : decision === 'rejected' ? `Reject ${recordLabel}?` : 'Request additional documents?'}
+        message={decision === 'approved' ? `Do you want to approve this ${recordLabel} and notify the student?` : decision === 'rejected' ? `Do you want to reject this ${recordLabel}? The student will receive the reason you entered.` : 'Do you want to send this request to the student?'}
         confirmLabel={decision === 'approved' ? 'Approve' : decision === 'rejected' ? 'Reject' : 'Send Request'}
         danger={decision === 'rejected'}
         loading={saving}
@@ -1283,4 +1305,8 @@ export default function CityApplicationDetail() {
       />
     </div>
   );
+}
+
+export function CityRenewalDetail() {
+  return <CityApplicationDetail section="renewals" />;
 }

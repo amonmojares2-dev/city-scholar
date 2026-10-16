@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { ScholarType, ScholarVerificationStatus, SessionUser } from './auth';
 import { studentSidebarItems, type SidebarItem } from '../data/sidebarItems';
+import { isEventAttendanceAccess as hasEventAttendanceAccess } from '../../../shared/eventAttendanceAccess';
 
 // Derived access level shared by the sidebar and the route guards:
 //   applicant       - new applicant (Application open, Renewal locked)
@@ -130,11 +131,7 @@ export function isRenewalAccess(access: StudentAccess): boolean {
 // Any existing scholar (pending or approved) can mark attendance once
 // they're registered, plus approved new applicants.
 export function isEventAttendanceAccess(access: StudentAccess): boolean {
-  if (access.scholarType === 'existing_scholar') {
-    return access.scholarVerificationStatus === 'pending'
-      || access.scholarVerificationStatus === 'approved';
-  }
-  return access.applicationApproved;
+  return hasEventAttendanceAccess(access);
 }
 
 // ------------------------------------------------------------------
@@ -191,17 +188,10 @@ export function studentPageLock(access: StudentAccess, pathname: string): string
 }
 
 // ==========================================
-// Attendance proof eligibility (SINGLE SOURCE OF TRUTH on the client)
-//
-// Mirrors isApprovedExistingScholar() in server/utils/attendanceProof.js. Both
-// require scholarType === 'existing_scholar' AND scholarVerificationStatus ===
-// 'approved'. scholarType alone is NOT enough (a pending scholar is refused),
-// matching the renewal gate. The gate is only for showing/hiding the upload UI;
-// the server enforces the identical rule authoritatively.
+// Attendance proof eligibility follows the Events page access rule.
 // ==========================================
 export function canSubmitAttendanceProof(access: StudentAccess): boolean {
-  return access.scholarType === 'existing_scholar'
-    && access.scholarVerificationStatus === 'approved';
+  return isEventAttendanceAccess(access);
 }
 
 // Which of the student sidebar entries this account can see, and which of

@@ -51,11 +51,11 @@ export default function CityApplications() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api<{ applications: Application[] }>('/applications')
+    api<{ applications: Application[] }>('/applications?queue=application')
       // The API already hides drafts from the City Office; this second filter
       // keeps the page correct even if the browser is talking to an older
       // build, because a draft is never reviewable work.
-      .then(result => setApplications((result.applications || []).filter(a => a.status !== 'draft' && (a.status !== 'submitted' || a.barangayVerificationStatus === 'approved'))))
+      .then(result => setApplications((result.applications || []).filter(a => a.status !== 'renewal' && a.status !== 'draft' && (a.status !== 'submitted' || a.barangayVerificationStatus === 'approved'))))
       .catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load applications.'))
       .finally(() => setLoading(false));
   }, []);

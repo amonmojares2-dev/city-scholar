@@ -30,7 +30,7 @@ export default function CityRenewals() {
 
   useEffect(() => {
     let cancelled = false;
-    api<{ applications: Application[] }>('/applications')
+    api<{ applications: Application[] }>('/applications?queue=renewal')
       .then((result) => { if (!cancelled) setApplications(result.applications || []); })
       .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Unable to load renewals.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -77,7 +77,7 @@ export default function CityRenewals() {
                   <td className="px-5 py-3.5 text-sm text-[#6B7280]">{date(application.submittedAt || application.createdAt)}</td>
                   <td className="px-5 py-3.5"><StatusBadge status="renewal" size="sm" /></td>
                   <td className="px-5 py-3.5">
-                    <Link to={'/city/applications/' + application._id} className="inline-flex items-center gap-1 px-3 py-1.5 border border-[#E5E7EB] text-xs font-600 text-[#6B7280] rounded-lg hover:border-[#163A63] hover:text-[#163A63]">
+                    <Link to={'/city/renewals/' + application._id} className="inline-flex items-center gap-1 px-3 py-1.5 border border-[#E5E7EB] text-xs font-600 text-[#6B7280] rounded-lg hover:border-[#163A63] hover:text-[#163A63]">
                       <Icon name="eye" size={12} /> Review
                     </Link>
                   </td>

@@ -3,7 +3,7 @@ import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import { api, uploadWithProgress, validateImageFile } from '../../lib/api';
 import { usePrivateResourceUrl } from '../../lib/docUrl';
-import { canSubmitAttendanceProof, useStudentAccess } from '../../lib/studentAccess';
+import { isEventAttendanceAccess, useStudentAccess } from '../../lib/studentAccess';
 
 type ProofStatus = 'pending' | 'verified' | 'rejected';
 type OwnProof = { _id: string; status: ProofStatus; reason: string; submittedAt: string; reviewedAt?: string | null } | null;
@@ -21,9 +21,10 @@ type EventRecord = {
   ownProof?: OwnProof;
 };
 
-const date = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-const time = (value: string) => new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-const stamp = (value: string) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const PHILIPPINES_TIME_ZONE = 'Asia/Manila';
+const date = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: PHILIPPINES_TIME_ZONE });
+const time = (value: string) => new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: PHILIPPINES_TIME_ZONE });
+const stamp = (value: string) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: PHILIPPINES_TIME_ZONE });
 
 const STATUS_STYLES: Record<ProofStatus, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -47,8 +48,7 @@ function ProofThumb({ eventId, proofId }: { eventId: string; proofId: string }) 
   if (error || !url) return <div className="w-16 h-16 rounded-lg bg-[#F3F4F6] flex items-center justify-center text-[10px] text-[#9CA3AF]">No image</div>;
   return <a href={url} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-lg overflow-hidden border border-[#E5E7EB] block"><img src={url} alt="Your attendance proof" className="w-full h-full object-cover" /></a>;
 }
-// Attendance proof uploader for a single required event. The parent page
-// renders this only when the server reports the window is open (event.canSubmit).
+// Attendance proof uploader for a single required event.
 function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
@@ -130,10 +130,47 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
     </>
   );
 }
+
+function RequiredProofBlock({
+  event,
+  now,
+  hasAttendanceAccess,
+  onDone,
+}: {
+  event: EventRecord;
+  now: number;
+  hasAttendanceAccess: boolean;
+  onDone: () => void;
+}) {
+  const canSubmitNow = hasAttendanceAccess
+    && now >= new Date(event.startsAt).getTime()
+    && now <= new Date(event.proofDeadline).getTime();
+
+  return (
+    <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
+        {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
+      </div>
+      {canSubmitNow ? (
+        <ProofSection event={event} onDone={onDone} />
+      ) : now < new Date(event.startsAt).getTime() ? (
+        <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
+      ) : now > new Date(event.proofDeadline).getTime() ? (
+        <div className="text-xs text-[#6B7280]">Deadline passed on {stamp(event.proofDeadline)}</div>
+      ) : hasAttendanceAccess ? (
+        <div className="text-xs text-[#6B7280]">Proof submission is temporarily unavailable. Refresh the page to try again.</div>
+      ) : (
+        <div className="text-xs text-[#6B7280]">Attendance proof is unavailable for this account.</div>
+      )}
+    </div>
+  );
+}
+
 export default function StudentEvents() {
   const access = useStudentAccess();
-  const isApproved = access ? canSubmitAttendanceProof(access) : false;
-  const now = Date.now();
+  const hasAttendanceAccess = access ? isEventAttendanceAccess(access) : false;
+  const [now, setNow] = useState(Date.now());
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [error, setError] = useState('');
   const [attending, setAttending] = useState('');
@@ -141,14 +178,18 @@ export default function StudentEvents() {
     .then(result => setEvents(result.events))
     .catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load events.'));
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const markAttendance = async (id: string) => {
     setAttending(id);
     try { await api(`/events/${id}/attendance`, { method: 'POST' }); await load(); }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Unable to record attendance.'); }
     finally { setAttending(''); }
   };
-  const upcoming = events.filter(event => new Date(event.startsAt) >= new Date());
-  const completed = events.filter(event => new Date(event.startsAt) < new Date());
+  const upcoming = events.filter(event => new Date(event.startsAt).getTime() >= now);
+  const completed = events.filter(event => new Date(event.startsAt).getTime() < now);
 
   return (
     <div>
@@ -185,23 +226,7 @@ export default function StudentEvents() {
                   : <button onClick={() => markAttendance(event._id)} disabled={attending === event._id} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50">{attending === event._id ? 'Saving…' : 'Mark attended'}</button>
               )}
             </div>
-            {event.required && (
-              <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
-                  {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
-                </div>
-                {event.canSubmit ? (
-                  <ProofSection event={event} onDone={load} />
-                ) : isApproved ? (
-                  now < new Date(event.startsAt).getTime()
-                    ? <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
-                    : <div className="text-xs text-[#6B7280]">Deadline passed on {date(event.proofDeadline)}</div>
-                ) : (
-                  <div className="text-xs text-[#6B7280]">Attendance proof is available to approved scholars</div>
-                )}
-              </div>
-            )}
+            {event.required && <RequiredProofBlock event={event} now={now} hasAttendanceAccess={hasAttendanceAccess} onDone={load} />}
           </div>
         ))}
       </div>
@@ -209,29 +234,15 @@ export default function StudentEvents() {
       <h3 className="font-700 text-sm text-[#1F2937] mb-3">Attendance History</h3>
       <div className="space-y-3">
         {completed.length === 0 ? <div className="bg-white rounded-2xl border border-[#E5E7EB] p-8 text-center text-sm text-[#6B7280]">No past events.</div> : completed.map(event => (
-          <div key={event._id} className="bg-white rounded-2xl border border-[#E5E7EB] p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-xl bg-[#6B7280] flex items-center justify-center text-white"><Icon name="calendar" size={17} /></div>
-            <div className="flex-1">
-              <div className="font-600 text-sm text-[#1F2937]">{event.name} {event.required && <span className="text-xs text-red-600 ml-1">Required</span>}</div>
-              <div className="text-xs text-[#6B7280]">{date(event.startsAt)} · {event.location}</div>
-            </div>
-            {event.required && (
-              <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
-                  {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
-                </div>
-                {event.canSubmit ? (
-                  <ProofSection event={event} onDone={load} />
-                ) : isApproved ? (
-                  now < new Date(event.startsAt).getTime()
-                    ? <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
-                    : <div className="text-xs text-[#6B7280]">Deadline passed on {date(event.proofDeadline)}</div>
-                ) : (
-                  <div className="text-xs text-[#6B7280]">Attendance proof is available to approved scholars</div>
-                )}
+          <div key={event._id} className="bg-white rounded-2xl border border-[#E5E7EB] p-5">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-[#6B7280] flex items-center justify-center text-white"><Icon name="calendar" size={17} /></div>
+              <div className="flex-1">
+                <div className="font-600 text-sm text-[#1F2937]">{event.name} {event.required && <span className="text-xs text-red-600 ml-1">Required</span>}</div>
+                <div className="text-xs text-[#6B7280]">{date(event.startsAt)} · {time(event.startsAt)} · {event.location}</div>
               </div>
-            )}
+            </div>
+            {event.required && <RequiredProofBlock event={event} now={now} hasAttendanceAccess={hasAttendanceAccess} onDone={load} />}
           </div>
         ))}
       </div>
