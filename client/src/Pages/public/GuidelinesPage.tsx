@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../components/Icon';
 import { usePublicContent, type GuidelinesSection } from '../../lib/publicContent';
-import TermsPrivacyDocuments from '../../components/TermsPrivacyDocuments';
+import type { TermsPrivacyDocument } from '../../lib/termsPrivacyDefaults';
 
 // Shipped copy, overridable from City Office > Program Settings > Public Pages.
 const sections = [
@@ -55,22 +55,160 @@ const sections = [
   },
 ];
 
+// Terms and privacy content is stored as plain text with a fixed layout:
+//  - line 1 is the document title ("TERMS AND CONDITIONS")
+//  - line 2 is the document section title ("1. Registration & Account Security")
+//  - remaining lines are numbered clauses ("1.1 Certification of Truthfulness: ...")
+// We re-parse the stored text on every render so City's edits keep rendering
+// correctly instead of relying on structured rows.
+interface ParsedClause {
+  number: string;
+  label: string;
+  body: string;
+}
+
+interface ParsedDocument {
+  title: string;
+  sectionTitle: string;
+  clauses: ParsedClause[];
+}
+
+function parseDocumentText(content: string): ParsedDocument | null {
+  const lines = content.split(/\r?\n/);
+  const nonEmpty: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      nonEmpty.push(trimmed);
+    }
+  }
+
+  if (nonEmpty.length < 2) return null;
+
+  const title = nonEmpty[0];
+  const sectionTitle = nonEmpty[1];
+
+  const clauses: ParsedClause[] = nonEmpty.slice(2).map((line) => {
+    const match = line.match(/^(\d+(?:\.\d+)*)\s+(.*)$/);
+    if (!match) {
+      return { number: '', label: '', body: line };
+    }
+    const number = match[1];
+    const afterNumber = match[2];
+    const colonIndex = afterNumber.indexOf(':');
+    if (colonIndex === -1) {
+      return { number, label: afterNumber, body: '' };
+    }
+    const label = afterNumber.slice(0, colonIndex).trim();
+    const body = afterNumber.slice(colonIndex + 1).trimStart();
+    return { number, label, body };
+  });
+
+  return { title, sectionTitle, clauses };
+}
+
+function TermsClause({ clause }: { clause: ParsedClause }) {
+  return (
+    <p
+      className="text-sm text-[#6B7280] leading-relaxed"
+      style={{
+        margin: 0,
+        paddingLeft: '1.75rem',
+        textIndent: '-1.25rem',
+        lineHeight: '1.6',
+      }}
+    >
+      {clause.number && clause.label ? (
+        <>
+          <span className="font-semibold">{clause.number} {clause.label}:</span>{' '}
+          {clause.body}
+        </>
+      ) : clause.label ? (
+        <>
+          <span className="font-semibold">{clause.label}:</span>{' '}
+          {clause.body}
+        </>
+      ) : (
+        clause.body || clause.number
+      )}
+    </p>
+  );
+}
+
+function TermsAndPrivacySection({
+  document,
+  anchorId,
+}: {
+  document: TermsPrivacyDocument;
+  anchorId: string;
+}) {
+  const parsed = useMemo(() => parseDocumentText(document.content), [document.content]);
+
+  return (
+    <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden scroll-mt-24">
+      <h2 id={anchorId} className="font-700 text-[#1F2937] text-lg px-6 py-4">
+        {document.title}
+      </h2>
+      {parsed ? (
+        <div className="px-6 pb-6 border-t border-[#E5E7EB] pt-5 space-y-5">
+          <h3 className="font-600 text-sm text-[#0B1F3A] mb-2">{parsed.sectionTitle}</h3>
+          {parsed.clauses.map((clause, index) => (
+            <TermsClause
+              key={clause.label || clause.number || `clause-${index}`}
+              clause={clause}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function GuidelinesPage() {
-  const { pages, termsPrivacy } = usePublicContent();
+  const { pages, termsPrivacy, loading } = usePublicContent();
   const content = pages.guidelines || {};
   const visibleSections: GuidelinesSection[] = content.sections?.length ? content.sections : sections;
-  const [activeSection, setActiveSection] = useState(sections[0].id);
+
+  const tocEntries: { id: string; title: string }[] = [
+    ...visibleSections.map(section => ({ id: section.id, title: section.title })),
+    { id: 'terms', title: termsPrivacy.terms.title },
+    { id: 'privacy', title: termsPrivacy.privacy.title },
+  ];
+
+  const [activeSection, setActiveSection] = useState<string>(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      return window.location.hash.replace('#', '');
+    }
+    return sections[0].id;
+  });
+  const initialHashRef = useRef('');
+  useEffect(() => {
+    initialHashRef.current = typeof window !== 'undefined' ? window.location.hash : '';
+  }, []);
   const [expanded, setExpanded] = useState<string[]>([]);
 
   // City Office can rename or reorder sections, so fall back to the first one
   // when the section that was open on load no longer exists.
-  const active = visibleSections.some(section => section.id === activeSection)
-    ? activeSection
-    : visibleSections[0]?.id || '';
+  const active =
+    tocEntries.some(entry => entry.id === activeSection)
+      ? activeSection
+      : visibleSections[0]?.id || '';
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
+
+  // Scroll to the section referenced by the URL hash once the public content
+  // has finished rendering, so the page does not keep re-flowing under the anchor.
+  useEffect(() => {
+    const id = initialHashRef.current.replace(/^#/, '');
+    if (!id) return;
+    if (loading) return;
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [loading]);
 
   return (
     <div className="py-12">
@@ -87,19 +225,27 @@ export default function GuidelinesPage() {
             <div className="sticky top-20 bg-white rounded-2xl border border-[#E5E7EB] p-4">
               <div className="text-xs font-700 text-[#6B7280] uppercase tracking-wide mb-3" style={{ fontWeight: 700 }}>Contents</div>
               <ul className="space-y-1">
-                {visibleSections.map(s => (
-                  <li key={s.id}>
-                    <button
-                      onClick={() => setActiveSection(s.id)}
+                {tocEntries.map(entry => (
+                  <li key={entry.id}>
+                    <a
+                      href={`#${entry.id}`}
+                      onClick={(event) => {
+                        setActiveSection(entry.id);
+                        event.preventDefault();
+                        const el = document.getElementById(entry.id);
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                      }}
                       className={`text-left w-full text-sm px-3 py-2 rounded-lg transition-colors ${
-                        active === s.id
+                        active === entry.id
                           ? 'bg-[#0B1F3A] text-white font-600'
                           : 'text-[#6B7280] hover:text-[#1F2937] hover:bg-[#F6F7F9]'
                       }`}
-                      style={{ fontWeight: active === s.id ? 600 : 400 }}
+                      style={{ fontWeight: active === entry.id ? 600 : 400 }}
                     >
-                      {s.title}
-                    </button>
+                      {entry.title}
+                    </a>
                   </li>
                 ))}
               </ul>
@@ -109,7 +255,7 @@ export default function GuidelinesPage() {
           {/* Content */}
           <div className="flex-1 space-y-4">
             {visibleSections.map(section => (
-              <div key={section.id} id={section.id} className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
+              <div key={section.id} id={section.id} className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden scroll-mt-24">
                 <button
                   onClick={() => { setActiveSection(section.id); toggleExpand(section.id); }}
                   className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-[#F6F7F9] transition-colors"
@@ -133,10 +279,16 @@ export default function GuidelinesPage() {
                 )}
               </div>
             ))}
+
+            <TermsAndPrivacySection
+              document={termsPrivacy.terms}
+              anchorId="terms"
+            />
+            <TermsAndPrivacySection
+              document={termsPrivacy.privacy}
+              anchorId="privacy"
+            />
           </div>
-        </div>
-        <div className="max-w-[1100px] mx-auto px-6">
-          <TermsPrivacyDocuments documents={termsPrivacy} />
         </div>
       </div>
     </div>
