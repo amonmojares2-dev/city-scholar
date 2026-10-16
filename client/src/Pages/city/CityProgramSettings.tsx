@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import TermsPrivacyDocuments from '../../components/TermsPrivacyDocuments';
 import { api, ApiError } from '../../lib/api';
+import type { TermsPrivacyDocument, TermsPrivacyDocuments as TermsPrivacyDocumentsData, TermsPrivacyVersion } from '../../lib/termsPrivacyDefaults';
 import type {
   EligibilityContent,
   GuidelinesContent,
@@ -88,6 +90,10 @@ interface ProgramResponse {
 interface PagesResponse {
   pages: PagesState;
   defaults: PagesState;
+}
+
+interface TermsPrivacyResponse {
+  documents: TermsPrivacyDocumentsData;
 }
 
 const INCOME_LABELS: Record<string, string> = {
@@ -1075,6 +1081,7 @@ const TABS = [
   { id: 'eligibility-page', label: 'Eligibility page', icon: 'eye', group: 'pages' },
   { id: 'apply-page', label: 'How to Apply page', icon: 'book', group: 'pages' },
   { id: 'guidelines-page', label: 'Guidelines page', icon: 'clipboard', group: 'pages' },
+  { id: 'terms-privacy', label: 'Terms & Privacy', icon: 'shield', group: 'pages' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -1245,6 +1252,214 @@ function PagesPanel({ tab, draft, onEdit, ...panel }: { tab: TabId; draft: Pages
   );
 }
 
+function TermsPrivacyPanel({
+  documents,
+  draft,
+  onEdit,
+  onUpdate,
+}: {
+  documents: TermsPrivacyDocumentsData;
+  draft: TermsPrivacyDocumentsData;
+  onEdit: (next: TermsPrivacyDocumentsData) => void;
+  onUpdate: (key: 'terms' | 'privacy', next: TermsPrivacyDocument) => void;
+}) {
+  const [saving, setSaving] = useState<'terms' | 'privacy' | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [preview, setPreview] = useState(false);
+  const [historyDocument, setHistoryDocument] = useState<'terms' | 'privacy' | null>(null);
+  const [viewingVersion, setViewingVersion] = useState<TermsPrivacyDocument | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    key: 'terms' | 'privacy';
+    kind: 'save' | 'default' | 'version';
+    version?: number;
+  } | null>(null);
+
+  const editDocument = (key: 'terms' | 'privacy', content: string) => {
+    onEdit({ ...draft, [key]: { ...draft[key], content } });
+    setError('');
+    setNotice('');
+  };
+
+  const save = async () => {
+    if (!confirmAction) return;
+    const { key, kind, version } = confirmAction;
+    setSaving(key);
+    setError('');
+    setNotice('');
+    try {
+      let result: { document: TermsPrivacyDocument; message?: string };
+      if (kind === 'save') {
+        result = await api(`/city/settings/terms-privacy/${key}`, {
+          method: 'PUT',
+          body: JSON.stringify({ content: draft[key].content }),
+        });
+      } else if (kind === 'default') {
+        result = await api(`/city/settings/terms-privacy/${key}/restore-default`, { method: 'POST' });
+      } else {
+        result = await api(`/city/settings/terms-privacy/${key}/history/${version}/restore`, { method: 'POST' });
+      }
+      onUpdate(key, result.document);
+      setNotice(result.message || 'Document saved.');
+    } catch (saveError) {
+      setError(describeError(saveError, 'Unable to save the document.'));
+    } finally {
+      setSaving(null);
+      setConfirmAction(null);
+    }
+  };
+
+  const previewDocuments = (key: 'terms' | 'privacy', document: TermsPrivacyDocument) => ({
+    ...draft,
+    [key]: document,
+  });
+
+  return (
+    <div className="space-y-5">
+      {(['terms', 'privacy'] as const).map(key => {
+        const document = draft[key];
+        const saved = documents[key];
+        const dirty = saved.content !== document.content;
+        const isSaving = saving === key;
+        return (
+          <Section
+            key={key}
+            title={document.title}
+            icon="shield"
+            description="Plain text is stored as text and rendered safely without HTML or Markdown."
+          >
+            <TextAreaRow
+              label="Document content"
+              hint={`${document.content.length.toLocaleString()} / 50,000 characters`}
+              value={document.content}
+              onChange={content => editDocument(key, content)}
+              rows={18}
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmAction({ key, kind: 'save' })}
+                disabled={!dirty || isSaving}
+                className="rounded-xl bg-[#163A63] px-4 py-2 text-sm font-600 text-white disabled:opacity-50"
+              >
+                {isSaving && confirmAction?.kind === 'save' ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreview(true)}
+                className="rounded-xl border border-[#E5E7EB] bg-white px-4 py-2 text-sm text-[#374151] hover:bg-[#F6F7F9]"
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmAction({ key, kind: 'default' })}
+                disabled={isSaving}
+                className="rounded-xl border border-[#E5E7EB] bg-white px-4 py-2 text-sm text-[#6B7280] hover:bg-[#F6F7F9] disabled:opacity-50"
+              >
+                Restore default
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDocument(historyDocument === key ? null : key)}
+                className="rounded-xl border border-[#E5E7EB] bg-white px-4 py-2 text-sm text-[#6B7280] hover:bg-[#F6F7F9]"
+              >
+                {historyDocument === key ? 'Hide history' : `Version history (${saved.history.length})`}
+              </button>
+            </div>
+            <div className="mt-4 text-xs text-[#6B7280]">
+              <p>Last updated: {stamp(saved.updatedAt) || 'Not yet saved'}</p>
+              <p>Updated by: {saved.updatedByName || (saved.updatedBy ? 'City administrator' : '—')}</p>
+            </div>
+            {historyDocument === key && (
+              <div className="mt-5 border-t border-[#E5E7EB] pt-4">
+                <h3 className="mb-3 text-sm font-600 text-[#1F2937]" style={{ fontWeight: 600 }}>Previous versions</h3>
+                {saved.history.length === 0 ? (
+                  <p className="text-sm text-[#6B7280]">No previous saved versions.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {saved.history.map((entry: TermsPrivacyVersion) => (
+                      <li key={`${key}-${entry.version}-${entry.updatedAt || 'default'}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[#F9FAFB] p-3 text-sm">
+                        <span className="text-[#4B5563]">
+                          Version {entry.version}{entry.updatedAt ? ` · ${stamp(entry.updatedAt)}` : ' · Shipped default'}
+                          {entry.updatedByName ? ` · ${entry.updatedByName}` : ''}
+                        </span>
+                        <span className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setViewingVersion({ ...saved, ...entry, history: [] })}
+                            className="text-[#163A63] hover:underline"
+                          >
+                            View
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmAction({ key, kind: 'version', version: entry.version })}
+                            disabled={isSaving}
+                            className="text-[#163A63] hover:underline disabled:opacity-50"
+                          >
+                            Restore
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </Section>
+        );
+      })}
+      {(error || notice) && (
+        <p className={`text-sm ${error ? 'text-red-700' : 'text-green-700'}`} role={error ? 'alert' : 'status'}>
+          {error || notice}
+        </p>
+      )}
+      {preview && (
+        <div className="fixed inset-0 z-[100] overflow-y-auto bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Terms and privacy preview">
+          <div className="mx-auto my-8 max-w-4xl rounded-2xl bg-[#F9FAFB] p-5 shadow-2xl">
+            <div className="mb-4 flex justify-end">
+              <button type="button" onClick={() => setPreview(false)} className="rounded-lg px-3 py-2 text-sm text-[#163A63] hover:bg-white">Close preview</button>
+            </div>
+            <TermsPrivacyDocuments documents={draft} />
+          </div>
+        </div>
+      )}
+      {viewingVersion && (
+        <div className="fixed inset-0 z-[100] overflow-y-auto bg-black/50 p-4" role="dialog" aria-modal="true" aria-label={`${viewingVersion.title} version preview`}>
+          <div className="mx-auto my-8 max-w-4xl rounded-2xl bg-[#F9FAFB] p-5 shadow-2xl">
+            <div className="mb-4 flex justify-end">
+              <button type="button" onClick={() => setViewingVersion(null)} className="rounded-lg px-3 py-2 text-sm text-[#163A63] hover:bg-white">Close version</button>
+            </div>
+            <TermsPrivacyDocuments documents={previewDocuments(viewingVersion.key, viewingVersion)} />
+          </div>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmAction !== null}
+        title={
+          confirmAction?.kind === 'save'
+            ? `Save ${draft[confirmAction.key].title}?`
+            : confirmAction?.kind === 'default'
+              ? `Restore ${draft[confirmAction.key].title} default?`
+              : `Restore version ${confirmAction?.version}?`
+        }
+        message={
+          confirmAction?.kind === 'save'
+            ? 'These terms are what users agree to when they register. Save changes?'
+            : confirmAction?.kind === 'default'
+              ? 'The current document will be replaced with the shipped default. This change will be recorded in version history.'
+              : 'The selected version will become the current document and the change will be recorded in version history.'
+        }
+        confirmLabel={confirmAction?.kind === 'save' ? 'Save changes' : 'Confirm restore'}
+        loading={saving !== null}
+        onCancel={() => { if (!saving) setConfirmAction(null); }}
+        onConfirm={save}
+      />
+    </div>
+  );
+}
+
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const stamp = (value?: string | null) => {
@@ -1276,6 +1491,8 @@ export default function CityProgramSettings() {
   const [options, setOptions] = useState<SettingsOptions>({ incomeThresholds: [], frequencies: [], paymentMethods: [] });
   const [pages, setPages] = useState<PagesState | null>(null);
   const [pagesDraft, setPagesDraft] = useState<PagesState | null>(null);
+  const [termsPrivacy, setTermsPrivacy] = useState<TermsPrivacyDocumentsData | null>(null);
+  const [termsPrivacyDraft, setTermsPrivacyDraft] = useState<TermsPrivacyDocumentsData | null>(null);
 
   const [programStatus, setProgramStatus] = useState({ saving: false, error: '', notice: '' });
   const [pagesStatus, setPagesStatus] = useState({ saving: false, error: '', notice: '' });
@@ -1287,14 +1504,17 @@ export default function CityProgramSettings() {
     Promise.all([
       api<ProgramResponse>('/city/settings/program'),
       api<PagesResponse>('/city/settings/public-pages'),
+      api<TermsPrivacyResponse>('/city/settings/terms-privacy'),
     ])
-      .then(([programResult, pagesResult]) => {
+      .then(([programResult, pagesResult, termsPrivacyResult]) => {
         if (cancelled) return;
         setProgram(programResult.settings);
         setProgramDraft(clone(programResult.settings));
         setOptions(programResult.options || { incomeThresholds: [], frequencies: [], paymentMethods: [] });
         setPages(pagesResult.pages);
         setPagesDraft(clone(pagesResult.pages));
+        setTermsPrivacy(termsPrivacyResult.documents);
+        setTermsPrivacyDraft(clone(termsPrivacyResult.documents));
       })
       .catch(error => { if (!cancelled) setLoadError(describeError(error, 'Unable to load the city settings.')); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -1303,6 +1523,7 @@ export default function CityProgramSettings() {
 
   const programDirty = !!(program && programDraft && JSON.stringify(program) !== JSON.stringify(programDraft));
   const pagesDirty = !!(pages && pagesDraft && JSON.stringify(pages) !== JSON.stringify(pagesDraft));
+  const termsPrivacyDirty = !!(termsPrivacy && termsPrivacyDraft && JSON.stringify(termsPrivacy) !== JSON.stringify(termsPrivacyDraft));
 
   const editProgram = (next: ProgramSettings) => {
     setProgramDraft(next);
@@ -1312,6 +1533,15 @@ export default function CityProgramSettings() {
   const editPages = (next: PagesState) => {
     setPagesDraft(next);
     setPagesStatus(status => (status.error || status.notice ? { ...status, error: '', notice: '' } : status));
+  };
+
+  const editTermsPrivacy = (next: TermsPrivacyDocumentsData) => {
+    setTermsPrivacyDraft(next);
+  };
+
+  const updateTermsPrivacyDocument = (key: 'terms' | 'privacy', document: TermsPrivacyDocument) => {
+    setTermsPrivacy(previous => previous ? { ...previous, [key]: document } : previous);
+    setTermsPrivacyDraft(previous => previous ? { ...previous, [key]: clone(document) } : previous);
   };
 
   const saveProgram = async () => {
@@ -1376,7 +1606,7 @@ export default function CityProgramSettings() {
     return <div className="py-16 text-center text-sm text-[#6B7280]">Loading city settings...</div>;
   }
 
-  if (loadError || !program || !programDraft || !pages || !pagesDraft) {
+  if (loadError || !program || !programDraft || !pages || !pagesDraft || !termsPrivacy || !termsPrivacyDraft) {
     return (
       <div>
         <PageHeader title="Program Settings" subtitle="City-wide scholarship configuration" breadcrumb={['City Office', 'Program Settings']} />
@@ -1391,7 +1621,7 @@ export default function CityProgramSettings() {
   const lastSaved = activeGroup === 'program' ? stamp(program.updatedAt) : '';
 
   const tabRow = (group: 'program' | 'pages') => {
-    const unsaved = group === 'program' ? programDirty : pagesDirty;
+    const unsaved = group === 'program' ? programDirty : pagesDirty || termsPrivacyDirty;
     return (
       <div className="flex flex-wrap gap-2">
         {TABS.filter(item => item.group === group).map(item => {
@@ -1423,7 +1653,7 @@ export default function CityProgramSettings() {
         subtitle="City-wide program rules and the copy shown on the public pages"
         breadcrumb={['City Office', 'Program Settings']}
         action={
-          <button
+          tab !== 'terms-privacy' && <button
             type="button"
             onClick={() => setConfirming(activeGroup)}
             disabled={restoring}
@@ -1461,6 +1691,13 @@ export default function CityProgramSettings() {
           onSave={saveProgram}
           onRestore={() => setProgramDraft(clone(program))}
         />
+      ) : tab === 'terms-privacy' ? (
+        <TermsPrivacyPanel
+          documents={termsPrivacy}
+          draft={termsPrivacyDraft}
+          onEdit={editTermsPrivacy}
+          onUpdate={updateTermsPrivacyDocument}
+        />
       ) : (
         <PagesPanel
           tab={tab}
@@ -1496,8 +1733,6 @@ export default function CityProgramSettings() {
     </div>
   );
 }
-
-
 
 
 

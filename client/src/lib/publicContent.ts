@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { API_URL } from './api';
+import { DEFAULT_TERMS_PRIVACY, type TermsPrivacyDocuments } from './termsPrivacyDefaults';
 
 // Public content comes from the City Office: the editable page copy lives in
 // MongoDB (utils/publicPageContent.js) and the document slots / application
@@ -206,11 +207,13 @@ export interface PublicPages {
 interface PublicContentResponse {
   pages?: PublicPages;
   program?: ProgramView;
+  termsPrivacy?: TermsPrivacyDocuments;
 }
 
 export interface PublicContentState {
   pages: PublicPages;
   program: ProgramView | null;
+  termsPrivacy: TermsPrivacyDocuments;
   loading: boolean;
   error: string;
   reload: () => void;
@@ -240,6 +243,7 @@ export function loadPublicContent(force = false): Promise<PublicContentResponse>
 export function usePublicContent(): PublicContentState {
   const [pages, setPages] = useState<PublicPages>({});
   const [program, setProgram] = useState<ProgramView | null>(null);
+  const [termsPrivacy, setTermsPrivacy] = useState<TermsPrivacyDocuments>(DEFAULT_TERMS_PRIVACY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -252,6 +256,7 @@ export function usePublicContent(): PublicContentState {
         if (cancelled) return;
         setPages(result.pages || {});
         setProgram(result.program || null);
+        setTermsPrivacy(result.termsPrivacy || DEFAULT_TERMS_PRIVACY);
         setError('');
       })
       .catch(err => {
@@ -262,7 +267,7 @@ export function usePublicContent(): PublicContentState {
     return () => { cancelled = true; };
   }, [attempt]);
 
-  return { pages, program, loading, error, reload: () => setAttempt(count => count + 1) };
+  return { pages, program, termsPrivacy, loading, error, reload: () => setAttempt(count => count + 1) };
 }
 
 // Document slots the student must fill, straight from the City Office settings.

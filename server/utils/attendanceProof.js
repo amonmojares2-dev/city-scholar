@@ -2,7 +2,7 @@
 // Attendance proof access shares its eligibility predicate with the
 // Events page. City proof review remains role-gated separately.
 // ==========================================
-const { isEventAttendanceAccess } = require("../../shared/eventAttendanceAccess");
+const { isEventAttendanceAccess } = require("../shared/eventAttendanceAccess");
 
 // Server: takes the request (req.user.account is the populated User document).
 function isApprovedExistingScholar(req) {

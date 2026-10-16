@@ -6,10 +6,20 @@ const {
     restoreProgramSettings,
     readPublicPages,
     savePublicPages,
-    restorePublicPages
+    restorePublicPages,
+    readTermsPrivacySettings,
+    saveTermsPrivacyDocument,
+    restoreTermsPrivacyDocumentDefault,
+    restoreTermsPrivacyDocumentVersion
 } = require("../controllers/citySettingsController");
 
 const router = express.Router();
+
+// Legal copy is editable by City Office administrators only.
+router.get("/terms-privacy", protect, requirePortal("city"), readTermsPrivacySettings);
+router.put("/terms-privacy/:key", protect, requirePortal("city"), saveTermsPrivacyDocument);
+router.post("/terms-privacy/:key/restore-default", protect, requirePortal("city"), restoreTermsPrivacyDocumentDefault);
+router.post("/terms-privacy/:key/history/:version/restore", protect, requirePortal("city"), restoreTermsPrivacyDocumentVersion);
 
 // City-wide program settings. The City Office owns these; the Super Admin
 // keeps them too because the two roles historically shared Program Config.

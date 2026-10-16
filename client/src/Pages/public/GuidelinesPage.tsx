@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Icon from '../../components/Icon';
 import { usePublicContent, type GuidelinesSection } from '../../lib/publicContent';
+import TermsPrivacyDocuments from '../../components/TermsPrivacyDocuments';
 
 // Shipped copy, overridable from City Office > Program Settings > Public Pages.
 const sections = [
@@ -55,7 +56,7 @@ const sections = [
 ];
 
 export default function GuidelinesPage() {
-  const { pages } = usePublicContent();
+  const { pages, termsPrivacy } = usePublicContent();
   const content = pages.guidelines || {};
   const visibleSections: GuidelinesSection[] = content.sections?.length ? content.sections : sections;
   const [activeSection, setActiveSection] = useState(sections[0].id);
@@ -133,6 +134,9 @@ export default function GuidelinesPage() {
               </div>
             ))}
           </div>
+        </div>
+        <div className="max-w-[1100px] mx-auto px-6">
+          <TermsPrivacyDocuments documents={termsPrivacy} />
         </div>
       </div>
     </div>

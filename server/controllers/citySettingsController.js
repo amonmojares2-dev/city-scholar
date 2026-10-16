@@ -14,6 +14,12 @@ const {
     PAGE_DEFAULTS
 } = require("../utils/publicPageContent");
 const { DEFAULT_PROGRAM_SETTINGS } = require("../config/cityProgramDefaults");
+const {
+    getTermsPrivacy,
+    saveTermsPrivacy,
+    restoreTermsPrivacyDefault,
+    restoreTermsPrivacyVersion
+} = require("../utils/termsPrivacy");
 
 // Sent alongside the settings so the City Office form renders the same choices
 // the server accepts instead of hard-coding its own list.
@@ -99,6 +105,53 @@ const restorePublicPages = async(req, res, next) => {
     }
 };
 
+/** GET /api/city/settings/terms-privacy */
+const readTermsPrivacySettings = async(req, res, next) => {
+    try {
+        res.json({ success: true, documents: await getTermsPrivacy({ fresh: true }) });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/** PUT /api/city/settings/terms-privacy/:key */
+const saveTermsPrivacyDocument = async(req, res, next) => {
+    try {
+        const { document, error } = await saveTermsPrivacy(req.params.key, req.body?.content, req.user, req);
+        if (error) return res.status(400).json({ success: false, message: error });
+        return res.json({ success: true, document, message: "Document saved." });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/** POST /api/city/settings/terms-privacy/:key/restore-default */
+const restoreTermsPrivacyDocumentDefault = async(req, res, next) => {
+    try {
+        const { document, error } = await restoreTermsPrivacyDefault(req.params.key, req.user, req);
+        if (error) return res.status(400).json({ success: false, message: error });
+        return res.json({ success: true, document, message: "Document restored to its shipped default." });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/** POST /api/city/settings/terms-privacy/:key/history/:version/restore */
+const restoreTermsPrivacyDocumentVersion = async(req, res, next) => {
+    try {
+        const { document, error } = await restoreTermsPrivacyVersion(
+            req.params.key,
+            req.params.version,
+            req.user,
+            req
+        );
+        if (error) return res.status(400).json({ success: false, message: error });
+        return res.json({ success: true, document, message: "Document version restored." });
+    } catch (error) {
+        next(error);
+    }
+};
+
 /**
  * GET /api/public/content (no sign-in)
  * Everything the public pages render: the editable copy plus the student-facing
@@ -107,8 +160,12 @@ const restorePublicPages = async(req, res, next) => {
  */
 const readPublicContent = async(req, res, next) => {
     try {
-        const [pages, settings] = await Promise.all([getPublicPages(), getProgramSettings()]);
-        res.json({ success: true, pages, defaults: PAGE_DEFAULTS, program: publicProgramView(settings) });
+        const [pages, settings, termsPrivacy] = await Promise.all([
+            getPublicPages(),
+            getProgramSettings(),
+            getTermsPrivacy()
+        ]);
+        res.json({ success: true, pages, defaults: PAGE_DEFAULTS, program: publicProgramView(settings), termsPrivacy });
     } catch (error) {
         next(error);
     }
@@ -131,6 +188,10 @@ module.exports = {
     readPublicPages,
     savePublicPages,
     restorePublicPages,
+    readTermsPrivacySettings,
+    saveTermsPrivacyDocument,
+    restoreTermsPrivacyDocumentDefault,
+    restoreTermsPrivacyDocumentVersion,
     readPublicContent,
     readStudentView
 };

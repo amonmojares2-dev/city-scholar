@@ -1,12 +1,13 @@
 import { createContext, useContext } from 'react';
 import type { ScholarType, ScholarVerificationStatus, SessionUser } from './auth';
 import { studentSidebarItems, type SidebarItem } from '../data/sidebarItems';
-import { isEventAttendanceAccess as hasEventAttendanceAccess } from '../../../shared/eventAttendanceAccess';
+import { isEventAttendanceAccess as hasEventAttendanceAccess } from '../../../server/shared/eventAttendanceAccess';
 
 // Derived access level shared by the sidebar and the route guards:
 //   applicant       - new applicant (Application open, Renewal locked)
 //   pending_scholar - existing scholar waiting on a City Office decision
-//   scholar         - confirmed scholar (Renewal open)// Access level derived from the sidebar + this guard; kept in one place.
+//   scholar         - confirmed scholar (Renewal open)
+// Access level derived from the sidebar + this guard; kept in one place.
 export type AccessLevel = 'applicant' | 'pending_scholar' | 'scholar';
 
 

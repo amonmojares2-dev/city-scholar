@@ -1,4 +1,4 @@
-const { isEventAttendanceAccess } = require("../../shared/eventAttendanceAccess");
+const { isEventAttendanceAccess } = require("../shared/eventAttendanceAccess");
 
 describe("shared Events attendance access rule", () => {
     it.each([
