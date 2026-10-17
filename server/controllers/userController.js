@@ -16,6 +16,13 @@ const {
 } = require("../utils/validation");
 const { sendOtpEmail, EmailDeliveryError } = require("../utils/email");
 const { logAudit } = require("../utils/audit");
+const {
+    SESSION_COOKIE_NAME,
+    setSessionCookie,
+    clearSessionCookie,
+    recordActivity,
+    clearActivity
+} = require("../middleware/authMiddleware");
 
 const OTP_TTL_MS = 30 * 1000; // 30 seconds - for registration / password reset
 const LOGIN_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes - login OTP does NOT expire after 30s
@@ -871,10 +878,14 @@ const verifyOtp = async(req, res) => {
 
         const token = issueToken(user);
 
+        // Mark activity now so a brand-new session cannot be idle-expired
+        // immediately after sign-in, then issue the httpOnly session cookie.
+        recordActivity(user._id.toString());
+        setSessionCookie(res, token);
+
         return res.json({
             success: true,
             message: "Email verified successfully.",
-            token,
             user: publicUser(user)
         });
     } catch (error) {
@@ -888,6 +899,52 @@ const verifyOtp = async(req, res) => {
             message: "Unable to verify the code."
         });
     }
+};
+
+// ==========================================
+// POST /api/auth/logout
+// Clears the httpOnly session cookie and drops the server-side activity
+// record so the session cannot be resumed.
+// ==========================================
+const logoutUser = async(req, res) => {
+    try {
+        const token = req.cookies[SESSION_COOKIE_NAME];
+        if (token) {
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                clearActivity(String(decoded.id));
+            } catch {
+                // Token was already invalid; nothing to track.
+            }
+        }
+
+        clearSessionCookie(res);
+
+        return res.json({
+            success: true,
+            message: "Signed out."
+        });
+    } catch (error) {
+        console.error("Logout error:", error.message);
+        clearSessionCookie(res);
+        return res.json({ success: true, message: "Signed out." });
+    }
+};
+
+// ==========================================
+// POST /api/auth/activity
+//
+// Client pings this at most once per minute while the user is genuinely
+// active (mouse, keyboard, click, scroll, touch). It refreshes the session
+// cookie's sliding expiry. Background polling (notifications, messages,
+// /auth/me) never calls this and never extends the session.
+// ==========================================
+const activityPing = async(req, res) => {
+    // requireSession already verified the cookie and the idle limit.
+    recordActivity(req.user.id);
+    setSessionCookie(res, req.cookies[SESSION_COOKIE_NAME]);
+
+    return res.json({ success: true });
 };
 
 // ==========================================

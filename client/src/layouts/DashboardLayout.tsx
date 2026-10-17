@@ -2,10 +2,14 @@ import { Outlet, Link, useLocation, useNavigate } from 'react-router';
 import { useEffect, useState } from 'react';
 import Icon from '../components/Icon';
 import type { SidebarItem } from '../data/sidebarItems';
-import { clearSession, getSession } from '../lib/auth';
+import { clearSession, getSessionUser } from '../lib/auth';
 import { api } from '../lib/api';
 import ConfirmDialog from '../components/ConfirmDialog';
 import SessionAvatar from '../components/SessionAvatar';
+import { useIdleLogout } from '../hooks/useIdleLogout';
+
+const IDLE_LIMIT_MINUTES = Number(import.meta.env.VITE_IDLE_TIMEOUT_MINUTES) || 15;
+const IDLE_LIMIT_MS = IDLE_LIMIT_MINUTES * 60 * 1000;
 
 interface DashboardLayoutProps {
   role: 'student' | 'barangay' | 'city' | 'superadmin';
@@ -62,9 +66,18 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
   const unreadCount = notifications.filter(notification => !notification.readAt).length;
 
   const colors = roleColors[role];
-  const sessionUser = getSession()?.user;
+  const sessionUser = getSessionUser();
   const displayName = sessionUser?.name || userName;
-  const signOut = () => { clearSession(); navigate('/login'); };
+
+  const { warningOpen, dismissWarning, setUploadInFlight } = useIdleLogout({
+    idleLimitMs: IDLE_LIMIT_MS,
+  });
+
+  const signOut = async () => {
+    try { await api('/auth/logout', { method: 'POST' }); } catch { /* ignore network errors */ }
+    clearSession();
+    navigate('/login');
+  };
   const requestSignOut = () => { setProfileOpen(false); setSignOutOpen(true); };
 
   const groupedItems: { group?: string; items: SidebarItem[] }[] = [];
@@ -279,6 +292,35 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
           </div>
         </main>
       </div>
+      {warningOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-[#E5E7EB]">
+            <div className="text-[#163A63] font-700 text-lg mb-2" style={{ fontWeight: 700 }}>
+              Session expiring soon
+            </div>
+            <p className="text-sm text-[#6B7280] mb-6">
+              You'll be signed out automatically due to inactivity. Stay active to
+              keep your session.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={dismissWarning}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[#163A63] text-white text-sm font-600 hover:bg-[#0B1F3A]"
+                style={{ fontWeight: 600 }}
+              >
+                Stay signed in
+              </button>
+              <button
+                onClick={signOut}
+                className="px-4 py-2.5 rounded-xl border border-[#E5E7EB] text-sm text-[#6B7280] hover:bg-[#F6F7F9]"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ConfirmDialog
         open={signOutOpen}
         title="Sign out?"

@@ -20,78 +20,161 @@ const ROLE_GROUPS = {
 };
 
 // ==========================================
-// PROTECT
+// SESSION COOKIE
 //
-// Verifies the bearer token, then reloads the account so the role is
-// read from MongoDB on every request. A role changed or an account
-// disabled in the database takes effect immediately, even if the user
-// is still holding an old token.
+// The JWT now lives in an httpOnly cookie (name below) instead of
+// localStorage, so the cookie is sent automatically with every same-origin
+// request and is never readable by client-side JavaScript.
 // ==========================================
-const protect = async(req, res, next) => {
-    try {
-        const header = req.headers.authorization || "";
-        const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
+const SESSION_COOKIE_NAME = "city-scholar-session";
 
+// Idle limit: the session expires after this many minutes with no real
+// user activity. 0.5 gives a 30-second demo. Override with
+// IDLE_TIMEOUT_MINUTES (server) / VITE_IDLE_TIMEOUT_MINUTES (client).
+const IDLE_TIMEOUT_MINUTES = Number(process.env.IDLE_TIMEOUT_MINUTES) || 15;
+const IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * 60 * 1000;
+
+// Server-side (authoritative) idle tracker: userId -> last activity epoch.
+// Only real user activity (POST /auth/activity) refreshes it; polling
+// endpoints such as notifications, messages and /auth/me never do.
+const userLastActivity = new Map();
+
+// Set the session cookie. Secure only over HTTPS (production).
+function setSessionCookie(res, token) {
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie(SESSION_COOKIE_NAME, token, {
+        httpOnly: true,      // never readable by client-side JS
+        secure: isProduction, // HTTPS only in production
+        sameSite: "lax",     // same-site navigations only
+        path: "/",
+        maxAge: IDLE_TIMEOUT_MS // sliding expiry refreshed on real activity
+    });
+}
+
+function clearSessionCookie(res) {
+    res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+}
+
+function recordActivity(userId) {
+    userLastActivity.set(userId, Date.now());
+}
+
+function clearActivity(userId) {
+    userLastActivity.delete(userId);
+}
+
+// cookieParser is applied by the application (server.js) before the routes
+// that need req.cookies; it is required here only so this module can be
+// required without the app having loaded it first.
+
+// Verifies the session cookie, enforces the server-side idle limit, and
+// sets req.user from the JWT (no database reload — use `protect` when the
+// full account record is needed).
+const requireSession = (req, res, next) => {
+    try {
+        const token = req.cookies[SESSION_COOKIE_NAME];
         if (!token) {
             return res.status(401).json({
                 success: false,
+                code: "SESSION_REQUIRED",
                 message: "You need to sign in to continue."
             });
         }
 
         let decoded;
-
         try {
-            decoded = jwt.verify(
-                token,
-                process.env.JWT_SECRET
-            );
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
         } catch {
             return res.status(401).json({
                 success: false,
+                code: "SESSION_EXPIRED",
                 message: "Your session has expired. Please sign in again."
             });
         }
 
-        const user = await User.findById(decoded.id)
-            .select("-password")
-            .populate("barangay", "name");
+        const userId = String(decoded.id);
+        const now = Date.now();
+        const last = userLastActivity.get(userId);
 
-        if (!user) {
+        if (last === undefined) {
+            // No activity record (e.g. server restarted): treat this
+            // request as activity instead of signing the user out.
+            userLastActivity.set(userId, now);
+        } else if (now - last > IDLE_TIMEOUT_MS) {
+            userLastActivity.delete(userId);
             return res.status(401).json({
                 success: false,
-                message: "Your session has expired. Please sign in again."
+                code: "SESSION_EXPIRED",
+                message: "Your session has expired due to inactivity. Please sign in again."
             });
         }
 
-        if (user.status === "suspended" ||
-            user.status === "deactivated"
-        ) {
-            return res.status(403).json({
-                success: false,
-                message: "This account has been disabled. Please contact the City Scholarship Office."
-            });
-        }
-
-        req.user = {
-            id: user._id.toString(),
-            role: user.role,
-            name: user.name,
-            email: user.email,
-            barangay: user.barangay || null,
-            account: user
-        };
-
+        req.user = { id: userId, role: decoded.role };
         return next();
     } catch (error) {
-        console.error("Auth middleware error:", error.message);
-
+        console.error("Session middleware error:", error.message);
         return res.status(500).json({
             success: false,
             message: "Unable to verify your session."
         });
     }
 };
+
+// ==========================================
+// PROTECT
+//
+// Verifies the session cookie, enforces the idle limit, then reloads the
+// account so the role is read from MongoDB on every request. A role changed
+// or an account disabled in the database takes effect immediately, even if
+// the user is still holding an old cookie.
+// ==========================================
+const protect = async(req, res, next) => {
+    requireSession(req, res, async() => {
+        try {
+            await loadAndAttachUser(req, res, next);
+        } catch (error) {
+            console.error("Auth middleware error:", error.message);
+            return res.status(500).json({
+                success: false,
+                message: "Unable to verify your session."
+            });
+        }
+    });
+};
+
+async function loadAndAttachUser(req, res, next) {
+    const user = await User.findById(req.user.id)
+        .select("-password")
+        .populate("barangay", "name");
+
+    if (!user) {
+        return res.status(401).json({
+            success: false,
+            code: "SESSION_EXPIRED",
+            message: "Your session has expired. Please sign in again."
+        });
+    }
+
+    if (user.status === "suspended" ||
+        user.status === "deactivated"
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: "This account has been disabled. Please contact the City Scholarship Office."
+        });
+    }
+
+    req.user = {
+        id: user._id.toString(),
+        role: user.role,
+        name: user.name,
+        email: user.email,
+        barangay: user.barangay || null,
+        account: user
+    };
+
+    return next();
+}
 
 // ==========================================
 // REQUIRE ROLE
@@ -134,6 +217,12 @@ const requirePortal = (...portals) => (req, res, next) => {
 };
 
 module.exports = {
+    SESSION_COOKIE_NAME,
+    setSessionCookie,
+    clearSessionCookie,
+    recordActivity,
+    clearActivity,
+    requireSession,
     protect,
     authorize: requireRole,
     requireRole,

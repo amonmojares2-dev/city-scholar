@@ -28,7 +28,6 @@ export interface SessionUser {
 }
 
 export const SESSION_UPDATED_EVENT = 'city-scholar-session-updated';
-const KEY = 'city-scholar-session';
 
 // Friendly names for each portal, used in "this account belongs to the X portal" messages.
 export const portalLabels: Record<PortalRole, string> = {
@@ -51,26 +50,69 @@ export function portalForRole(role: SessionUser['role']): PortalRole {
   return 'city';
 }
 
-export function saveSession(token: string, user: SessionUser) {
-  localStorage.setItem(KEY, JSON.stringify({ token, user }));
+/**
+ * The JWT now lives in an httpOnly session cookie (name below) so client-side
+ * JavaScript can never read it. The client only tracks the user profile
+ * (returned by GET /api/auth/me); the browser sends the cookie automatically
+ * with every same-origin request.
+ */
+export const SESSION_COOKIE_NAME = 'city-scholar-session';
+
+/**
+ * Broadcast channel name used to sync idle/logout state across tabs so that
+ * signing out (or idling out) in one tab invalidates the session everywhere.
+ */
+export const BROADCAST_CHANNEL = 'city-scholar-session';
+
+let sessionUser: SessionUser | null = null;
+let sessionListeners: (() => void)[] = [];
+
+export function fetchSession(): Promise<SessionUser | null> {
+  return fetch('/api/auth/me', { credentials: 'include' })
+    .then(async (res) => {
+      if (res.status === 401 || res.status === 403) {
+        clearSession();
+        return null;
+      }
+      if (!res.ok) return null;
+      const body = await res.json();
+      return body.user ?? null;
+    })
+    .catch(() => null);
+}
+
+/**
+ * Call after a successful login/OTP verify to hydrate the client-side user
+ * profile from the server (the token itself stays in the httpOnly cookie).
+ */
+export function setSessionUser(user: SessionUser | null) {
+  sessionUser = user;
+  sessionListeners.forEach((fn) => fn());
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
-export function getSession(): { token: string; user: SessionUser } | null {
-  try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { return null; }
+export function getSessionUser(): SessionUser | null {
+  return sessionUser;
 }
 
-export function clearSession() { localStorage.removeItem(KEY); }
+export function clearSession() {
+  sessionUser = null;
+  sessionListeners.forEach((fn) => fn());
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+}
 
 export function updateSessionUser(updates: Partial<SessionUser>) {
-  const session = getSession();
-  if (!session) return;
-  saveSession(session.token, { ...session.user, ...updates });
+  if (!sessionUser) return;
+  sessionUser = { ...sessionUser, ...updates };
+  sessionListeners.forEach((fn) => fn());
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
-export function getSessionUser(): SessionUser | null {
-  const session = getSession();
-  return session ? session.user : null;
+export function onSessionChange(listener: () => void) {
+  sessionListeners.push(listener);
+  return () => {
+    sessionListeners = sessionListeners.filter((fn) => fn !== listener);
+  };
 }
 
 export function roleLabel(role: SessionUser['role']): string {

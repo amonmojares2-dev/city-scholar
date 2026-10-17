@@ -1,14 +1,26 @@
-const localApiUrl = import.meta.env.DEV ? 'http://localhost:5000/api' : '';
+// Relative /api base — in production the Vercel rewrite
+// (/api/:path* → Render backend) keeps the session cookie same-origin.
+// In development Vite proxies /api to http://localhost:5000 (vite.config.ts).
+export const API_URL = '/api';
+export const SERVER_URL = '';
 
-// VITE_API_URL is the single production API base and must include /api.
-const configuredApiUrl = import.meta.env.VITE_API_URL;
-export const API_URL = (configuredApiUrl || localApiUrl).replace(/\/$/, '');
-export const SERVER_URL = API_URL.replace(/\/api$/, '');
+import { clearSession } from './auth';
 
-import { getSession, clearSession } from './auth';
+let redirectingOn401 = false;
 
-export function getAuthToken(): string | null {
-  return getSession()?.token || null;
+/**
+ * Navigate to /login once on 401. The flag prevents redirect loops when
+ * multiple requests fail simultaneously (e.g. the notification poller
+ * and the user's action at the same time).
+ */
+function handle401() {
+  clearSession();
+  if (!redirectingOn401) {
+    redirectingOn401 = true;
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.assign('/login');
+    }
+  }
 }
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -51,8 +63,7 @@ export async function uploadWithProgress<T>(
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open('POST', `${API_URL}${path}`);
-    const token = getAuthToken();
-    if (token) request.setRequestHeader('Authorization', `Bearer ${token}`);
+    request.withCredentials = true;
 
     request.upload.addEventListener('progress', event => {
       if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
@@ -96,18 +107,15 @@ export class ApiError extends Error {
 }
 
 export async function fetchPrivateFile(path: string): Promise<Blob> {
-  const session = getSession();
-  const headers = new Headers();
-  if (session?.token) headers.set('Authorization', `Bearer ${session.token}`);
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { headers });
+    response = await fetch(`${API_URL}${path}`, { credentials: 'include' });
   } catch {
     throw new ApiError('Cannot reach the server, please try again.', 0);
   }
   if (response.status === 401) {
     clearSession();
-    if (!window.location.pathname.startsWith('/login')) window.location.assign('/login');
+    handle401();
     throw new ApiError('Your session has expired. Please sign in again.', 401);
   }
   if (!response.ok) {
@@ -118,15 +126,13 @@ export async function fetchPrivateFile(path: string): Promise<Blob> {
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const session = getSession();
   const isFormData = options.body instanceof FormData;
   const headers = new Headers(options.headers);
   if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  if (session?.token) headers.set('Authorization', `Bearer ${session.token}`);
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { ...options, headers });
+    response = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
   } catch {
     throw new Error('Cannot reach the server, please try again.');
   }
@@ -134,9 +140,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
   if (response.status === 401) {
     clearSession();
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.assign('/login');
-    }
+    handle401();
     throw new Error(body.message || 'Your session has expired. Please sign in again.');
   }
 

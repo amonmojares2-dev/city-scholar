@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { profilePhotoUrl } from '../lib/api';
 import { usePrivateResourceUrl } from '../lib/docUrl';
-import { getSession, SESSION_UPDATED_EVENT } from '../lib/auth';
+import { getSessionUser, SESSION_UPDATED_EVENT } from '../lib/auth';
 
 interface SessionAvatarProps {
   name: string;
@@ -20,11 +20,11 @@ export default function SessionAvatar({
   savedUrl,
   updatedAt,
 }: SessionAvatarProps) {
-  const [session, setSession] = useState(getSession());
+  const [session, setSession] = useState(getSessionUser());
   const [imageFailed, setImageFailed] = useState(false);
   useEffect(() => {
     const refresh = () => {
-      setSession(getSession());
+      setSession(getSessionUser());
       setImageFailed(false);
     };
     window.addEventListener(SESSION_UPDATED_EVENT, refresh);

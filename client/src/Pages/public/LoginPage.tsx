@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import Icon from '../../components/Icon';
 import { api } from '../../lib/api';
-import { portalForRole, saveSession, type SessionUser } from '../../lib/auth';
+import { portalForRole, setSessionUser, type SessionUser } from '../../lib/auth';
 import PasswordInput from '../../components/PasswordInput';
 import {
   validateEmail,
@@ -479,7 +479,8 @@ export default function LoginPage() {
       // Role-agnostic: the server resolved the account's role from MongoDB —
       // route straight to that role's portal. There is no client-side role choice.
       const userPortal = portalForRole(result.user.role);
-      saveSession(result.token, result.user);
+      setSessionUser(result.user);
+      navigate(`/${userPortal}`, { replace: true });
       navigate(`/${userPortal}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to verify the code.';

@@ -12,7 +12,9 @@ const {
     resendOtp,
     getCurrentUser,
     updateCurrentUser,
-    createStaffAccount
+    createStaffAccount,
+    activityPing,
+    logoutUser
 } = require("../controllers/userController");
 const { protect, superAdminOnly } = require("../middleware/authMiddleware");
 
@@ -41,5 +43,12 @@ router.post("/super-admin/create-user", protect, superAdminOnly, createStaffAcco
 
 router.get("/me", protect, getCurrentUser);
 router.patch("/me", protect, updateCurrentUser);
+
+// Activity ping: the client calls this at most once per minute while the
+// user is genuinely active. It refreshes the session cookie's sliding
+// expiry without the database reload protect does.
+router.post("/activity", protect, activityPing);
+
+router.post("/logout", logoutUser);
 
 module.exports = router;

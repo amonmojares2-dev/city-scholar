@@ -14,7 +14,7 @@ import Icon from './Icon';
 import PageHeader from './PageHeader';
 import EmptyState from './EmptyState';
 import { api } from '../lib/api';
-import { getSession } from '../lib/auth';
+import { getSessionUser } from '../lib/auth';
 
 interface Participant {
   _id: string;
@@ -145,7 +145,7 @@ export default function StaffMessages({
   emptyThreadsHint,
   composeButtonLabel = 'New Message',
 }: StaffMessagesProps) {
-  const myId = getSession()?.user?.id || '';
+  const myId = getSessionUser()?.id || '';
 
   const [threads, setThreads] = useState<ConversationDto[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);

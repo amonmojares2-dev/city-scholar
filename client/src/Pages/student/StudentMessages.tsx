@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import Icon from '../../components/Icon';
 import { api } from '../../lib/api';
-import { getSession } from '../../lib/auth';
+import { getSessionUser } from '../../lib/auth';
 
 type Participant = { _id?: string; name: string; role?: string; barangay?: { name: string } };
 type Conversation = { _id: string; subject: string; participants: Participant[]; lastMessageAt?: string };
@@ -10,7 +10,7 @@ type CurrentUser = { barangay?: { name: string } };
 const formatTime = (value: string) => new Date(value).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
 
 export default function StudentMessages() {
-  const sessionUser = getSession()?.user;
+  const sessionUser = getSessionUser();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [active, setActive] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);

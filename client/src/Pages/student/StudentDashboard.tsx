@@ -5,7 +5,7 @@ import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import { studentApplicationStatus } from '../../lib/applicationStatus';
 import { api } from '../../lib/api';
-import { getSession } from '../../lib/auth';
+import { getSessionUser } from '../../lib/auth';
 import { buildStudentAccess, type StudentAccess } from '../../lib/studentAccess';
 
 type Application = { _id: string; program?: string; school: string; status: string; barangayVerificationStatus?: string; submittedAt?: string; createdAt: string };
@@ -23,7 +23,7 @@ export default function StudentDashboard() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const sessionUser = getSession()?.user;
+  const sessionUser = getSessionUser();
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const latestApplication = applications[0];

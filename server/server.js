@@ -1,5 +1,6 @@
 const express = require("express");
 const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
 const connectDB = require("./config/db");
@@ -25,6 +26,7 @@ const citySettingsRoutes = require("./routes/citySettingsRoutes");
 const publicContentRoutes = require("./routes/publicContentRoutes");
 const cityAuditRoutes = require("./routes/cityAuditRoutes");
 const { createCorsMiddleware } = require("./config/cors");
+const { csrfMiddleware } = require("./middleware/csrfMiddleware");
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const { authLimiter, apiLimiter } = require("./middleware/rateLimiter");
 
@@ -81,6 +83,12 @@ app.use((req, res, next) => {
 app.use(createCorsMiddleware());
 
 app.use(express.json());
+app.use(cookieParser());
+
+// Reject cross-origin state-changing requests (CSRF). Same-origin requests
+// carry no Origin header and pass through; a present Origin must match
+// CLIENT_ORIGIN exactly.
+app.use("/api", csrfMiddleware);
 
 // Uploaded files are private. Profile photos use the authenticated
 // GET /api/users/me/photo route; application documents use
