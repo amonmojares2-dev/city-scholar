@@ -20,6 +20,20 @@ const DEFAULT_MODEL = "gpt-4o";
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_OUTPUT_TOKENS = 1500;
 
+// OpenAI answers a genuine rate limit with 429 AND an empty account with 429
+// (code "insufficient_quota"). Retrying a quota error can never succeed, so
+// the two are told apart by the error CODE in the response body, and only
+// true rate limits are retried — with growing delays, honoring Retry-After.
+const MAX_RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_BASE_DELAY_MS = 1000; // 1s, 2s, 4s when Retry-After is absent
+const MAX_RETRY_DELAY_MS = 30000; // never park a request on a huge Retry-After
+
+// User-facing messages. Quota and rate limit are different problems with
+// different fixes, so City must be able to tell them apart.
+const AI_QUOTA_MESSAGE = "The AI service has no remaining credit. Please contact the system administrator.";
+const AI_RATE_LIMIT_MESSAGE = "The AI service is busy. Try again in a minute.";
+const AI_GENERIC_FAILURE_MESSAGE = "The AI analysis failed. Please try again, or contact the system administrator if this keeps happening.";
+
 // A transcript lists every subject ever taken; cap the list so one runaway
 // document cannot produce an unbounded row.
 const MAX_SUBJECTS = 30;
@@ -46,10 +60,14 @@ const SCALE_A = "A";
 const SCALE_B = "B";
 
 class AiVisionError extends Error {
-    constructor(message, statusCode = 502) {
+    constructor(message, statusCode = 502, code = "ai_error") {
         super(message);
         this.name = "AiVisionError";
         this.statusCode = statusCode;
+        // Machine-readable reason ("insufficient_quota", "rate_limit_exceeded",
+        // "file_too_large", …) so the controller and client can react without
+        // string-matching the human message.
+        this.code = code;
     }
 }
 
@@ -435,12 +453,26 @@ function normalizeExtraction(payload) {
 // Call OpenAI and return a normalized record. Any provider or transport
 // problem surfaces as an AiVisionError carrying a message meant for a City
 // Office user, never a raw provider stack trace.
-async function analyzeGradeDocument({ base64, mimeType, filename }) {
+//
+// OpenAI returns HTTP 429 for two very different situations:
+//   - rate_limit_exceeded: too many requests; retrying helps.
+//   - insufficient_quota: the account has no credit; retrying never helps.
+// The body's error.code / error.type is what tells them apart, so it is read
+// (and logged, without the key or the document) before deciding. Genuine rate
+// limits are retried up to MAX_RATE_LIMIT_RETRIES times with growing delays,
+// honoring the provider's Retry-After header when present.
+async function analyzeGradeDocument({ base64, mimeType, filename }, options = {}) {
     const { apiKey, model } = getAiConfiguration();
+    const fetchImpl = options.fetchImpl || fetch;
+    const sleep = options.sleep || defaultSleep;
+    const retryDelays = options.retryDelays
+        || [RATE_LIMIT_BASE_DELAY_MS, RATE_LIMIT_BASE_DELAY_MS * 2, RATE_LIMIT_BASE_DELAY_MS * 4];
 
+    let attempt = 0;
     let response;
-    try {
-        response = await fetch(OPENAI_CHAT_URL, {
+    while (true) {
+        try {
+            response = await fetchImpl(OPENAI_CHAT_URL, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -466,27 +498,71 @@ async function analyzeGradeDocument({ base64, mimeType, filename }) {
             }),
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         });
-    } catch (error) {
-        const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-        throw new AiVisionError(timedOut
-            ? "The AI provider took too long to respond. Please try again."
-            : "Could not reach the AI provider. Please try again.");
-    }
+        } catch (error) {
+            const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+            throw new AiVisionError(timedOut
+                ? "The AI provider took too long to respond. Please try again."
+                : "Could not reach the AI provider. Please try again.", 502, "provider_unreachable");
+        }
 
-    if (!response.ok) {
+        if (response.ok) break;
+
+        // Read the provider's error envelope: status, error.type, error.code.
+        // Logged for operators (never the API key, never the document bytes);
+        // error.code drives the user-facing message and the retry decision.
         let detail = "";
+        let errorCode = "";
+        let errorType = "";
+        let retryAfterMs = null;
         try {
-            detail = (await response.json())?.error?.message || "";
+            const body = await response.json();
+            detail = String(body?.error?.message || "").slice(0, 500);
+            errorCode = String(body?.error?.code || "").trim();
+            errorType = String(body?.error?.type || "").trim();
         } catch { /* non-JSON error body */ }
+        if (response.headers && typeof response.headers.get === "function") {
+            retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+        }
+
+        const isInsufficientQuota = errorCode === "insufficient_quota"
+            || errorType === "insufficient_quota";
+        const isRateLimit = response.status === 429 && !isInsufficientQuota;
+
+        console.error("OpenAI grade extraction failed:", JSON.stringify({
+            status: response.status,
+            type: errorType || undefined,
+            code: errorCode || undefined,
+            model,
+            attempt,
+            retryAfterMs: retryAfterMs ?? undefined,
+            // Provider message only — never the document, never the key.
+            detail: detail || undefined
+        }));
+
+        if (isInsufficientQuota) {
+            // No credit: retrying is pointless and would only burn attempts.
+            throw new AiVisionError(AI_QUOTA_MESSAGE, 503, "insufficient_quota");
+        }
+
+        if (isRateLimit && attempt < retryDelays.length && attempt < MAX_RATE_LIMIT_RETRIES) {
+            const delayMs = retryAfterMs != null
+                ? Math.min(retryAfterMs, MAX_RETRY_DELAY_MS)
+                : retryDelays[attempt];
+            attempt += 1;
+            await sleep(delayMs);
+            continue;
+        }
+
+        if (isRateLimit) {
+            throw new AiVisionError(AI_RATE_LIMIT_MESSAGE, 429, "rate_limit_exceeded");
+        }
 
         if (response.status === 401 || response.status === 403) {
-            throw new AiVisionError("The AI provider rejected the configured API key.", 503);
+            throw new AiVisionError("The AI provider rejected the configured API key.", 503, "provider_auth");
         }
-        if (response.status === 429) {
-            throw new AiVisionError("The AI provider rate limit was reached. Please try again shortly.", 503);
-        }
-        console.error("OpenAI grade extraction failed:", response.status, detail);
-        throw new AiVisionError("The AI provider could not process this document.");
+
+        // Everything else (5xx, malformed request, …) gets one generic message.
+        throw new AiVisionError(AI_GENERIC_FAILURE_MESSAGE, 502, "provider_error");
     }
 
     const payload = await response.json();
@@ -494,10 +570,39 @@ async function analyzeGradeDocument({ base64, mimeType, filename }) {
 
     const parsed = parseModelJson(text);
     if (!parsed) {
-        throw new AiVisionError("The AI response could not be parsed as JSON.");
+        throw new AiVisionError(AI_GENERIC_FAILURE_MESSAGE, 502, "unparseable_response");
     }
 
     return normalizeExtraction(parsed);
+}
+
+function defaultSleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Retry-After is either seconds ("120") or an HTTP date. Returns milliseconds,
+// or null when the header is absent/unparseable.
+function parseRetryAfterMs(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+    const asDate = Date.parse(raw);
+    if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
+    return null;
+}
+
+// Whether an existing GradeRecord can answer a new Analyze click without a
+// paid provider call. Cache key is (document id, file hash): the same stored
+// file yields the same hash, so a replacement upload naturally invalidates.
+// "failed" rows are never served from cache — City must be able to retry them.
+function isCachedExtractionUsable(record, fileHash) {
+    if (!record || !fileHash) return false;
+    if (record.extractionStatus !== "extracted" && record.extractionStatus !== "needs_manual_review") {
+        return false;
+    }
+    return typeof record.fileHash === "string"
+        && record.fileHash.length > 0
+        && record.fileHash === fileHash;
 }
 
 module.exports = {
@@ -509,6 +614,8 @@ module.exports = {
     analyzeGradeDocument,
     normalizeExtraction,
     parseModelJson,
+    parseRetryAfterMs,
+    isCachedExtractionUsable,
     detectGradingScale,
     resolveScale,
     isFailingGrade,
@@ -520,5 +627,9 @@ module.exports = {
     SCALE_B,
     GRADING,
     defaultPassingMark,
-    MAX_SUBJECTS
+    MAX_SUBJECTS,
+    AI_QUOTA_MESSAGE,
+    AI_RATE_LIMIT_MESSAGE,
+    AI_GENERIC_FAILURE_MESSAGE,
+    MAX_RATE_LIMIT_RETRIES
 };

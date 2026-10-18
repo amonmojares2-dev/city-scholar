@@ -120,13 +120,17 @@ export default function CityAcademic() {
 
   // Manual "Analyze": this is the only place a paid provider call is made.
   // Nothing runs on upload — City decides when a document is worth paying for.
-  const analyze = async (documentId: string) => {
+  // The server caches extractions per document+file hash, so clicking Analyze
+  // on an unchanged file returns the saved result for free; `force` is the
+  // "Re-analyze" button that bypasses the cache for a fresh run.
+  const analyze = async (documentId: string, force = false) => {
+    if (analyzingId) return; // one analysis at a time
     setAnalyzingId(documentId);
     setError('');
     setNotice('');
     try {
-      const result = await api<{ record: AcademicRecord; message: string }>(
-        `/documents/${documentId}/analyze`,
+      const result = await api<{ record: AcademicRecord; message: string; cached?: boolean }>(
+        `/documents/${documentId}/analyze${force ? '?force=true' : ''}`,
         { method: 'POST' },
       );
       setNotice(result.message);
@@ -358,15 +362,36 @@ export default function CityAcademic() {
                     {doc.hasRecord ? ' · previously analyzed' : ''}
                   </div>
                 </div>
-                <button
-                  onClick={() => analyze(doc.documentId)}
-                  disabled={!aiConfigured || analyzingId === doc.documentId}
-                  className="px-3 py-2 rounded-lg bg-[#163A63] text-white text-xs hover:bg-[#0B1F3A] disabled:opacity-50 shrink-0"
-                  style={{ fontWeight: 600 }}
-                  title={!aiConfigured ? 'AI extraction is not configured on the server.' : 'Read this document with AI'}
-                >
-                  {analyzingId === doc.documentId ? 'Analyzing…' : doc.hasRecord ? 'Re-analyze' : 'Analyze'}
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => analyze(doc.documentId)}
+                    disabled={!aiConfigured || Boolean(analyzingId)}
+                    className="px-3 py-2 rounded-lg bg-[#163A63] text-white text-xs hover:bg-[#0B1F3A] disabled:opacity-50"
+                    style={{ fontWeight: 600 }}
+                    title={!aiConfigured
+                      ? 'AI extraction is not configured on the server.'
+                      : doc.hasRecord
+                        ? 'Show the saved analysis for this document (no new AI call).'
+                        : 'Read this document with AI'}
+                  >
+                    {analyzingId === doc.documentId
+                      ? 'Analyzing…'
+                      : analyzingId
+                        ? 'Busy…'
+                        : doc.hasRecord ? 'View saved result' : 'Analyze'}
+                  </button>
+                  {doc.hasRecord && (
+                    <button
+                      onClick={() => analyze(doc.documentId, true)}
+                      disabled={!aiConfigured || Boolean(analyzingId)}
+                      className="px-3 py-2 rounded-lg border border-[#E5E7EB] text-[#163A63] text-xs hover:bg-[#F6F7F9] disabled:opacity-50"
+                      style={{ fontWeight: 600 }}
+                      title="Run the AI again on this document (bypasses the saved result)."
+                    >
+                      Re-analyze
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

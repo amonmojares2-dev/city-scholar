@@ -1,7 +1,8 @@
 const GradeRecord = require("../models/GradeRecord");
 const Document = require("../models/Document");
 const { readStoredBuffer } = require("../config/storage");
-const { analyzeGradeDocument, isAiConfigured, AiVisionError, resolveScale, summarizeSubjects } = require("../utils/aiVision");
+const { analyzeGradeDocument, isAiConfigured, AiVisionError, isCachedExtractionUsable, resolveScale, summarizeSubjects } = require("../utils/aiVision");
+const { prepareDocumentForAi, hashBuffer } = require("../utils/aiMedia");
 const { logAudit } = require("../utils/audit");
 // Grade-slot predicate is shared with documentController so the Analyze list
 // and the resubmission flows can never disagree on which slots hold grades.
@@ -68,7 +69,21 @@ function publicRecord(record) {
 // only then is a paid provider call made. Re-analyzing the same document
 // upserts the same GradeRecord row (unique index on `document`), so a retry
 // after a blurry upload replaces the bad result instead of piling up rows.
+//
+// Cost guards, in order of precedence:
+//   1. One analysis at a time per document — a second click while a run is
+//      in flight gets a 409, not a second provider call.
+//   2. Cache — when the record was extracted from the SAME file (document id
+//      + sha-256 hash match), the saved result is returned without calling
+//      the AI. `?force=true` (the "Re-analyze" button) bypasses the cache.
+//   3. Payload caps — oversized files are rejected in utils/aiMedia.js
+//      before any provider call.
+const inFlightAnalyses = new Set(); // document ids currently being analyzed
+
 const analyzeDocument = async(req, res, next) => {
+    // Hoisted so the finally below can always release the right key.
+    const documentId = String(req.params.id);
+    let claimed = false; // whether THIS request owns the in-flight slot
     try {
         if (!isAiConfigured()) {
             return res.status(503).json({
@@ -78,7 +93,21 @@ const analyzeDocument = async(req, res, next) => {
             });
         }
 
-        const document = await Document.findById(req.params.id);
+        const force = req.query.force === "true" || req.query.force === "1";
+
+        // Guard 1: duplicate request rejection. A double-click or a second
+        // tab must never spawn a second billed provider call.
+        if (inFlightAnalyses.has(documentId)) {
+            return res.status(409).json({
+                success: false,
+                code: "analysis_in_progress",
+                message: "This document is already being analyzed. Please wait for the current run to finish."
+            });
+        }
+        inFlightAnalyses.add(documentId);
+        claimed = true;
+
+        const document = await Document.findById(documentId);
         if (!document) {
             return res.status(404).json({ success: false, message: "Document not found" });
         }
@@ -100,48 +129,92 @@ const analyzeDocument = async(req, res, next) => {
             });
         }
 
-        const base64 = buffer.toString("base64");
+        // Half of the cache key: same stored bytes -> same hash.
+        const fileHash = hashBuffer(buffer);
+
+        // Guard 2: cache. A record extracted from this exact file answers the
+        // request for free. "failed" rows are never served
+        // (isCachedExtractionUsable checks the status), so a failed run can
+        // always be retried.
+        const existingRecord = await GradeRecord.findOne({ document: document._id });
+        if (!force && isCachedExtractionUsable(existingRecord, fileHash)) {
+            return res.json({
+                success: true,
+                record: publicRecord(existingRecord),
+                cached: true,
+                message: "Showing the previously saved analysis for this document. Use \"Re-analyze\" to run the AI again."
+            });
+        }
+
+        // Guard 3: shrink the payload (resize images, cap PDFs) before paying.
+        // Throws AiVisionError("file_too_large", …) for files that cannot be
+        // shrunk enough — no provider call is made in that case.
+        let prepared;
+        try {
+            prepared = await prepareDocumentForAi(buffer, document.mimeType);
+        } catch (error) {
+            if (error instanceof AiVisionError) {
+                return res.status(error.statusCode || 400).json({
+                    success: false,
+                    code: error.code,
+                    message: error.message
+                });
+            }
+            throw error;
+        }
 
         let extraction;
         try {
             extraction = await analyzeGradeDocument({
-                base64,
-                mimeType: document.mimeType,
+                base64: prepared.base64,
+                mimeType: prepared.mimeType,
                 filename: document.originalName
             });
         } catch (error) {
             // The provider call or the JSON parse failed. Persist an explicit
             // "failed" row so the student shows up as needing manual review
-            // instead of silently disappearing from the list.
+            // instead of silently disappearing from the list — EXCEPT for
+            // problems that are not about this document at all (no quota,
+            // rate limited): overwriting the row with those would destroy a
+            // previously good extraction for a transient reason, so they are
+            // reported to City without touching the record.
             if (error instanceof AiVisionError) {
-                await GradeRecord.findOneAndUpdate(
-                    { document: document._id },
-                    {
-                        student: document.student,
-                        application: document.application,
-                        context: document.context,
-                        extractionStatus: "failed",
-                        extractionNote: error.message,
-                        subjects: [],
-                        subjectsFailed: [],
-                        aiExtracted: true,
-                        // A failure is never "verified" — reset the flag so a
-                        // previously verified row cannot mask a new failure.
-                        verifiedByCity: false,
-                        verifiedBy: null,
-                        verifiedAt: null,
-                        extractedAt: new Date()
-                    },
-                    { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
-                );
+                const transient = ["insufficient_quota", "rate_limit_exceeded"].includes(error.code);
+                if (!transient) {
+                    await GradeRecord.findOneAndUpdate(
+                        { document: document._id },
+                        {
+                            student: document.student,
+                            application: document.application,
+                            context: document.context,
+                            extractionStatus: "failed",
+                            extractionNote: error.message,
+                            subjects: [],
+                            subjectsFailed: [],
+                            aiExtracted: true,
+                            // A failure is never "verified" — reset the flag so a
+                            // previously verified row cannot mask a new failure.
+                            verifiedByCity: false,
+                            verifiedBy: null,
+                            verifiedAt: null,
+                            extractedAt: new Date()
+                        },
+                        { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
+                    );
+                }
 
                 return res.status(error.statusCode || 502).json({
                     success: false,
-                    code: "extraction_failed",
+                    code: error.code || "extraction_failed",
                     message: error.message
                 });
             }
             throw error;
+        } finally {
+            // The provider call is done either way; release the document so a
+            // retry (or the Re-analyze button) is not blocked forever.
+            inFlightAnalyses.delete(documentId);
+            claimed = false;
         }
 
         // The model ran and told us what it could read. An "unreadable" verdict
@@ -179,7 +252,10 @@ const analyzeDocument = async(req, res, next) => {
                 editedByCity: false,
                 extractedAt: new Date(),
                 provider: "openai",
-                model: process.env.OPENAI_VISION_MODEL || "gpt-4o"
+                model: process.env.OPENAI_VISION_MODEL || "gpt-4o",
+                // Cache key half: lets the next Analyze on the same bytes skip
+                // the provider call entirely.
+                fileHash
             },
             { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true }
         );
@@ -199,7 +275,13 @@ const analyzeDocument = async(req, res, next) => {
             targetType: "GradeRecord",
             targetId: saved._id
         });
-    } catch (error) { next(error); }
+    } catch (error) { next(error); } finally {
+        // Safety net: the inner finally releases the slot after the provider
+        // call, but early returns (cache hit, 404, file too large, crash)
+        // leave `claimed` true — release it here so the document is never
+        // stuck "being analyzed".
+        if (claimed) inFlightAnalyses.delete(documentId);
+    }
 };
 
 // ==========================================================
