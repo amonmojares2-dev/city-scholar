@@ -455,7 +455,7 @@ export default function LoginPage() {
     setOtpError('');
     try {
       const result = await api<{
-        token?: string; user?: SessionUser; registered?: boolean; passwordReset?: boolean;
+        user?: SessionUser; registered?: boolean; passwordReset?: boolean;
         blocked?: boolean; mustResend?: boolean; remainingSeconds?: number; attemptsRemaining?: number;
       }>('/auth/verify-otp', {
         method: 'POST',
@@ -475,13 +475,12 @@ export default function LoginPage() {
         return;
       }
 
-      if (!result.token || !result.user) throw new Error('Verification succeeded, but no sign-in session was returned.');
+      if (!result.user) throw new Error('Verification succeeded, but no user session was returned.');
       // Role-agnostic: the server resolved the account's role from MongoDB —
       // route straight to that role's portal. There is no client-side role choice.
       const userPortal = portalForRole(result.user.role);
       setSessionUser(result.user);
       navigate(`/${userPortal}`, { replace: true });
-      navigate(`/${userPortal}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to verify the code.';
       setOtpError(msg);
@@ -1042,4 +1041,3 @@ export default function LoginPage() {
     </div>
   );
 }
-
