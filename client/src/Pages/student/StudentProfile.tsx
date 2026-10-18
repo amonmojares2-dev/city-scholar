@@ -3,7 +3,7 @@ import Icon from '../../components/Icon';
 import PageHeader from '../../components/PageHeader';
 import StatusBadge from '../../components/StatusBadge';
 import { api, validateImageFile } from '../../lib/api';
-import { updateSessionUser, type SessionUser } from '../../lib/auth';
+import { fetchSessionDetails, updateSessionUser, type SessionUser } from '../../lib/auth';
 import DeleteAccountSection from '../../components/DeleteAccountSection';
 import SessionAvatar from '../../components/SessionAvatar';
 
@@ -32,7 +32,28 @@ export default function StudentProfile() {
   const [application, setApplication] = useState<Application | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { api<{ user: User; latestApplication?: Application }>('/auth/me').then(result => { setUser(result.user); setApplication(result.latestApplication || null); setProfile({ ...(result.latestApplication?.applicant || {}), ...(result.user.profile || {}) }); }).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load profile.')).finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const session = await fetchSessionDetails();
+        if (!session) throw new Error('Unable to load profile.');
+        const application = session.latestApplication === undefined
+          ? (await api<{ applications: Application[] }>('/applications')).applications[0] ?? null
+          : session.latestApplication;
+        if (cancelled) return;
+        setUser(session.user);
+        setApplication(application || null);
+        setProfile({ ...(application?.applicant || {}), ...(session.user.profile || {}) });
+      } catch (requestError) {
+        if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'Unable to load profile.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => () => {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
   }, [photoPreview]);

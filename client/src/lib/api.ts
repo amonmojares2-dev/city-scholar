@@ -4,9 +4,11 @@
 export const API_URL = '/api';
 export const SERVER_URL = '';
 
-import { clearSession } from './auth';
+import { clearSession, getSessionUser, SESSION_UPDATED_EVENT } from './auth';
+import { MAX_REQUEST_ATTEMPTS, retryDelay, shouldRetry, wait } from './requestRetry';
 
 let redirectingOn401 = false;
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
 /**
  * Navigate to /login once on 401. The flag prevents redirect loops when
@@ -14,13 +16,22 @@ let redirectingOn401 = false;
  * and the user's action at the same time).
  */
 function handle401() {
-  clearSession();
   if (!redirectingOn401) {
     redirectingOn401 = true;
+    clearSession();
     if (!window.location.pathname.startsWith('/login')) {
       window.location.assign('/login');
     }
   }
+}
+
+window.addEventListener(SESSION_UPDATED_EVENT, () => {
+  if (getSessionUser()) redirectingOn401 = false;
+});
+
+function getRequestKey(path: string, headers: Headers): string {
+  const normalizedHeaders = [...headers.entries()].sort(([left], [right]) => left.localeCompare(right));
+  return `${path}:${JSON.stringify(normalizedHeaders)}`;
 }
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -75,8 +86,7 @@ export async function uploadWithProgress<T>(
       })();
 
       if (request.status === 401) {
-        clearSession();
-        if (!window.location.pathname.startsWith('/login')) window.location.assign('/login');
+        handle401();
         reject(new Error(typeof responseBody.message === 'string' ? responseBody.message : 'Your session has expired. Please sign in again.'));
         return;
       }
@@ -107,46 +117,85 @@ export class ApiError extends Error {
 }
 
 export async function fetchPrivateFile(path: string): Promise<Blob> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_URL}${path}`, { credentials: 'include' });
-  } catch {
-    throw new ApiError('Cannot reach the server, please try again.', 0);
+  for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}${path}`, { credentials: 'include' });
+    } catch {
+      if (attempt < MAX_REQUEST_ATTEMPTS - 1) {
+        await wait(retryDelay(attempt));
+        continue;
+      }
+      throw new ApiError('Cannot reach the server, please try again.', 0);
+    }
+    if (response.status === 401) {
+      handle401();
+      throw new ApiError('Your session has expired. Please sign in again.', 401);
+    }
+    if (shouldRetry(response.status) && attempt < MAX_REQUEST_ATTEMPTS - 1) {
+      await wait(retryDelay(attempt));
+      continue;
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new ApiError(body.message || `Request failed with status ${response.status}`, response.status, body.errors);
+    }
+    return response.blob();
   }
-  if (response.status === 401) {
-    clearSession();
-    handle401();
-    throw new ApiError('Your session has expired. Please sign in again.', 401);
-  }
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new ApiError(body.message || `Request failed with status ${response.status}`, response.status, body.errors);
-  }
-  return response.blob();
+
+  throw new ApiError('Cannot reach the server, please try again.', 0);
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
   const headers = new Headers(options.headers);
   if (!isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const method = (options.method || 'GET').toUpperCase();
+  const deduplicate = method === 'GET' && !options.signal;
+  const requestKey = deduplicate ? getRequestKey(path, headers) : null;
+  const existingRequest = requestKey ? inFlightGetRequests.get(requestKey) : undefined;
+  if (existingRequest) return existingRequest as Promise<T>;
 
-  let response: Response;
+  const request = (async () => {
+    for (let attempt = 0; attempt < (method === 'GET' ? MAX_REQUEST_ATTEMPTS : 1); attempt += 1) {
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
+      } catch {
+        if (method === 'GET' && attempt < MAX_REQUEST_ATTEMPTS - 1) {
+          await wait(retryDelay(attempt));
+          continue;
+        }
+        throw new Error('Cannot reach the server, please try again.');
+      }
+
+      if (response.status === 401) {
+        handle401();
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || 'Your session has expired. Please sign in again.');
+      }
+      if (method === 'GET' && shouldRetry(response.status) && attempt < MAX_REQUEST_ATTEMPTS - 1) {
+        await wait(retryDelay(attempt));
+        continue;
+      }
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = (body && body.message) || `Request failed with status ${response.status}`;
+        throw new ApiError(message, response.status, body?.errors);
+      }
+      return body as T;
+    }
+
+    throw new Error('Request attempts exhausted.');
+  })();
+
+  if (!requestKey) return request;
+
+  inFlightGetRequests.set(requestKey, request);
   try {
-    response = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
-  } catch {
-    throw new Error('Cannot reach the server, please try again.');
+    return await request;
+  } finally {
+    if (inFlightGetRequests.get(requestKey) === request) inFlightGetRequests.delete(requestKey);
   }
-  const body = await response.json().catch(() => ({}));
-
-  if (response.status === 401) {
-    clearSession();
-    handle401();
-    throw new Error(body.message || 'Your session has expired. Please sign in again.');
-  }
-
-  if (!response.ok) {
-    const message = (body && body.message) || `Request failed with status ${response.status}`;
-    throw new ApiError(message, response.status, body?.errors);
-  }
-  return body as T;
 }

@@ -1,22 +1,15 @@
+import { MAX_REQUEST_ATTEMPTS, retryDelay, wait } from './requestRetry';
+
 export type PortalRole = 'student' | 'barangay' | 'city' | 'superadmin';
 
-// Account Type picked on the Create Account page.
-// - new_applicant    first time applying for the scholarship
-// - existing_scholar already a recipient, continuing scholar
 export type ScholarType = 'new_applicant' | 'existing_scholar';
 
-// City Office decision on an existing-scholar claim (verified manually —
-// no Scholar ID is collected at registration any more).
-// Renewal stays locked until this is 'approved'.
 export type ScholarVerificationStatus = 'not_required' | 'pending' | 'approved' | 'rejected';
 
 export interface SessionUser {
   id: string;
   name: string;
   email: string;
-  // Role values written by the server. "barangay_admin" / "city_admin" are the
-  // canonical names (used by the Super Admin "Add User" flow); "barangay_staff"
-  // / "admin_staff" are the legacy self-registration names, still accepted.
   role: 'student' | 'barangay_admin' | 'barangay_staff' | 'city_admin' | 'admin_staff' | 'super_admin' | 'superadmin';
   scholarType?: ScholarType;
   scholarVerificationStatus?: ScholarVerificationStatus;
@@ -25,11 +18,23 @@ export interface SessionUser {
   hasProfilePhoto?: boolean;
   profilePhotoUrl?: string | null;
   profilePhotoUpdatedAt?: string | null;
+  profile?: Record<string, string>;
+}
+
+export interface SessionDetails {
+  user: SessionUser;
+  latestApplication?: {
+    status?: string;
+    applicant?: Record<string, string>;
+    program?: string;
+    school?: string;
+  } | null;
 }
 
 export const SESSION_UPDATED_EVENT = 'city-scholar-session-updated';
+export const SESSION_COOKIE_NAME = 'city-scholar-session';
+export const BROADCAST_CHANNEL = 'city-scholar-session';
 
-// Friendly names for each portal, used in "this account belongs to the X portal" messages.
 export const portalLabels: Record<PortalRole, string> = {
   student: 'Student',
   barangay: 'Barangay',
@@ -37,58 +42,108 @@ export const portalLabels: Record<PortalRole, string> = {
   superadmin: 'Super Admin',
 };
 
-// Role -> portal. This is what restricts a signed-in account to one portal:
-// RequireAuth (routes.tsx) redirects any account whose portal does not match
-// the route it tried to open.
-export function portalForRole(role: SessionUser['role']): PortalRole {
-  if (role === 'student') return 'student';
-  // Barangay Admin — canonical name and the legacy one. Without the canonical
-  // value here a Barangay Admin would fall through to the City Office portal.
-  if (role === 'barangay_admin' || role === 'barangay_staff') return 'barangay';
-  if (role === 'super_admin' || role === 'superadmin') return 'superadmin';
-  // City Admin.
-  return 'city';
+let sessionUser: SessionUser | null = null;
+let sessionDetails: SessionDetails | null = null;
+let sessionRequest: Promise<SessionDetails | null> | null = null;
+let sessionListeners: (() => void)[] = [];
+let sessionCheckFailed = false;
+
+function areEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.hasOwn(rightRecord, key) && areEqual(leftRecord[key], rightRecord[key]));
 }
 
-/**
- * The JWT now lives in an httpOnly session cookie (name below) so client-side
- * JavaScript can never read it. The client only tracks the user profile
- * (returned by GET /api/auth/me); the browser sends the cookie automatically
- * with every same-origin request.
- */
-export const SESSION_COOKIE_NAME = 'city-scholar-session';
+function notifySessionChange() {
+  sessionListeners.forEach(listener => listener());
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+}
 
-/**
- * Broadcast channel name used to sync idle/logout state across tabs so that
- * signing out (or idling out) in one tab invalidates the session everywhere.
- */
-export const BROADCAST_CHANNEL = 'city-scholar-session';
-
-let sessionUser: SessionUser | null = null;
-let sessionListeners: (() => void)[] = [];
-
-export function fetchSession(): Promise<SessionUser | null> {
-  return fetch('/api/auth/me', { credentials: 'include' })
-    .then(async (res) => {
-      if (res.status === 401 || res.status === 403) {
-        clearSession();
+async function requestSessionDetails(): Promise<SessionDetails | null> {
+  for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch('/api/auth/me', { credentials: 'include' });
+    } catch {
+      if (attempt === MAX_REQUEST_ATTEMPTS - 1) {
+        sessionCheckFailed = true;
         return null;
       }
-      if (!res.ok) return null;
-      const body = await res.json();
-      return body.user ?? null;
-    })
-    .catch(() => null);
+      await wait(retryDelay(attempt));
+      continue;
+    }
+
+    if (response.status === 401) {
+      clearSession();
+      return null;
+    }
+    if (response.status === 403) return null;
+    if (response.status === 429 || response.status >= 500) {
+      if (attempt === MAX_REQUEST_ATTEMPTS - 1) {
+        sessionCheckFailed = true;
+        return null;
+      }
+      await wait(retryDelay(attempt));
+      continue;
+    }
+    if (!response.ok) {
+      sessionCheckFailed = true;
+      return null;
+    }
+
+    let body: { user?: SessionUser; latestApplication?: SessionDetails['latestApplication'] };
+    try {
+      body = await response.json();
+    } catch (error) {
+      sessionCheckFailed = true;
+      console.error('Unable to parse the session response.', error);
+      return null;
+    }
+    if (!body.user) {
+      sessionCheckFailed = true;
+      return null;
+    }
+
+    sessionDetails = { user: body.user, latestApplication: body.latestApplication };
+    setSessionUser(body.user, body.latestApplication);
+    return sessionDetails;
+  }
+
+  return null;
 }
 
-/**
- * Call after a successful login/OTP verify to hydrate the client-side user
- * profile from the server (the token itself stays in the httpOnly cookie).
- */
-export function setSessionUser(user: SessionUser | null) {
-  sessionUser = user;
-  sessionListeners.forEach((fn) => fn());
-  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+export function fetchSessionDetails(): Promise<SessionDetails | null> {
+  if (!sessionRequest) sessionRequest = requestSessionDetails();
+  return sessionRequest;
+}
+
+export async function fetchSession(): Promise<SessionUser | null> {
+  return (await fetchSessionDetails())?.user ?? null;
+}
+
+export function getSessionDetails(): SessionDetails | null {
+  return sessionDetails;
+}
+
+export function didSessionCheckFail(): boolean {
+  return sessionCheckFailed;
+}
+
+export function setSessionUser(
+  user: SessionUser | null,
+  latestApplication?: SessionDetails['latestApplication'],
+) {
+  const changed = !areEqual(sessionUser, user);
+  if (changed) sessionUser = user;
+  sessionDetails = sessionUser ? { user: sessionUser, latestApplication } : null;
+  sessionRequest = Promise.resolve(sessionDetails);
+  sessionCheckFailed = false;
+  if (changed) notifySessionChange();
 }
 
 export function getSessionUser(): SessionUser | null {
@@ -96,23 +151,35 @@ export function getSessionUser(): SessionUser | null {
 }
 
 export function clearSession() {
+  if (!sessionUser && !sessionDetails) return;
   sessionUser = null;
-  sessionListeners.forEach((fn) => fn());
-  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+  sessionDetails = null;
+  sessionRequest = Promise.resolve(null);
+  sessionCheckFailed = false;
+  notifySessionChange();
 }
 
 export function updateSessionUser(updates: Partial<SessionUser>) {
   if (!sessionUser) return;
-  sessionUser = { ...sessionUser, ...updates };
-  sessionListeners.forEach((fn) => fn());
-  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+  const nextUser = { ...sessionUser, ...updates };
+  if (areEqual(sessionUser, nextUser)) return;
+  sessionUser = nextUser;
+  if (sessionDetails) sessionDetails = { ...sessionDetails, user: nextUser };
+  notifySessionChange();
 }
 
 export function onSessionChange(listener: () => void) {
   sessionListeners.push(listener);
   return () => {
-    sessionListeners = sessionListeners.filter((fn) => fn !== listener);
+    sessionListeners = sessionListeners.filter(existing => existing !== listener);
   };
+}
+
+export function portalForRole(role: SessionUser['role']): PortalRole {
+  if (role === 'student') return 'student';
+  if (role === 'barangay_admin' || role === 'barangay_staff') return 'barangay';
+  if (role === 'super_admin' || role === 'superadmin') return 'superadmin';
+  return 'city';
 }
 
 export function roleLabel(role: SessionUser['role']): string {

@@ -1,7 +1,7 @@
 import { createBrowserRouter, isRouteErrorResponse, Navigate, Outlet, useNavigate, useRouteError } from 'react-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from './lib/api';
-import { clearSession, getSessionUser, portalForRole, roleLabel, updateSessionUser, type PortalRole, type SessionUser } from './lib/auth';
+import { fetchSession, getSessionDetails, getSessionUser, onSessionChange, portalForRole, roleLabel, type PortalRole } from './lib/auth';
 import PublicLayout from './layouts/PublicLayout';
 import DashboardLayout from './layouts/DashboardLayout';
 import RequireAuth from './components/RequireAuth';
@@ -60,14 +60,14 @@ import { studentSidebarItems, barangaySidebarItems, citySidebarItems, superAdmin
 // own portal, so there is no way to sit on the login page with a session.
 function LoginRoute() {
   const navigate = useNavigate();
-  const user = getSessionUser();
-  const [portal, setPortal] = useState<PortalRole | null>(null);
+  const [user, setUser] = useState(getSessionUser);
+  const portal = useMemo(() => user ? portalForRole(user.role) : null, [user]);
 
   useEffect(() => {
-    if (!user) return;
-    const p = portalForRole(user.role);
-    if (p && p !== portal) setPortal(p);
-  }, [user, portal]);
+    const unsubscribe = onSessionChange(() => setUser(getSessionUser()));
+    void fetchSession().then(setUser);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     if (portal) navigate(`/${portal}`, { replace: true });
@@ -84,35 +84,31 @@ function LoginRoute() {
 function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) {
   const navigate = useNavigate();
   const user = getSessionUser();
-  const [confirmedUser, setConfirmedUser] = useState<SessionUser | null>(user ?? null);
-  const [verified, setVerified] = useState(false);
   // Which student pages are open depends on the account type chosen on the
-  // Create Account page and on the City Office's decisions. Seeded from the
-  // local session; refreshed from the server below.
+  // Create Account page and on the City Office's decisions.
   const [studentAccess, setStudentAccess] = useState<StudentAccess | null>(() =>
-    role === 'student' && user ? buildStudentAccess(user, undefined) : null
+    role === 'student' && user
+      ? buildStudentAccess(user, getSessionDetails()?.latestApplication?.status)
+      : null
   );
   const userId = user?.id;
 
-  // Students: an approved application (new applicants) or a confirmed
-  // existing-scholar registration (existing scholars) is what unlocks the
-  // Event Attendance and Renewal pages.
   useEffect(() => {
     if (role !== 'student') return;
-
     const current = getSessionUser();
-    if (!current) return;
+    if (!current || current.id !== userId) return;
 
     let cancelled = false;
+    const latestApplication = getSessionDetails()?.latestApplication;
+    if (latestApplication !== undefined) {
+      setStudentAccess(buildStudentAccess(current, latestApplication?.status ?? null));
+      return;
+    }
 
-    api<{ user: SessionUser; latestApplication?: { status?: string } | null }>('/auth/me')
+    api<{ applications: { status?: string }[] }>('/applications')
       .then(result => {
         if (cancelled) return;
-        // Read-only: the local session comes from the login response, which
-        // already carries the account type. This call only adds the City
-        // Office's application decision.
-        updateSessionUser(result.user);
-        setStudentAccess(buildStudentAccess(result.user, result.latestApplication?.status ?? null));
+        setStudentAccess(buildStudentAccess(current, result.applications[0]?.status ?? null));
       })
       .catch(() => {
         if (cancelled) return;
@@ -122,48 +118,14 @@ function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) 
     return () => { cancelled = true; };
   }, [role, userId]);
 
-  // Only attempt server verification once, after the first render.
-  useEffect(() => {
-    if (verified) return;
-    setVerified(true);
-
-    if (user) {
-      // We already have a local session; treat it as unverified until the
-      // server confirms it. Keep rendering the portal shell while we check.
-      return;
-    }
-
-    // No local session at all: nothing to verify.
-    setConfirmedUser(null);
-  }, [user, verified]);
-
-  // If there is a local session but it has not been server-verified yet,
-  // verify it once.
-  useEffect(() => {
-    if (!user || confirmedUser || verified) return;
-
-    api<{ user: SessionUser }>('/auth/me')
-      .then(result => {
-        updateSessionUser(result.user);
-        setConfirmedUser(result.user);
-      })
-      .catch(() => {
-        clearSession();
-        setConfirmedUser(null);
-        navigate('/login', { replace: true });
-      });
-  }, [user, confirmedUser, verified, navigate]);
-
   // If the server-verified user belongs to a different portal, redirect once.
-  const confirmedPortal = confirmedUser ? portalForRole(confirmedUser.role) : null;
+  const confirmedPortal = user ? portalForRole(user.role) : null;
   useEffect(() => {
     if (!confirmedPortal || confirmedPortal === role) return;
-    clearSession();
-    setConfirmedUser(null);
     navigate(`/${confirmedPortal}`, { replace: true });
   }, [confirmedPortal, role, navigate]);
 
-  if (!confirmedUser && !user) {
+  if (!user) {
     return (
       <div className="flex items-center justify-center min-h-[20vh] text-sm text-[#6B7280]">
         Verifying your session…
@@ -179,8 +141,8 @@ function Shell({ role, sidebarItems }: { role: string; sidebarItems: unknown }) 
         role={role as never}
         sidebarItems={(studentSidebar ? studentSidebar.visible : sidebarItems) as never}
         lockedItems={studentSidebar?.locked}
-        userName={confirmedUser?.name ?? user?.name ?? ''}
-        userRole={confirmedUser?.role ? roleLabel(confirmedUser.role) : user?.role ? roleLabel(user.role) : ''}
+        userName={user.name}
+        userRole={roleLabel(user.role)}
       />
     </StudentAccessContext.Provider>
   );

@@ -11,6 +11,7 @@ import UploadModal from "../../components/UploadModal";
 import { PrivateDocumentImage, PrivateFileLink } from "../../components/PrivateFile";
 import { validateGwa, validateMobile as validateMobileNumber, validateOptionalEmail, validateStudentNumber, validateUnitsEnrolled } from "../../lib/validation";
 import { studentApplicationStatus } from "../../lib/applicationStatus";
+import { getSessionUser } from "../../lib/auth";
 
 // Document slots come from the shared list (Certificates of Residency /
 // Indigency were removed from the application flow — see documentTypes.ts).
@@ -272,13 +273,12 @@ export default function StudentApplication() {
         setLoading(true);
         setErr("");
         try {
-            const [data, currentUser] = await Promise.all([
-                api<{ success: boolean; application: App | null; documents: AppDoc[] }>("/student/application/documents?context=application"),
-                api<{ user: { university?: string; name: string; email: string } }>("/auth/me"),
-            ]);
+            const data = await api<{ success: boolean; application: App | null; documents: AppDoc[] }>("/student/application/documents?context=application");
+            const currentUser = getSessionUser();
+            if (!currentUser) throw new Error("Unable to load your signed-in profile.");
             setApp(data.application ?? null);
             setDocs(data.documents ?? []);
-            const savedUniversity = currentUser.user.university || "";
+            const savedUniversity = currentUser.university || "";
             setUniversity(savedUniversity);
             if (data.application) {
                 const p = data.application.applicant ?? {};
@@ -287,8 +287,8 @@ export default function StudentApplication() {
                     parentName: p.parentName ?? "",
                     parentRelationship: p.parentRelationship ?? "",
                     parentMobile: p.parentMobile ?? "",
-                    fullName: currentUser.user.name || data.application.student?.name || "",
-                    email: currentUser.user.email || data.application.student?.email || "",
+                    fullName: currentUser.name || data.application.student?.name || "",
+                    email: currentUser.email || data.application.student?.email || "",
                     mobile: p.mobileNumber ?? "",
                     birthDate: p.dateOfBirth ?? "",
                     sex: p.sex ?? "",

@@ -1,23 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { api } from '../lib/api';
-import { clearSession, SESSION_UPDATED_EVENT, BROADCAST_CHANNEL } from '../lib/auth';
+import { BROADCAST_CHANNEL, clearSession, getSessionUser, SESSION_UPDATED_EVENT } from '../lib/auth';
 
-/**
- * Client-side inactivity auto-logout with a warning dialog and cross-tab sync.
- *
- * The server is authoritative: it tracks last activity via POST /auth/activity
- * and enforces IDLE_TIMEOUT_MINUTES. This hook mirrors that on the client so
- * the user gets a warning dialog ~60s before the server kills the session, and
- * so that signing out (or idling out) in one tab invalidates every tab.
- *
- * IdleLimitMs is passed in (defaults to 15 min) and should match the server's
- * IDLE_TIMEOUT_MINUTES (via VITE_IDLE_TIMEOUT_MINUTES at build time).
- */
+const ACTIVITY_EVENTS = ['mousedown', 'mousemove', 'keydown', 'touchstart'] as const;
+
 export function useIdleLogout({
   idleLimitMs = 15 * 60 * 1000,
-  warningLeadMs = 60 * 1000, // show warning this long before hard logout
-  activityPingMs = 60 * 1000, // ping server at most once per minute while active
+  warningLeadMs = 60 * 1000,
+  activityPingMs = 60 * 1000,
 }: {
   idleLimitMs?: number;
   warningLeadMs?: number;
@@ -25,144 +16,132 @@ export function useIdleLogout({
 } = {}) {
   const navigate = useNavigate();
   const [warningOpen, setWarningOpen] = useState(false);
-  const lastActivity = useRef(Date.now());
-  let pingTimer: ReturnType<typeof setTimeout>;
-  let idleTimer: ReturnType<typeof setTimeout>;
-  let warningTimer: ReturnType<typeof setTimeout>;
-  let bc: BroadcastChannel | null = null;
-  let uploadInFlight = false;
+  const lastActivityPing = useRef(0);
+  const pingInFlight = useRef(false);
+  const uploadInFlight = useRef(false);
+  const broadcastChannel = useRef<BroadcastChannel | null>(null);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset all timers based on current lastActivity.
+  const clearTimers = useCallback(() => {
+    if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
+    if (warningTimer.current !== null) window.clearTimeout(warningTimer.current);
+    idleTimer.current = null;
+    warningTimer.current = null;
+  }, []);
+
+  const handleIdleTimeout = useCallback(async () => {
+    setWarningOpen(false);
+    try {
+      await api('/auth/logout', { method: 'POST' });
+    } catch {
+      if (!getSessionUser()) return;
+    }
+    clearSession();
+    navigate('/login', { replace: true });
+  }, [navigate]);
+
   const resetTimers = useCallback(() => {
-    lastActivity.current = Date.now();
-    window.clearTimeout(idleTimer);
-    window.clearTimeout(warningTimer);
+    clearTimers();
 
-    const now = Date.now();
-    const remaining = idleLimitMs - (now - lastActivity.current);
+    const remaining = idleLimitMs;
     const warnAt = Math.max(0, remaining - warningLeadMs);
-
     if (warnAt <= 0) {
-      // Session is already inside the warning window — show immediately.
       setWarningOpen(true);
       return;
     }
 
-    warningTimer = window.setTimeout(() => setWarningOpen(true), warnAt);
-    idleTimer = window.setTimeout(() => handleIdleTimeout(), remaining);
-  }, [idleLimitMs, warningLeadMs]);
+    warningTimer.current = window.setTimeout(() => setWarningOpen(true), warnAt);
+    idleTimer.current = window.setTimeout(() => {
+      void handleIdleTimeout();
+    }, remaining);
+  }, [clearTimers, handleIdleTimeout, idleLimitMs, warningLeadMs]);
 
   const recordActivity = useCallback(() => {
-    lastActivity.current = Date.now();
     resetTimers();
   }, [resetTimers]);
 
-  const handleIdleTimeout = async () => {
-    setWarningOpen(false);
-    try {
-      await api('/auth/logout', { method: 'POST' }).catch(() => undefined);
-    } catch {
-      /* ignore */
-    }
-    clearSession();
-    navigate('/login', { replace: true });
-  };
+  const broadcastActivity = useCallback(() => {
+    broadcastChannel.current?.postMessage({ type: 'activity' });
+  }, []);
+
+  const pingActivity = useCallback(() => {
+    const now = Date.now();
+    const minimumPingInterval = Math.max(activityPingMs, 60000);
+    if (
+      uploadInFlight.current
+      || pingInFlight.current
+      || document.visibilityState !== 'visible'
+      || now - lastActivityPing.current < minimumPingInterval
+    ) return;
+
+    lastActivityPing.current = now;
+    pingInFlight.current = true;
+    void api('/auth/activity', { method: 'POST' })
+      .catch(() => undefined)
+      .finally(() => {
+        pingInFlight.current = false;
+      });
+  }, [activityPingMs]);
+
+  const onRealActivity = useCallback(() => {
+    if (uploadInFlight.current) return;
+    recordActivity();
+    broadcastActivity();
+    pingActivity();
+  }, [broadcastActivity, pingActivity, recordActivity]);
 
   const dismissWarning = useCallback(() => {
     setWarningOpen(false);
-    lastActivity.current = Date.now();
     resetTimers();
   }, [resetTimers]);
 
-  // ---- Cross-tab sync via BroadcastChannel ----
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
 
-    bc = new BroadcastChannel(BROADCAST_CHANNEL);
-
-    bc.onmessage = (event) => {
+    const channel = new BroadcastChannel(BROADCAST_CHANNEL);
+    broadcastChannel.current = channel;
+    channel.onmessage = event => {
       const { type } = event.data || {};
       if (type === 'logout') {
         setWarningOpen(false);
         clearSession();
         navigate('/login', { replace: true });
       } else if (type === 'activity') {
-        // Another tab reported activity — mirror it.
         recordActivity();
       }
     };
 
-    const broadcast = (type: string) => {
-      if (bc) bc.postMessage({ type });
-    };
-
     const onSessionUpdated = () => {
-      // Session was updated locally (e.g. sign-out) — tell other tabs.
-      broadcast('logout');
+      if (!getSessionUser()) channel.postMessage({ type: 'logout' });
     };
-
     window.addEventListener(SESSION_UPDATED_EVENT, onSessionUpdated);
 
     return () => {
-      bc?.close();
       window.removeEventListener(SESSION_UPDATED_EVENT, onSessionUpdated);
+      channel.close();
+      if (broadcastChannel.current === channel) broadcastChannel.current = null;
     };
   }, [navigate, recordActivity]);
 
-  // ---- Page activity listeners ----
   useEffect(() => {
-    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
-    const onActivity = () => {
-      if (uploadInFlight) return; // skip reset during file upload
-      recordActivity();
-      broadcastActivity();
-    };
+    resetTimers();
+    ACTIVITY_EVENTS.forEach(eventName => window.addEventListener(eventName, onRealActivity, { passive: true }));
 
-    events.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
-
-    // Refresh timers when tab regains focus / visibility.
-    const onFocus = () => resetTimers();
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', () => {
+    const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') resetTimers();
-    });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      events.forEach((ev) => window.removeEventListener(ev, onActivity));
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', () => resetTimers());
+      ACTIVITY_EVENTS.forEach(eventName => window.removeEventListener(eventName, onRealActivity));
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      clearTimers();
     };
-  }, [resetTimers, recordActivity]);
+  }, [clearTimers, onRealActivity, resetTimers]);
 
-  const broadcastActivity = useCallback(() => {
-    if (bc) bc.postMessage({ type: 'activity' });
-  }, [bc]);
-
-  // ---- Periodic server ping while active ----
-  useEffect(() => {
-    let cancelled = false;
-
-    const ping = async () => {
-      if (uploadInFlight || document.visibilityState !== 'visible') return;
-      try {
-        await api('/auth/activity', { method: 'POST' }).catch(() => undefined);
-      } catch {
-        /* ignore — server will still enforce its own idle tracker */
-      }
-    };
-
-    ping();
-    pingTimer = window.setInterval(ping, activityPingMs);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(pingTimer);
-    };
-  }, [activityPingMs]);
-
-  // ---- Upload-aware pause ----
   const setUploadInFlight = useCallback((inFlight: boolean) => {
-    uploadInFlight = inFlight;
+    uploadInFlight.current = inFlight;
     if (!inFlight) resetTimers();
   }, [resetTimers]);
 

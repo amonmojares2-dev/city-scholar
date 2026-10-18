@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from '../components/Icon';
 import type { SidebarItem } from '../data/sidebarItems';
 import { clearSession, getSessionUser } from '../lib/auth';
@@ -37,31 +37,38 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
   const [notifications, setNotifications] = useState<{ _id: string; title: string; message: string; readAt?: string; createdAt: string; link?: string }[]>([]);
   const [signOutOpen, setSignOutOpen] = useState(false);
 
-  // The bell refreshes itself: on mount, every 45 seconds, and whenever the
-  // tab regains focus, so notifications appear without a manual reload.
+  const notificationsRequest = useRef<Promise<void> | null>(null);
+  const lastNotificationsRequest = useRef(0);
+  const loadNotifications = useCallback(() => {
+    if (document.visibilityState !== 'visible' || notificationsRequest.current) return;
+    lastNotificationsRequest.current = Date.now();
+    const request = api<{ notifications: typeof notifications }>('/notifications')
+      .then(result => setNotifications(result.notifications || []))
+      .catch(() => {
+        // Preserve the last known notification list when the service is unavailable.
+      })
+      .finally(() => {
+        if (notificationsRequest.current === request) notificationsRequest.current = null;
+      });
+    notificationsRequest.current = request;
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-
-    const load = () => {
-      api<{ notifications: typeof notifications }>('/notifications')
-        .then(result => { if (!cancelled) setNotifications(result.notifications || []); })
-        .catch(() => { /* transient error: keep the last known list */ });
+    loadNotifications();
+    const intervalId = window.setInterval(loadNotifications, 60000);
+    const onVisibilityChange = () => {
+      if (
+        document.visibilityState === 'visible'
+        && Date.now() - lastNotificationsRequest.current >= 30000
+      ) loadNotifications();
     };
-
-    load();
-    const intervalId = window.setInterval(load, 45000);
-    const onVisibilityChange = () => { if (document.visibilityState === 'visible') load(); };
-
-    window.addEventListener('focus', load);
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      cancelled = true;
       window.clearInterval(intervalId);
-      window.removeEventListener('focus', load);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, []);
+  }, [loadNotifications]);
 
   const unreadCount = notifications.filter(notification => !notification.readAt).length;
 

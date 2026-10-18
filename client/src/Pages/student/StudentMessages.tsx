@@ -6,7 +6,6 @@ import { getSessionUser } from '../../lib/auth';
 type Participant = { _id?: string; name: string; role?: string; barangay?: { name: string } };
 type Conversation = { _id: string; subject: string; participants: Participant[]; lastMessageAt?: string };
 type Message = { _id: string; sender: Participant; body: string; createdAt: string };
-type CurrentUser = { barangay?: { name: string } };
 const formatTime = (value: string) => new Date(value).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
 
 export default function StudentMessages() {
@@ -22,13 +21,10 @@ export default function StudentMessages() {
   const [assignedBarangay, setAssignedBarangay] = useState('');
 
   useEffect(() => {
-    Promise.all([
-      api<{ conversations: Conversation[] }>('/messages/conversations'),
-      api<{ user: CurrentUser }>('/auth/me'),
-    ]).then(([conversationResult, userResult]) => {
+    api<{ conversations: Conversation[] }>('/messages/conversations').then(conversationResult => {
       setConversations(conversationResult.conversations);
       setActive(conversationResult.conversations[0] || null);
-      setAssignedBarangay(userResult.user.barangay?.name || 'Barangay not assigned');
+      setAssignedBarangay(sessionUser?.barangay?.name || 'Barangay not assigned');
     }).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load conversations.')).finally(() => setLoading(false));
   }, []);
   useEffect(() => {
