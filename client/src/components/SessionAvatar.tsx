@@ -35,9 +35,9 @@ export default function SessionAvatar({
     };
   }, []);
 
-  const sessionPhotoUrl = session?.user.profilePhotoUrl;
-  const sessionPhotoUpdatedAt = session?.user.profilePhotoUpdatedAt;
-  const showPhoto = hasProfilePhoto ?? session?.user.hasProfilePhoto;
+  const sessionPhotoUrl = session?.profilePhotoUrl;
+  const sessionPhotoUpdatedAt = session?.profilePhotoUpdatedAt;
+  const showPhoto = hasProfilePhoto ?? session?.hasProfilePhoto;
   const initials = name.split(' ').map(part => part[0]).join('').slice(0, 2);
   const photoUrl = !imageFailed && showPhoto
     ? profilePhotoUrl(savedUrl || sessionPhotoUrl, updatedAt || sessionPhotoUpdatedAt)
