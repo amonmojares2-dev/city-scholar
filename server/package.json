@@ -8,7 +8,7 @@
         "dev": "nodemon server.js",
         "seed": "node scripts/seedUsers.js",
         "reset:uploads": "node scripts/resetUploads.js",
-        "test": "jest"
+        "test": "jest --setupFiles=./setup-env.js"
     },
     "keywords": [],
     "author": "",

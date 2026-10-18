@@ -4,7 +4,35 @@ const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
 const connectDB = require("./config/db");
-const authRoutes = require("./routes/authRoutes");
+
+// ==========================================
+// ENVIRONMENT VALIDATION
+// ==========================================
+// Required variables - server will not start without these
+const REQUIRED_ENV_VARS = ["MONGO_URI", "JWT_SECRET", "CLIENT_ORIGIN"];
+const missingVars = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
+
+if (missingVars.length > 0) {
+    console.error("FATAL: Missing required environment variables:");
+    missingVars.forEach((v) => console.error(`  - ${v}`));
+    console.error("Server startup aborted. See server/.env.example for configuration.");
+    process.exitCode = 1;
+    throw new Error(`Missing required environment variables: ${missingVars.join(", ")}`);
+}
+
+// Optional variables with safe defaults
+const isProduction = process.env.NODE_ENV === "production";
+const PORT = Number(process.env.PORT) || 5000;
+const CSP_REPORT_ONLY = process.env.CSP_REPORT_ONLY === "true";
+const IDLE_TIMEOUT_MINUTES = Number(process.env.IDLE_TIMEOUT_MINUTES) || 15;
+const IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * 60 * 1000;
+
+console.log(`[env] NODE_ENV=${process.env.NODE_ENV || "development"}`);
+console.log(`[env] PORT=${PORT}`);
+console.log(`[env] IDLE_TIMEOUT=${IDLE_TIMEOUT_MINUTES} minutes`);
+console.log(`[env] CSP_REPORT_ONLY=${CSP_REPORT_ONLY}`);
+
+const createAuthRoutes = require("./routes/authRoutes");
 const universityRoutes = require("./routes/universityRoutes");
 const applicationRoutes = require("./routes/applicationRoutes");
 const documentRoutes = require("./routes/documentRoutes");
@@ -33,9 +61,6 @@ const { authLimiter, apiLimiter } = require("./middleware/rateLimiter");
 const app = express();
 
 const requireDatabase = require("./middleware/requireDatabase");
-
-// [ADDED] Environment flag used by Helmet and CORS below
-const isProduction = process.env.NODE_ENV === "production";
 
 // [ADDED] Hide framework fingerprint (Helmet also removes it, this is a safety net)
 app.disable("x-powered-by");
@@ -113,7 +138,7 @@ app.use("/api/public", apiLimiter, publicContentRoutes);
 
 app.use("/api", requireDatabase);
 app.use("/api", apiLimiter);
-app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/auth", authLimiter, createAuthRoutes());
 const studentDocRoutes = require("./routes/studentDocRoutes");
 
 app.use("/api/applications", applicationRoutes);
@@ -146,8 +171,6 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (error) => {
     console.error("Uncaught exception:", error);
 });
-
-const PORT = process.env.PORT || 5000;
 
 async function startServer() {
     // Bind first so health checks receive a response even while MongoDB is

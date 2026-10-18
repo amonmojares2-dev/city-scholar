@@ -1,6 +1,8 @@
 const express = require("express");
+const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
 const request = require("supertest");
+const { SESSION_COOKIE_NAME } = require("../middleware/authMiddleware");
 const User = require("../models/User");
 const Application = require("../models/Application");
 const Document = require("../models/Document");
@@ -38,6 +40,7 @@ function resolvedQuery(value) {
 
 function createApp() {
     const app = express();
+    app.use(cookieParser());
     app.use("/api/student/application/documents", studentDocumentRoutes);
     app.use("/api/documents", documentRoutes);
     app.use("/api/users", userRoutes);
@@ -52,7 +55,8 @@ function authenticateAs(user) {
     process.env.JWT_SECRET = "upload-test-secret";
     const authQuery = resolvedQuery(user);
     jest.spyOn(User, "findById").mockReturnValue(authQuery);
-    return `Bearer ${jwt.sign({ id: STUDENT_ID }, process.env.JWT_SECRET)}`;
+    const token = jwt.sign({ id: STUDENT_ID }, process.env.JWT_SECRET);
+    return `${SESSION_COOKIE_NAME}=${token}`;
 }
 
 function applicationRecord() {
@@ -115,7 +119,7 @@ describe("real Multer upload middleware", () => {
 
         const response = await request(app)
             .post("/api/student/application/documents")
-            .set("Authorization", authorization)
+            .set("Cookie", authorization)
             .field("docType", "Report Card")
             .attach("file", PNG, { filename: "report-card.png", contentType: "image/png" });
 
@@ -134,7 +138,7 @@ describe("real Multer upload middleware", () => {
 
         const response = await request(app)
             .post("/api/student/application/documents")
-            .set("Authorization", authorization)
+            .set("Cookie", authorization)
             .field("context", "renewal")
             .field("docType", "Report Card")
             .attach("file", PNG, { filename: "renewal-grades.png", contentType: "image/png" });
@@ -163,7 +167,7 @@ describe("real Multer upload middleware", () => {
 
         const response = await request(app)
             .post("/api/documents/507f1f77bcf86cd799439014/replace")
-            .set("Authorization", authorization)
+            .set("Cookie", authorization)
             .attach("file", PNG, { filename: "replacement.png", contentType: "image/png" });
 
         expect(response.status).toBe(200);
@@ -184,14 +188,14 @@ describe("real Multer upload middleware", () => {
             save: jest.fn().mockResolvedValue(undefined)
         };
         process.env.JWT_SECRET = "upload-test-secret";
-        const authorization = `Bearer ${jwt.sign({ id: STUDENT_ID }, process.env.JWT_SECRET)}`;
+        const authorization = `${SESSION_COOKIE_NAME}=${jwt.sign({ id: STUDENT_ID }, process.env.JWT_SECRET)}`;
         jest.spyOn(User, "findById")
             .mockReturnValueOnce(resolvedQuery(user))
             .mockResolvedValueOnce(user);
 
         const response = await request(app)
             .post("/api/users/me/photo")
-            .set("Authorization", authorization)
+            .set("Cookie", authorization)
             .attach("file", PNG, { filename: "profile.png", contentType: "image/png" });
 
         expect(response.status).toBe(201);
@@ -223,7 +227,7 @@ describe("real Multer upload middleware", () => {
 
         const response = await request(app)
             .post("/api/events/507f1f77bcf86cd799439015/attendance-proof")
-            .set("Authorization", authorization)
+            .set("Cookie", authorization)
             .attach("file", PNG, { filename: "attendance.png", contentType: "image/png" });
 
         expect(response.status).toBe(201);

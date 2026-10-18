@@ -72,7 +72,8 @@ function clearActivity(userId) {
 // full account record is needed).
 const requireSession = (req, res, next) => {
     try {
-        const token = req.cookies[SESSION_COOKIE_NAME];
+        // cookie-parser sets req.cookies; protect against it being undefined
+        const token = req.cookies ? req.cookies[SESSION_COOKIE_NAME] : undefined;
         if (!token) {
             return res.status(401).json({
                 success: false,

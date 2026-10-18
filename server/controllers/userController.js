@@ -1191,5 +1191,7 @@ module.exports = {
     resendOtp,
     getCurrentUser,
     updateCurrentUser,
-    createStaffAccount
+    createStaffAccount,
+    activityPing,
+    logoutUser
 };

@@ -39,4 +39,4 @@ function createCorsMiddleware({
     });
 }
 
-module.exports = { createCorsMiddleware };
+module.exports = { createCorsMiddleware, normalizeOrigin };
