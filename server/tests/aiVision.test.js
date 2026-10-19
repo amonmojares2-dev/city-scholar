@@ -7,7 +7,7 @@
 // rate limit look identical to City users.
 
 process.env.GEMINI_API_KEY = "test-gemini-key-not-real";
-process.env.GEMINI_VISION_MODEL = "gemini-1.5-flash";
+process.env.GEMINI_VISION_MODEL = "gemini-3.5-flash-lite";
 
 const {
     analyzeGradeDocument,
@@ -100,7 +100,7 @@ describe("getAiConfiguration / isAiConfigured", () => {
     it("reads GEMINI_API_KEY and GEMINI_VISION_MODEL from the environment", () => {
         const { apiKey, model } = getAiConfiguration();
         expect(apiKey).toBe("test-gemini-key-not-real");
-        expect(model).toBe("gemini-1.5-flash");
+        expect(model).toBe("gemini-3.5-flash-lite");
     });
 
     it("reports configured when both vars are present", () => {
@@ -111,6 +111,19 @@ describe("getAiConfiguration / isAiConfigured", () => {
         delete process.env.GEMINI_API_KEY;
         expect(isAiConfigured()).toBe(false);
         expect(() => getAiConfiguration()).toThrow(AiVisionError);
+    });
+
+    it("replaces the retired Flash Lite model with the supported model", async() => {
+        process.env.GEMINI_VISION_MODEL = "gemini-2.5-flash-lite";
+        const fetchImpl = jest.fn().mockResolvedValue(okResponse());
+
+        await analyzeGradeDocument(
+            { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
+            { fetchImpl }
+        );
+
+        expect(getAiConfiguration().model).toBe("gemini-3.5-flash-lite");
+        expect(fetchImpl.mock.calls[0][0]).toContain("gemini-3.5-flash-lite:generateContent");
     });
 });
 
@@ -201,7 +214,7 @@ describe("analyzeGradeDocument — provider 429 handling", () => {
         const [url, init] = fetchImpl.mock.calls[0];
         expect(url).not.toContain("test-gemini-key-not-real");
         expect(url).toContain("generativelanguage.googleapis.com/v1beta");
-        expect(url).toContain("gemini-1.5-flash:generateContent");
+        expect(url).toContain("gemini-3.5-flash-lite:generateContent");
         expect(init.headers["x-goog-api-key"]).toBe("test-gemini-key-not-real");
         expect(init.headers["Content-Type"]).toBe("application/json");
         expect(init.signal).toBeDefined();

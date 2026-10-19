@@ -20,6 +20,8 @@
 // request URL and never written to logs.
 
 const GEMINI_GENERATE_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const RETIRED_GEMINI_MODEL = "gemini-2.5-flash-lite";
+const CURRENT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_OUTPUT_TOKENS = 1500;
 
@@ -84,13 +86,16 @@ function getAiConfiguration() {
             503
         );
     }
-    const model = String(process.env.GEMINI_VISION_MODEL || "").trim();
-    if (!model) {
+    const configuredModel = String(process.env.GEMINI_VISION_MODEL || "").trim();
+    if (!configuredModel) {
         throw new AiVisionError(
             "AI extraction is not configured on this server. Set the GEMINI_VISION_MODEL environment variable to enable it.",
             503
         );
     }
+    const model = configuredModel === RETIRED_GEMINI_MODEL
+        ? CURRENT_GEMINI_MODEL
+        : configuredModel;
     return { apiKey, model };
 }
 

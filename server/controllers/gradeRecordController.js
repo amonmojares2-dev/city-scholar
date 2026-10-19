@@ -1,7 +1,7 @@
 const GradeRecord = require("../models/GradeRecord");
 const Document = require("../models/Document");
 const { readStoredBuffer } = require("../config/storage");
-const { analyzeGradeDocument, isAiConfigured, AiVisionError, isCachedExtractionUsable, resolveScale, summarizeSubjects } = require("../utils/aiVision");
+const { analyzeGradeDocument, getAiConfiguration, isAiConfigured, AiVisionError, isCachedExtractionUsable, resolveScale, summarizeSubjects } = require("../utils/aiVision");
 const { prepareDocumentForAi, hashBuffer } = require("../utils/aiMedia");
 const { logAudit } = require("../utils/audit");
 // Grade-slot predicate is shared with documentController so the Analyze list
@@ -252,7 +252,7 @@ const analyzeDocument = async(req, res, next) => {
                 editedByCity: false,
                 extractedAt: new Date(),
                 provider: "gemini",
-                model: process.env.GEMINI_VISION_MODEL || "",
+                model: getAiConfiguration().model,
                 // Cache key half: lets the next Analyze on the same bytes skip
                 // the provider call entirely.
                 fileHash
