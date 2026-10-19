@@ -32,6 +32,13 @@ console.log(`[env] PORT=${PORT}`);
 console.log(`[env] IDLE_TIMEOUT=${IDLE_TIMEOUT_MINUTES} minutes`);
 console.log(`[env] CSP_REPORT_ONLY=${CSP_REPORT_ONLY}`);
 
+// Log the active AI model once at startup (never the API key).
+const { isAiConfigured, getAiConfiguration } = require("./utils/aiVision");
+if (isAiConfigured()) {
+    const { model } = getAiConfiguration();
+    console.log(`[ai] Gemini vision model: ${model}`);
+}
+
 const createAuthRoutes = require("./routes/authRoutes");
 const universityRoutes = require("./routes/universityRoutes");
 const applicationRoutes = require("./routes/applicationRoutes");

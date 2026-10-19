@@ -1,37 +1,42 @@
 // ==========================================
-// OpenAI vision integration — grade document extraction
+// Gemini vision integration — grade document extraction
 // ==========================================
 //
 // Reads an uploaded grade document (image or PDF) and returns the student's
 // academic record as structured JSON.
 //
-// Provider: OpenAI (gpt-4o). Configure with:
-//   OPENAI_API_KEY        (required — extraction is unavailable without it)
-//   OPENAI_VISION_MODEL   (optional, defaults to "gpt-4o")
+// Provider: Google Gemini — https://generativelanguage.googleapis.com
+// Configure with:
+//   GEMINI_API_KEY        (required — extraction is unavailable without it)
+//   GEMINI_VISION_MODEL   (required — model used for generateContent)
 //
 // This is the only part of the system that costs money per call, so every
 // request here is deliberately defensive: a 60s timeout, a bounded token
 // budget, and a hard failure (never a crash) when the model cannot read the
 // document. No SDK dependency — Node 18+ ships global fetch, matching the
 // plain-HTTPS style already used for Brevo in utils/email.js.
+//
+// The API key travels in the `x-goog-api-key` header only — never in the
+// request URL and never written to logs.
 
-const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
-const DEFAULT_MODEL = "gpt-4o";
+const GEMINI_GENERATE_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_OUTPUT_TOKENS = 1500;
 
-// OpenAI answers a genuine rate limit with 429 AND an empty account with 429
-// (code "insufficient_quota"). Retrying a quota error can never succeed, so
-// the two are told apart by the error CODE in the response body, and only
-// true rate limits are retried — with growing delays, honoring Retry-After.
+// Gemini answers a genuine rate limit with 429 / RESOURCE_EXHAUSTED. An
+// exhausted daily quota shares that status, so the error MESSAGE tells them
+// apart — only true rate limits are retried, with growing delays and
+// Retry-After honoring.
 const MAX_RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_BASE_DELAY_MS = 1000; // 1s, 2s, 4s when Retry-After is absent
 const MAX_RETRY_DELAY_MS = 30000; // never park a request on a huge Retry-After
 
-// User-facing messages. Quota and rate limit are different problems with
-// different fixes, so City must be able to tell them apart.
+// User-facing messages. Quota, rate limit, and misconfiguration are different
+// problems with different fixes, so City must be able to tell them apart.
 const AI_QUOTA_MESSAGE = "The AI service has no remaining credit. Please contact the system administrator.";
 const AI_RATE_LIMIT_MESSAGE = "The AI service is busy. Try again in a minute.";
+const AI_CONFIG_MESSAGE = "The AI service is not configured correctly. Please contact the system administrator.";
+const AI_BLOCKED_MESSAGE = "The AI could not read this document. Please review it manually.";
 const AI_GENERIC_FAILURE_MESSAGE = "The AI analysis failed. Please try again, or contact the system administrator if this keeps happening.";
 
 // A transcript lists every subject ever taken; cap the list so one runaway
@@ -71,26 +76,28 @@ class AiVisionError extends Error {
     }
 }
 
-// Mirrors utils/email.js: a single place that decides whether the provider is
-// configured, throwing a typed error the controller turns into a 503 instead
-// of letting the key check fail somewhere deep in the request path.
 function getAiConfiguration() {
-    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
     if (!apiKey) {
         throw new AiVisionError(
-            "AI extraction is not configured on this server. Set the OPENAI_API_KEY environment variable to enable it.",
+            "AI extraction is not configured on this server. Set the GEMINI_API_KEY environment variable to enable it.",
             503
         );
     }
-
-    return {
-        apiKey,
-        model: String(process.env.OPENAI_VISION_MODEL || "").trim() || DEFAULT_MODEL
-    };
+    const model = String(process.env.GEMINI_VISION_MODEL || "").trim();
+    if (!model) {
+        throw new AiVisionError(
+            "AI extraction is not configured on this server. Set the GEMINI_VISION_MODEL environment variable to enable it.",
+            503
+        );
+    }
+    return { apiKey, model };
 }
 
 function isAiConfigured() {
-    return Boolean(String(process.env.OPENAI_API_KEY || "").trim());
+    const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
+    const model = String(process.env.GEMINI_VISION_MODEL || "").trim();
+    return Boolean(apiKey && model);
 }
 
 // The extraction prompt. Two rules matter more than anything else here:
@@ -155,32 +162,21 @@ RESPOND WITH ONLY VALID JSON MATCHING THIS EXACT STRUCTURE, NO EXTRA TEXT, NO MA
   "overallStatus": "Passed"
 }`;
 }
-
-// Build the multimodal content array. gpt-4o reads a PDF natively through a
-// `file` part, while images go through an `image_url` part with the base64
-// inline. `detail: "high"` matters here: grade documents are dense pages of
-// small numbers, which is exactly the case the docs call out as needing
-// higher-fidelity vision.
+// Build the parts for the user message. Gemini takes the document as inline
+// base64 with its mime type — images and PDFs both arrive as inlineData. The
+// full extraction instruction lives in the system instruction so the model
+// treats it as system behavior rather than user text.
 function buildUserContent({ base64, mimeType, filename }) {
     const isPdf = String(mimeType || "").toLowerCase() === "application/pdf";
 
-    const attachment = isPdf ? {
-        type: "file",
-        file: {
-            filename: filename || "grade-document.pdf",
-            file_data: `data:application/pdf;base64,${base64}`
-        }
-    } : {
-        type: "image_url",
-        image_url: {
-            url: `data:${mimeType};base64,${base64}`,
-            detail: "high"
-        }
-    };
-
     return [
-        { type: "text", text: buildExtractionPrompt() },
-        attachment
+        { text: "Extract the grades shown in this document and return them as JSON." },
+        {
+            inlineData: {
+                mimeType: isPdf ? "application/pdf" : String(mimeType || ""),
+                data: base64
+            }
+        }
     ];
 }
 
@@ -450,17 +446,93 @@ function normalizeExtraction(payload) {
     };
 }
 
-// Call OpenAI and return a normalized record. Any provider or transport
+// The shape the model must return, declared so Gemini constrains its output to
+// JSON. Fields that can legitimately be null (highestGrade, computedGwa, …)
+// are deliberately left undeclared so a null never trips schema validation;
+// if Gemini rejects the schema anyway the caller retries without it.
+const RESPONSE_SCHEMA = {
+    type: "object",
+    properties: {
+        readable: { type: "boolean" },
+        extractionNote: { type: "string" },
+        gradingScale: { type: "string" },
+        studentName: { type: "string" },
+        school: { type: "string" },
+        gradeLevel: { type: "string" },
+        term: { type: "string" },
+        subjects: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    name: { type: "string" },
+                    grade: { type: "number" }
+                },
+                required: ["name", "grade"]
+            }
+        },
+        subjectsFailed: {
+            type: "array",
+            items: { type: "string" }
+        },
+        overallStatus: { type: "string" }
+    }
+};
+
+function buildGeminiRequest(payload, model, useSchema) {
+    const isPdf = String(payload.mimeType || "").toLowerCase() === "application/pdf";
+
+    return {
+        systemInstruction: {
+            parts: [{ text: buildExtractionPrompt() }]
+        },
+        contents: [
+            {
+                role: "user",
+                parts: [
+                    { text: "Extract the grades shown in this document and return them as JSON." },
+                    {
+                        inlineData: {
+                            mimeType: isPdf ? "application/pdf" : String(payload.mimeType || ""),
+                            data: payload.base64
+                        }
+                    }
+                ]
+            }
+        ],
+        generationConfig: {
+            temperature: 0,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
+            responseMimeType: "application/json",
+            ...(useSchema ? { responseSchema: RESPONSE_SCHEMA } : {})
+        }
+    };
+}
+
+async function callGemini(config, useSchema, fetchImpl) {
+    const url = `${GEMINI_GENERATE_BASE}/models/${encodeURIComponent(config.model)}:generateContent`;
+    const response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            // The API key goes in a header — never in the URL, never in logs.
+            "x-goog-api-key": config.apiKey
+        },
+        body: JSON.stringify(buildGeminiRequest(config, config.model, useSchema)),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+    return response;
+}
+
+// Call Gemini and return a normalized record. Any provider or transport
 // problem surfaces as an AiVisionError carrying a message meant for a City
 // Office user, never a raw provider stack trace.
 //
-// OpenAI returns HTTP 429 for two very different situations:
-//   - rate_limit_exceeded: too many requests; retrying helps.
-//   - insufficient_quota: the account has no credit; retrying never helps.
-// The body's error.code / error.type is what tells them apart, so it is read
-// (and logged, without the key or the document) before deciding. Genuine rate
-// limits are retried up to MAX_RATE_LIMIT_RETRIES times with growing delays,
-// honoring the provider's Retry-After header when present.
+// Gemini returns HTTP 429 with status RESOURCE_EXHAUSTED for both rate limits
+// and an exhausted daily quota. The message text tells them apart: a daily
+// quota error is never retried, genuine rate limits are retried up to
+// MAX_RATE_LIMIT_RETRIES times with growing delays, honoring the provider's
+// Retry-After header when present.
 async function analyzeGradeDocument({ base64, mimeType, filename }, options = {}) {
     const { apiKey, model } = getAiConfiguration();
     const fetchImpl = options.fetchImpl || fetch;
@@ -469,35 +541,12 @@ async function analyzeGradeDocument({ base64, mimeType, filename }, options = {}
         || [RATE_LIMIT_BASE_DELAY_MS, RATE_LIMIT_BASE_DELAY_MS * 2, RATE_LIMIT_BASE_DELAY_MS * 4];
 
     let attempt = 0;
+    let useSchema = true;
     let response;
+
     while (true) {
         try {
-            response = await fetchImpl(OPENAI_CHAT_URL, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model,
-                // Forces a JSON object back, so the parse below almost always
-                // succeeds even when the model feels like adding commentary.
-                response_format: { type: "json_object" },
-                max_tokens: MAX_OUTPUT_TOKENS,
-                temperature: 0,
-                messages: [
-                    {
-                        role: "system",
-                        content: "You extract academic records from grade documents. You always answer with a single valid JSON object and never with prose or markdown."
-                    },
-                    {
-                        role: "user",
-                        content: buildUserContent({ base64, mimeType, filename })
-                    }
-                ]
-            }),
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        });
+            response = await callGemini({ apiKey, model, base64, mimeType, filename }, useSchema, fetchImpl);
         } catch (error) {
             const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
             throw new AiVisionError(timedOut
@@ -507,35 +556,43 @@ async function analyzeGradeDocument({ base64, mimeType, filename }, options = {}
 
         if (response.ok) break;
 
-        // Read the provider's error envelope: status, error.type, error.code.
+        // Read the provider's error envelope: status, error.code, error.status.
         // Logged for operators (never the API key, never the document bytes);
-        // error.code drives the user-facing message and the retry decision.
+        // the classified code drives the user-facing message and the retry
+        // decision.
         let detail = "";
         let errorCode = "";
-        let errorType = "";
+        let errorStatus = "";
         let retryAfterMs = null;
         try {
             const body = await response.json();
             detail = String(body?.error?.message || "").slice(0, 500);
             errorCode = String(body?.error?.code || "").trim();
-            errorType = String(body?.error?.type || "").trim();
+            errorStatus = String(body?.error?.status || "").trim();
         } catch { /* non-JSON error body */ }
         if (response.headers && typeof response.headers.get === "function") {
             retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
         }
 
-        const isInsufficientQuota = errorCode === "insufficient_quota"
-            || errorType === "insufficient_quota";
-        const isRateLimit = response.status === 429 && !isInsufficientQuota;
+        // A rejected responseSchema is our own request problem, not a rate
+        // limit: retry exactly once with prompt-only JSON instead of a schema.
+        if (response.status === 400 && useSchema && /schema/i.test(detail)) {
+            useSchema = false;
+            continue;
+        }
 
-        console.error("OpenAI grade extraction failed:", JSON.stringify({
+        const isResourceExhausted = response.status === 429 || errorStatus === "RESOURCE_EXHAUSTED";
+        const isDailyQuota = isResourceExhausted && (/daily/i.test(detail) || /quota\s*(exhausted|exceeded)/i.test(detail));
+        const isInsufficientQuota = isDailyQuota;
+        const isRateLimit = isResourceExhausted && !isInsufficientQuota;
+
+        console.error("Gemini grade extraction failed:", JSON.stringify({
             status: response.status,
-            type: errorType || undefined,
-            code: errorCode || undefined,
+            code: isInsufficientQuota ? "insufficient_quota" : isRateLimit ? "rate_limit_exceeded" : errorCode || undefined,
             model,
             attempt,
             retryAfterMs: retryAfterMs ?? undefined,
-            // Provider message only — never the document, never the key.
+            // Provider message only — never the API key, never the document.
             detail: detail || undefined
         }));
 
@@ -557,16 +614,27 @@ async function analyzeGradeDocument({ base64, mimeType, filename }, options = {}
             throw new AiVisionError(AI_RATE_LIMIT_MESSAGE, 429, "rate_limit_exceeded");
         }
 
-        if (response.status === 401 || response.status === 403) {
-            throw new AiVisionError("The AI provider rejected the configured API key.", 503, "provider_auth");
+        if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404) {
+            // Bad key, bad permission, unknown model, or a malformed request:
+            // the configuration needs fixing, not another attempt.
+            throw new AiVisionError(AI_CONFIG_MESSAGE, 503, "provider_config");
         }
 
-        // Everything else (5xx, malformed request, …) gets one generic message.
+        // Everything else (5xx, …) gets one generic message.
         throw new AiVisionError(AI_GENERIC_FAILURE_MESSAGE, 502, "provider_error");
     }
 
     const payload = await response.json();
-    const text = payload?.choices?.[0]?.message?.content;
+    const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+    if (candidates.length === 0) {
+        // Safety-blocked or empty: nothing to parse.
+        throw new AiVisionError(AI_BLOCKED_MESSAGE, 502, "no_candidates");
+    }
+    const parts = candidates[0]?.content?.parts || [];
+    const text = parts.reduce((acc, part) => acc + String(part.text || ""), "");
+    if (!text) {
+        throw new AiVisionError(AI_BLOCKED_MESSAGE, 502, "no_candidates");
+    }
 
     const parsed = parseModelJson(text);
     if (!parsed) {
@@ -630,6 +698,8 @@ module.exports = {
     MAX_SUBJECTS,
     AI_QUOTA_MESSAGE,
     AI_RATE_LIMIT_MESSAGE,
+    AI_CONFIG_MESSAGE,
+    AI_BLOCKED_MESSAGE,
     AI_GENERIC_FAILURE_MESSAGE,
     MAX_RATE_LIMIT_RETRIES
 };

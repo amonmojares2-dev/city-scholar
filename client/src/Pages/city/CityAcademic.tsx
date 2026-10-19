@@ -308,7 +308,7 @@ export default function CityAcademic() {
       {!aiConfigured && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
           <strong style={{ fontWeight: 600 }}>AI extraction is not configured. </strong>
-          Set the <code className="px-1 bg-amber-100 rounded">OPENAI_API_KEY</code> environment variable on the
+          Set the <code className="px-1 bg-amber-100 rounded">GEMINI_API_KEY</code> environment variable on the
           server to enable the Analyze action. Everything else on this page still works.
         </div>
       )}

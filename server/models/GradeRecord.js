@@ -83,7 +83,7 @@ const gradeRecordSchema = new mongoose.Schema({
 
     extractedAt: { type: Date, default: null },
     // Which model produced this, for auditing cost and reproducing a result.
-    provider: { type: String, default: "openai" },
+    provider: { type: String, default: "gemini" },
     model: { type: String, default: "" },
     // sha-256 of the stored file this extraction was read from. Together with
     // the document id it forms the extraction cache key: Analyze on the same

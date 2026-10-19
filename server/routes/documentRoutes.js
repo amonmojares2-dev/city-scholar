@@ -19,7 +19,7 @@ router.get("/:id/file", (req, res, next) => {
 });
 router.post("/", uploadSingleDocument, validateDocumentUpload, uploadDocument);
 // AI grade extraction. City/Super Admin only, and behind aiLimiter because
-// every call bills the OpenAI account. Declared after "/:id/file" so "analyze"
+// every call bills the Gemini account. Declared after "/:id/file" so "analyze"
 // is not swallowed by that route.
 router.post("/:id/analyze", authorize(...CITY_ADMIN_ROLES, ...SUPER_ADMIN_ROLES), aiLimiter, analyzeDocument);
 // Failed-grade appeal flow: City asks for a replacement, the owning student

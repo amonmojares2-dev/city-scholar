@@ -89,7 +89,7 @@ const analyzeDocument = async(req, res, next) => {
             return res.status(503).json({
                 success: false,
                 code: "ai_not_configured",
-                message: "AI extraction is not configured on this server. Set the OPENAI_API_KEY environment variable to enable it."
+                message: "AI extraction is not configured on this server. Set the GEMINI_API_KEY environment variable to enable it."
             });
         }
 
@@ -251,8 +251,8 @@ const analyzeDocument = async(req, res, next) => {
                 verifiedAt: null,
                 editedByCity: false,
                 extractedAt: new Date(),
-                provider: "openai",
-                model: process.env.OPENAI_VISION_MODEL || "gpt-4o",
+                provider: "gemini",
+                model: process.env.GEMINI_VISION_MODEL || "",
                 // Cache key half: lets the next Analyze on the same bytes skip
                 // the provider call entirely.
                 fileHash

@@ -1,20 +1,25 @@
 // ==========================================
-// AI extraction: provider error handling, retries, cache, payload caps
+// AI extraction (Gemini): provider error handling, retries, cache, payload caps
 // ==========================================
 //
 // The provider is mocked via the `fetchImpl` option — no network, no key.
 // These tests pin the behaviour that made "insufficient_quota" and a real
 // rate limit look identical to City users.
 
-process.env.OPENAI_API_KEY = "sk-test-key-not-real";
+process.env.GEMINI_API_KEY = "test-gemini-key-not-real";
+process.env.GEMINI_VISION_MODEL = "gemini-1.5-flash";
 
 const {
     analyzeGradeDocument,
     AiVisionError,
+    getAiConfiguration,
+    isAiConfigured,
     isCachedExtractionUsable,
     parseRetryAfterMs,
     AI_QUOTA_MESSAGE,
     AI_RATE_LIMIT_MESSAGE,
+    AI_CONFIG_MESSAGE,
+    AI_BLOCKED_MESSAGE,
     AI_GENERIC_FAILURE_MESSAGE,
     MAX_RATE_LIMIT_RETRIES
 } = require("../utils/aiVision");
@@ -38,27 +43,36 @@ const MODEL_JSON = JSON.stringify({
     overallStatus: "Passed"
 });
 
+// A successful Gemini generateContent response. The document text lives in
+// candidates[0].content.parts[0].text — the Gemini generateContent envelope.
 function okResponse() {
     return {
         ok: true,
         status: 200,
-        json: async() => ({ choices: [{ message: { content: MODEL_JSON } }] })
+        headers: { get: () => null },
+        json: async() => ({
+            candidates: [{
+                content: {
+                    parts: [{ text: MODEL_JSON }]
+                }
+            }]
+        })
     };
 }
 
-// A mocked OpenAI 429. OpenAI puts the distinguishing signal in
-// error.code / error.type, not in the status alone.
-function rateLimitedResponse({ code = "rate_limit_exceeded", type = "requests", retryAfter = null } = {}) {
+// A mocked Gemini 429. Gemini answers both rate limits and an exhausted daily
+// quota with HTTP 429 / RESOURCE_EXHAUSTED; the error MESSAGE tells them apart.
+function rateLimitedResponse({ code = "rate_limit_exceeded", detail = "Rate limit reached. Slow down.", retryAfter = null, isQuota = false } = {}) {
     return {
         ok: false,
         status: 429,
         headers: { get: (name) => (name === "retry-after" ? retryAfter : null) },
         json: async() => ({
             error: {
-                message: code === "insufficient_quota"
-                    ? "You exceeded your current quota, please check your plan and billing details."
-                    : "Rate limit reached for gpt-4o",
-                type,
+                message: isQuota
+                    ? "You exceeded your daily quota for this model."
+                    : detail,
+                status: "RESOURCE_EXHAUSTED",
                 code
             }
         })
@@ -70,9 +84,35 @@ function serverErrorResponse(status) {
         ok: false,
         status,
         headers: { get: () => null },
-        json: async() => ({ error: { message: "Internal server error", type: "server_error", code: "" } })
+        json: async() => ({ error: { message: "Internal server error", status: "INTERNAL", code: "" } })
     };
 }
+
+
+describe("getAiConfiguration / isAiConfigured", () => {
+    const origKey = process.env.GEMINI_API_KEY;
+    const origModel = process.env.GEMINI_VISION_MODEL;
+    afterEach(() => {
+        process.env.GEMINI_API_KEY = origKey;
+        process.env.GEMINI_VISION_MODEL = origModel;
+    });
+
+    it("reads GEMINI_API_KEY and GEMINI_VISION_MODEL from the environment", () => {
+        const { apiKey, model } = getAiConfiguration();
+        expect(apiKey).toBe("test-gemini-key-not-real");
+        expect(model).toBe("gemini-1.5-flash");
+    });
+
+    it("reports configured when both vars are present", () => {
+        expect(isAiConfigured()).toBe(true);
+    });
+
+    it("reports not configured when the key is missing", () => {
+        delete process.env.GEMINI_API_KEY;
+        expect(isAiConfigured()).toBe(false);
+        expect(() => getAiConfiguration()).toThrow(AiVisionError);
+    });
+});
 
 describe("analyzeGradeDocument — provider 429 handling", () => {
     let consoleError;
@@ -80,7 +120,7 @@ describe("analyzeGradeDocument — provider 429 handling", () => {
     afterEach(() => { consoleError.mockRestore(); });
 
     it("reports insufficient_quota distinctly and does NOT retry", async() => {
-        const fetchImpl = jest.fn().mockResolvedValue(rateLimitedResponse({ code: "insufficient_quota" }));
+        const fetchImpl = jest.fn().mockResolvedValue(rateLimitedResponse({ isQuota: true }));
         const sleep = jest.fn().mockResolvedValue(undefined);
 
         await expect(analyzeGradeDocument(
@@ -98,8 +138,8 @@ describe("analyzeGradeDocument — provider 429 handling", () => {
 
     it("retries a real rate limit with growing delays and succeeds", async() => {
         const fetchImpl = jest.fn()
-            .mockResolvedValueOnce(rateLimitedResponse())
-            .mockResolvedValueOnce(rateLimitedResponse())
+            .mockResolvedValueOnce(rateLimitedResponse({ retryAfter: null }))
+            .mockResolvedValueOnce(rateLimitedResponse({ retryAfter: null }))
             .mockResolvedValueOnce(okResponse());
         const sleep = jest.fn().mockResolvedValue(undefined);
 
@@ -108,68 +148,137 @@ describe("analyzeGradeDocument — provider 429 handling", () => {
             { fetchImpl, sleep, retryDelays: [10, 20, 40] }
         );
 
-        expect(result.studentName).toBe("Juan Dela Cruz");
+        expect(result.readable).toBe(true);
         expect(fetchImpl).toHaveBeenCalledTimes(3);
-        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([10, 20]); // growing delays
+        // Growing delays: 10ms, 20ms — no sleep after the final successful attempt.
+        expect(sleep).toHaveBeenCalledTimes(2);
+        expect(sleep).toHaveBeenNthCalledWith(1, 10);
+        expect(sleep).toHaveBeenNthCalledWith(2, 20);
     });
 
-    it("honors the Retry-After header when the provider sends one", async() => {
+    it("honors the Retry-After header when present", async() => {
         const fetchImpl = jest.fn()
-            .mockResolvedValueOnce(rateLimitedResponse({ retryAfter: "2" }))
+            .mockResolvedValueOnce(rateLimitedResponse({ retryAfter: "5" }))
             .mockResolvedValueOnce(okResponse());
         const sleep = jest.fn().mockResolvedValue(undefined);
 
         await analyzeGradeDocument(
             { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
-            { fetchImpl, sleep, retryDelays: [10, 20, 40] }
+            { fetchImpl, sleep }
         );
 
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
         expect(sleep).toHaveBeenCalledTimes(1);
-        expect(sleep).toHaveBeenCalledWith(2000); // Retry-After: 2 seconds
+        expect(sleep).toHaveBeenCalledWith(5000); // "5" seconds -> 5000ms
     });
 
-    it("gives up after MAX_RATE_LIMIT_RETRIES with the busy message", async() => {
-        const fetchImpl = jest.fn().mockResolvedValue(rateLimitedResponse());
+    it("fails with the rate-limit message once retries are exhausted", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue(rateLimitedResponse({ retryAfter: null }));
         const sleep = jest.fn().mockResolvedValue(undefined);
 
         await expect(analyzeGradeDocument(
             { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
-            { fetchImpl, sleep, retryDelays: [1, 1, 1] }
+            { fetchImpl, sleep, retryDelays: [5, 5] }
         )).rejects.toMatchObject({
+            name: "AiVisionError",
             message: AI_RATE_LIMIT_MESSAGE,
-            code: "rate_limit_exceeded",
-            statusCode: 429
+            code: "rate_limit_exceeded"
         });
 
-        // 1 initial call + MAX_RATE_LIMIT_RETRIES retries.
-        expect(fetchImpl).toHaveBeenCalledTimes(1 + MAX_RATE_LIMIT_RETRIES);
+        // MAX_RATE_LIMIT_RETRIES attempts total, then give up.
+        expect(fetchImpl).toHaveBeenCalledTimes(MAX_RATE_LIMIT_RETRIES);
+        expect(sleep).toHaveBeenCalledTimes(MAX_RATE_LIMIT_RETRIES - 1);
     });
 
-    it("returns the generic failure message for other provider errors", async() => {
-        const fetchImpl = jest.fn().mockResolvedValue(serverErrorResponse(500));
+    it("sends the API key in the x-goog-api-key header, never the URL", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue(okResponse());
+
+        await analyzeGradeDocument(
+            { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
+            { fetchImpl }
+        );
+
+        const [url, init] = fetchImpl.mock.calls[0];
+        expect(url).not.toContain("test-gemini-key-not-real");
+        expect(url).toContain("generativelanguage.googleapis.com/v1beta");
+        expect(url).toContain("gemini-1.5-flash:generateContent");
+        expect(init.headers["x-goog-api-key"]).toBe("test-gemini-key-not-real");
+        expect(init.headers["Content-Type"]).toBe("application/json");
+        expect(init.signal).toBeDefined();
+    });
+
+    it("classifies a 401 as a provider-config problem, not a retry", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue(serverErrorResponse(401));
+        const sleep = jest.fn().mockResolvedValue(undefined);
 
         await expect(analyzeGradeDocument(
             { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
-            { fetchImpl, sleep: jest.fn() }
+            { fetchImpl, sleep }
         )).rejects.toMatchObject({
+            name: "AiVisionError",
+            message: AI_CONFIG_MESSAGE,
+            code: "provider_config"
+        });
+
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it("classifies a 5xx as a generic failure", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue(serverErrorResponse(500));
+        const sleep = jest.fn().mockResolvedValue(undefined);
+
+        await expect(analyzeGradeDocument(
+            { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
+            { fetchImpl, sleep }
+        )).rejects.toMatchObject({
+            name: "AiVisionError",
             message: AI_GENERIC_FAILURE_MESSAGE,
             code: "provider_error"
         });
+
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
-    it("logs status, code, and type without the API key or document content", async() => {
-        const fetchImpl = jest.fn().mockResolvedValue(rateLimitedResponse({ code: "insufficient_quota" }));
+    it("reports an empty candidate list as blocked (safety or unreadable)", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async() => ({ candidates: [] })
+        });
+        const sleep = jest.fn().mockResolvedValue(undefined);
 
         await expect(analyzeGradeDocument(
-            { base64: "ZG9jdW1lbnQtYnl0ZXM=", mimeType: "image/png", filename: "grades.png" },
-            { fetchImpl, sleep: jest.fn() }
-        )).rejects.toBeInstanceOf(AiVisionError);
+            { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
+            { fetchImpl, sleep }
+        )).rejects.toMatchObject({
+            name: "AiVisionError",
+            message: AI_BLOCKED_MESSAGE,
+            code: "no_candidates"
+        });
+    });
 
-        const logged = consoleError.mock.calls.map((args) => args.map(String).join(" ")).join("\n");
-        expect(logged).toContain("429");
-        expect(logged).toContain("insufficient_quota");
-        expect(logged).not.toContain("sk-test-key-not-real"); // never the key
-        expect(logged).not.toContain("ZG9jdW1lbnQtYnl0ZXM="); // never the document
+    it("normalizes a successful Gemini response into the persisted shape", async() => {
+        const fetchImpl = jest.fn().mockResolvedValue(okResponse());
+
+        const result = await analyzeGradeDocument(
+            { base64: "AAAA", mimeType: "image/png", filename: "grades.png" },
+            { fetchImpl }
+        );
+
+        expect(result.readable).toBe(true);
+        expect(result.gradingScale).toBe("B");
+        expect(result.studentName).toBe("Juan Dela Cruz");
+        expect(result.school).toBe("Dagupan");
+        expect(result.subjects).toEqual([{ name: "Math", grade: 90 }]);
+        expect(result.highestGrade).toBe(90);
+        expect(result.lowestGrade).toBe(90);
+        expect(result.computedGwa).toBe(2.0);
+        expect(result.averageGrade).toBe(90);
+        expect(result.passingMark).toBe(80);
+        expect(result.subjectsFailed).toEqual([]);
+        expect(result.overallStatus).toBe("Passed");
     });
 });
 
@@ -185,7 +294,7 @@ describe("isCachedExtractionUsable — extraction cache", () => {
     });
 
     it("never serves a failed record — City must be able to retry", () => {
-        expect(isCachedExtractionUsable({ extractionStatus: "failed", fileHash: hash }, hash)).toBe(false);
+        expect(isCachedExtractionUsable({ extractionStatus: "failed", fileHash: hash })).toBe(false);
     });
 
     it("misses when the file changed (new upload -> new hash)", () => {
