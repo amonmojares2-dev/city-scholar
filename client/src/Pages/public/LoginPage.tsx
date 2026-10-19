@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import Icon from '../../components/Icon';
-import { api } from '../../lib/api';
+import { ApiError, api } from '../../lib/api';
 import { portalForRole, setSessionUser, type SessionUser } from '../../lib/auth';
 import PasswordInput from '../../components/PasswordInput';
 import {
   validateEmail,
   validateName,
+  validateNamePart,
   normalizeName,
   validatePassword,
   validatePasswordConfirmation,
@@ -191,8 +192,8 @@ export default function LoginPage() {
   };
 
   const validateRegisterValue = (name: keyof RegisterForm, value: string) => {
-    if (name === 'firstName') return validateName(value, 'First name') || '';
-    if (name === 'lastName') return validateName(value, 'Last name') || '';
+    if (name === 'firstName') return validateNamePart(value, 'First name') || '';
+    if (name === 'lastName') return validateNamePart(value, 'Last name') || '';
     if (name === 'email') return validateEmail(value) || '';
     if (name === 'barangay') return validateRequired(value, 'Barangay') || '';
     if (name === 'university') {
@@ -202,6 +203,13 @@ export default function LoginPage() {
     if (name === 'password') return validatePassword(value) || '';
     return validatePasswordConfirmation(registerForm.password, value) || '';
   };
+
+  const registerFieldsValid = (Object.keys(EMPTY_REGISTER_FORM) as (keyof RegisterForm)[])
+    .every(field => !validateRegisterValue(field, registerForm[field]));
+  const combinedRegisterNameError = validateName(
+    `${normalizeName(registerForm.firstName)} ${normalizeName(registerForm.lastName)}`,
+    'Full Name',
+  );
 
   const handleRegisterFieldChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = event.target;
@@ -306,8 +314,11 @@ export default function LoginPage() {
     // Submit-time pass over the remaining fields — the same messages the
     // inline (blur/change) validation shows under each field.
     const nextErrors: Record<string, string> = {};
-    nextErrors.firstName = validateName(values.firstName, 'First name') || '';
-    nextErrors.lastName = validateName(values.lastName, 'Last name') || '';
+    nextErrors.firstName = validateNamePart(values.firstName, 'First name') || '';
+    nextErrors.lastName = validateNamePart(values.lastName, 'Last name') || '';
+    if (!nextErrors.firstName && !nextErrors.lastName && validateName(`${values.firstName} ${values.lastName}`, 'Full Name')) {
+      nextErrors.lastName = 'First and last name together must use no more than 100 valid characters.';
+    }
     nextErrors.email = validateEmail(values.email) || '';
     nextErrors.barangay = validateRequired(values.barangay, 'Barangay') || '';
     nextErrors.password = validatePassword(values.password) || '';
@@ -340,6 +351,7 @@ export default function LoginPage() {
       setResendCooldown(30);
       setOtpStep(true);
     } catch (error) {
+      if (error instanceof ApiError) setRegErrors(error.errors || {});
       setFormError(error instanceof Error ? error.message : 'Unable to create account.');
     } finally { setFormLoading(false); }
   };
@@ -855,7 +867,8 @@ export default function LoginPage() {
                       autoComplete="given-name"
                       required
                       type="text"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                      aria-invalid={Boolean(regErrors.firstName)}
+                      className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] ${regErrors.firstName ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
                       placeholder="Maria"
                     />
                     {regErrors.firstName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.firstName}</p>}
@@ -871,10 +884,11 @@ export default function LoginPage() {
                       autoComplete="family-name"
                       required
                       type="text"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                      aria-invalid={Boolean(regErrors.lastName || combinedRegisterNameError)}
+                      className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] ${regErrors.lastName || combinedRegisterNameError ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
                       placeholder="Santos"
                     />
-                    {regErrors.lastName && <p className="text-xs text-[#DC2626] mt-1">{regErrors.lastName}</p>}
+                    {(regErrors.lastName || combinedRegisterNameError) && <p className="text-xs text-[#DC2626] mt-1">{regErrors.lastName || 'First and last name together must use no more than 100 valid characters.'}</p>}
                   </div>
                 </div>
                 <div>
@@ -973,8 +987,8 @@ export default function LoginPage() {
                 {formError && <p className="text-xs text-[#DC2626]">{formError}</p>}
                 <button
                   type="submit"
-                  disabled={formLoading || universitiesLoading}
-                  className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm"
+                  disabled={formLoading || universitiesLoading || !registerFieldsValid || Boolean(combinedRegisterNameError)}
+                  className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                   style={{ fontWeight: 700 }}
                 >
                   {formLoading ? 'Creating account…' : 'Create Account'}

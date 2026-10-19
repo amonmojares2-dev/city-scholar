@@ -3,13 +3,19 @@
 // ==========================================
 
 const { UNIVERSITIES, UNIVERSITY_SET } = require("../config/universities");
+const {
+    EMAIL_PATTERN,
+    NAME_PATTERN,
+    MOBILE_PATTERN,
+    normalizeFullName,
+    normalizeEmail: normalizeSharedEmail,
+    validateNamePart,
+    validateEmail: validateSharedEmail
+} = require("../../shared/validation");
 
 // ------------------------------------------
 // Email validation
 // ------------------------------------------
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-
 // ------------------------------------------
 // Name validation
 // Allows:
@@ -28,27 +34,14 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // O'Connor       ✅
 // José           ✅
 // ------------------------------------------
-const NAME_PATTERN = /^\p{L}[\p{L}\s.'-]*$/u;
 const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/;
-const MOBILE_PATTERN = /^09\d{9}$/;
 
 function normalizeName(value) {
-    return String(value || "")
-        .trim()
-        .replace(/\s+/g, " ");
+    return normalizeFullName(value);
 }
 
 function validateName(value, label) {
-    const normalized = normalizeName(value);
-    if (!normalized) return `${label} is required.`;
-    if (
-        normalized.length > 50 ||
-        !NAME_PATTERN.test(normalized) ||
-        (normalized.match(/\p{L}/gu) || []).length < 2
-    ) {
-        return `${label} must start with a letter, contain at least 2 letters, and use only letters, spaces, periods, hyphens, or apostrophes.`;
-    }
-    return null;
+    return validateNamePart(value, label, true);
 }
 
 
@@ -134,9 +127,7 @@ const CITY_ADMIN_ROLES = [CITY_ADMIN_ROLE, "admin_staff"];
 // Normalize Email
 // ==========================================
 function normalizeEmail(value) {
-    return typeof value === "string" ?
-        value.trim().toLowerCase() :
-        "";
+    return normalizeSharedEmail(value);
 }
 
 
@@ -201,7 +192,7 @@ function validateRegistration(data, validBarangayNames) {
     // --------------------------------------
     // Validate email
     // --------------------------------------
-    if (!EMAIL_PATTERN.test(email)) {
+    if (!EMAIL_PATTERN.test(email) || email.length > 254 || validateSharedEmail(email, true)) {
         return "Please enter a valid email address.";
     }
 

@@ -14,6 +14,12 @@ const {
     normalizeName,
     EMAIL_PATTERN
 } = require("../utils/validation");
+const {
+    normalizeFullName,
+    normalizeText,
+    validateField
+} = require("../../shared/validation");
+const { GRADING } = require("../utils/gradingConfig");
 const { sendOtpEmail, EmailDeliveryError } = require("../utils/email");
 const { logAudit } = require("../utils/audit");
 const {
@@ -30,6 +36,25 @@ const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds - must wait for timer to end
 const MAX_ATTEMPTS = 6; // Block OTP entry after 6 wrong attempts (login)
 const MAX_RESENDS = 5;
 const BLOCK_DURATION_MS = 30 * 1000; // 30s block after 6 failed login attempts
+const PROFILE_FIELDS = [
+    "dateOfBirth", "sex", "civilStatus", "nationality", "mobileNumber",
+    "houseNo", "streetName", "city", "zipCode", "studentId", "course",
+    "yearLevel", "academicTerm", "gwa", "unitsEnrolled", "schoolType",
+    "schoolYear"
+];
+
+function registrationErrorField(message) {
+    if (/^Invalid account role/.test(message)) return "role";
+    if (/^First name/.test(message)) return "firstName";
+    if (/^Last name/.test(message)) return "lastName";
+    if (/valid email/i.test(message)) return "email";
+    if (/Password/.test(message)) return "password";
+    if (/barangay/i.test(message)) return "barangay";
+    if (/University/.test(message)) return "university";
+    if (/account type/i.test(message)) return "scholarType";
+    if (/Employee number/.test(message)) return "employeeNumber";
+    return "registration";
+}
 
 // ==========================================
 // CREATE 6-DIGIT OTP
@@ -152,6 +177,26 @@ const registerUser = async(req, res) => {
         const data = req.body || {};
 
         const email = normalizeEmail(data.email);
+        const nameErrors = {};
+        const firstName = normalizeFullName(data.firstName);
+        const lastName = normalizeFullName(data.lastName);
+        const firstNameError = validateField("firstName", firstName, { required: true });
+        const lastNameError = validateField("lastName", lastName, { required: true });
+        const emailError = validateField("email", email, { required: true });
+        if (firstNameError) nameErrors.firstName = firstNameError;
+        if (lastNameError) nameErrors.lastName = lastNameError;
+        if (emailError) nameErrors.email = emailError;
+        if (!Object.keys(nameErrors).length) {
+            const combinedNameError = validateField("fullName", `${firstName} ${lastName}`, { required: true });
+            if (combinedNameError) nameErrors.lastName = "First and last name together must use no more than 100 valid characters.";
+        }
+        if (Object.keys(nameErrors).length) {
+            return res.status(400).json({
+                success: false,
+                message: "Please correct the highlighted fields.",
+                errors: nameErrors
+            });
+        }
 
         const validBarangays = new Set(
             (
@@ -171,7 +216,8 @@ const registerUser = async(req, res) => {
         if (validationError) {
             return res.status(400).json({
                 success: false,
-                message: validationError
+                message: validationError,
+                errors: { [registrationErrorField(validationError)]: validationError }
             });
         }
 
@@ -218,7 +264,7 @@ const registerUser = async(req, res) => {
             ? data.university.trim()
             : "";
         const registrationData = {
-            name: `${normalizeName(data.firstName)} ${normalizeName(data.lastName)}`,
+            name: normalizeFullName(`${firstName} ${lastName}`),
 
             email,
 
@@ -340,28 +386,49 @@ const getCurrentUser = async(req, res) => {
 // ==========================================
 const updateCurrentUser = async(req, res) => {
     try {
-        const allowed = ["name", "profile"];
+        const body = req.body || {};
+        const errors = {};
         const updates = {};
+        if (body.name !== undefined) {
+            updates.name = normalizeFullName(body.name);
+            const message = validateField("fullName", updates.name, { required: true });
+            if (message) errors.name = message;
+        }
 
-        for (const field of allowed) {
-            if (req.body[field] !== undefined) {
-                updates[field] = req.body[field];
+        if (body.profile !== undefined) {
+            if (!body.profile || typeof body.profile !== "object" || Array.isArray(body.profile)) {
+                errors.profile = "Profile data must be an object.";
+            } else {
+                const profile = {};
+                for (const field of PROFILE_FIELDS) {
+                    if (!Object.prototype.hasOwnProperty.call(body.profile, field)) continue;
+                    const input = body.profile[field];
+                    if (typeof input !== "string" && !(typeof input === "number" && (field === "gwa" || field === "unitsEnrolled"))) {
+                        errors[field] = "Enter a text value.";
+                        continue;
+                    }
+                    const message = validateField(field, input, { grading: GRADING });
+                    if (message) {
+                        errors[field] = message;
+                        continue;
+                    }
+                    const value = typeof input === "number"
+                        ? String(input)
+                        : normalizeText(input);
+                    profile[field] = value;
+                }
+                updates.profile = profile;
             }
         }
 
-        // Role, status and school name can never be changed from here. Keep
-        // historical profile.schoolAddress untouched if an older record has it.
-        if (updates.profile) {
-            delete updates.profile.schoolName;
-            delete updates.profile.schoolAddress;
-            delete updates.profile.strand;
-            if (/^(grade 11|grade 12)$/i.test(String(updates.profile.yearLevel || "").trim())) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Please select a college Year Level."
-                });
-            }
+        if (Object.keys(errors).length) {
+            return res.status(400).json({
+                success: false,
+                message: "Please correct the highlighted fields.",
+                errors
+            });
         }
+
         const update = { $set: {} };
         if (updates.name !== undefined) update.$set.name = updates.name;
         if (updates.profile) {
@@ -397,6 +464,7 @@ const updateCurrentUser = async(req, res) => {
             }
         });
     } catch (error) {
+        console.error("Profile update error:", error);
         return res.status(500).json({
             success: false,
             message: "Unable to update user profile"

@@ -1,14 +1,26 @@
-export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import {
+  EMAIL_PATTERN,
+  MOBILE_PATTERN,
+  NAME_PATTERN,
+  STUDENT_NUMBER_PATTERN,
+  normalizeFullName,
+  validateEmail as validateSharedEmail,
+  validateField,
+  validateFullName,
+  validateNamePart as validateSharedNamePart,
+  validateGwa as validateSharedGwa,
+} from '../../../shared/validation.js';
+import { GRADING } from './gradingConfig';
+
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/;
-export const NAME_PATTERN = /^\p{L}[\p{L}\s.'-]*$/u;
-export const MOBILE_PATTERN = /^(?:09\d{9}|\+639\d{9})$/;
-export const STUDENT_ID_PATTERN = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
+export { EMAIL_PATTERN, MOBILE_PATTERN, NAME_PATTERN };
+export const STUDENT_ID_PATTERN = STUDENT_NUMBER_PATTERN;
 
 export const PASSWORD_RULE_MESSAGE = 'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, and a number.';
-export const NAME_RULE_MESSAGE = 'Name must start with a letter, contain at least 2 letters, and use only letters, spaces, periods, hyphens, or apostrophes.';
+export const NAME_RULE_MESSAGE = 'Use 2 to 100 characters: letters, spaces, periods, apostrophes, or hyphens; include at least 2 letters.';
 
 export function normalizeName(value: string): string {
-  return String(value || '').trim().replace(/\s+/g, ' ');
+  return normalizeFullName(value);
 }
 
 export function validateRequired(value: string, label = 'This field'): string | null {
@@ -16,19 +28,15 @@ export function validateRequired(value: string, label = 'This field'): string | 
 }
 
 export function validateName(value: string, label = 'Name'): string | null {
-  const normalized = normalizeName(value);
-  if (!normalized) return `${label} is required.`;
-  if (normalized.length > 50 || !NAME_PATTERN.test(normalized) || (normalized.match(/\p{L}/gu) || []).length < 2) {
-    return `${label}: ${NAME_RULE_MESSAGE}`;
-  }
-  return null;
+  return validateFullName(value, true)?.replace(/^Full Name/, label) || null;
+}
+
+export function validateNamePart(value: string, label = 'Name'): string | null {
+  return validateSharedNamePart(value, label, true);
 }
 
 export function validateEmail(value: string): string | null {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return 'Email is required.';
-  if (!EMAIL_PATTERN.test(normalized)) return 'Enter a valid email address.';
-  return null;
+  return validateSharedEmail(value, true);
 }
 
 export function validatePassword(value: string): string | null {
@@ -45,34 +53,21 @@ export function validatePasswordConfirmation(password: string, confirmation: str
 }
 
 export function validateMobile(value: string): string | null {
-  const normalized = String(value || '').replace(/[\s-]/g, '');
-  if (!normalized) return 'Mobile number is required.';
-  if (!MOBILE_PATTERN.test(normalized)) return 'Enter a valid Philippine mobile number: 09XXXXXXXXX or +639XXXXXXXXX.';
-  return null;
+  return validateField('mobileNumber', value, { required: true });
 }
 
 export function validateOptionalEmail(value: string): string | null {
-  const normalized = String(value || '').trim().toLowerCase();
-  return normalized && !EMAIL_PATTERN.test(normalized) ? 'Enter a valid email address.' : null;
+  return validateSharedEmail(value, false);
 }
 
 export function validateStudentNumber(value: string): string | null {
-  const normalized = String(value || '').replace(/\s+/g, '');
-  if (!normalized) return 'Student Number is required.';
-  if (!STUDENT_ID_PATTERN.test(normalized)) return 'Enter a valid Student Number, for example 03-01-2425-041708.';
-  return null;
+  return validateField('studentId', value, { required: true });
 }
 
 export function validateGwa(value: string): string | null {
-  const normalized = String(value || '').trim();
-  if (!normalized) return null;
-  const number = Number(normalized);
-  return Number.isFinite(number) && number >= 1 && number <= 5 ? null : 'GWA must be between 1.00 and 5.00.';
+  return validateSharedGwa(value, GRADING);
 }
 
 export function validateUnitsEnrolled(value: string): string | null {
-  const normalized = String(value || '').trim();
-  if (!normalized) return null;
-  const number = Number(normalized);
-  return Number.isInteger(number) && number > 0 ? null : 'Units Enrolled must be a positive whole number.';
+  return validateField('unitsEnrolled', value);
 }

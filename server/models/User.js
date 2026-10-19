@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { validateFullName } = require("../../shared/validation");
 
 const userSchema = new mongoose.Schema({
     // The student registration form always supplies a full name, so this is
@@ -11,8 +12,8 @@ const userSchema = new mongoose.Schema({
         default: "",
         trim: true,
         validate: {
-            validator: value => !value || /^\p{L}[\p{L}\s.'-]{1,100}$/u.test(value) && (value.match(/\p{L}/gu) || []).length >= 2,
-            message: "Name must start with a letter, contain at least 2 letters, and use only letters, spaces, periods, hyphens, or apostrophes."
+            validator: value => !value || !validateFullName(value),
+            message: "Use 2 to 100 characters: letters, spaces, periods, apostrophes, or hyphens; include at least 2 letters."
         }
     },
 
@@ -172,6 +173,8 @@ const userSchema = new mongoose.Schema({
         nationality: { type: String, default: "Filipino" },
         mobileNumber: String,
         address: String,
+        houseNo: String,
+        streetName: String,
         city: String,
         zipCode: String,
         studentId: String,

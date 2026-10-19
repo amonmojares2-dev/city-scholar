@@ -12,8 +12,8 @@
 //                LOWEST number on this scale.
 
 export const GRADING = {
-    percentage: { passingMark: 70 },
-    decimal: { passingMark: 3.00 }
+    percentage: { passingMark: 70, min: 60, max: 100 },
+    decimal: { passingMark: 3.00, min: 1, max: 5 }
 } as const;
 
 export type GradingScale = 'A' | 'B';

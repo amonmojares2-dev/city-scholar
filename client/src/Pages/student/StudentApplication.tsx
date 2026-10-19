@@ -9,9 +9,20 @@ import { useDocumentSlots } from "../../lib/publicContent";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import UploadModal from "../../components/UploadModal";
 import { PrivateDocumentImage, PrivateFileLink } from "../../components/PrivateFile";
-import { validateGwa, validateMobile as validateMobileNumber, validateOptionalEmail, validateStudentNumber, validateUnitsEnrolled } from "../../lib/validation";
+import {
+    ACADEMIC_TERM_OPTIONS,
+    CIVIL_STATUS_OPTIONS,
+    COURSE_OPTIONS,
+    SCHOOL_TYPE_OPTIONS,
+    SEX_OPTIONS,
+    YEAR_LEVEL_OPTIONS,
+    normalizeEmail,
+    normalizeFullName,
+    normalizeText,
+    validateField,
+} from "../../../../shared/validation.js";
 import { studentApplicationStatus } from "../../lib/applicationStatus";
-import { getSessionUser } from "../../lib/auth";
+import { fetchSessionDetails, getSessionUser } from "../../lib/auth";
 
 // Document slots come from the shared list (Certificates of Residency /
 // Indigency were removed from the application flow — see documentTypes.ts).
@@ -93,13 +104,18 @@ const FIELD_LABELS: Record<string, string> = {
     fullName: "Full Name", studentId: "Student Number", mobileNumber: "Mobile Number",
     email: "Email", dateOfBirth: "Birth Date", houseNo: "House No.", streetName: "Street Name",
     course: "Course", yearLevel: "Year Level", academicTerm: "Academic Term",
-    gwa: "GWA", unitsEnrolled: "Units Enrolled", documents: "Required Documents", university: "University",
+    unitsEnrolled: "Units Enrolled", documents: "Required Documents", university: "University",
 };
+const APPLICATION_VALIDATION_FIELDS = new Set([
+    "fullName", "studentId", "mobileNumber", "email", "dateOfBirth", "sex", "civilStatus",
+    "houseNo", "streetName", "schoolType", "course", "yearLevel", "academicTerm",
+    "schoolYear", "unitsEnrolled", "university",
+]);
 
 function formatErrorBanner(errors: Record<string, string>, fallback: string): string {
     const renderedFields = new Set([
         "fullName", "studentId", "mobileNumber", "email", "dateOfBirth", "houseNo", "streetName",
-        "course", "yearLevel", "academicTerm", "gwa", "unitsEnrolled", "university", "documents",
+        "course", "yearLevel", "academicTerm", "unitsEnrolled", "university", "documents",
     ]);
     const unknownReason = Object.entries(errors).find(([field]) => !renderedFields.has(field))?.[1];
     if (unknownReason) return unknownReason;
@@ -108,20 +124,6 @@ function formatErrorBanner(errors: Record<string, string>, fallback: string): st
 }
 
 const inputErrorCls = " border-[#DC2626] focus:ring-[#DC2626] focus:border-[#DC2626]";
-
-// Student Number: two digits - two digits - four digits - six digits,
-// e.g. "03-01-2425-041702". Digits and dashes only.
-const STUDENT_NO_RE = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
-// PH mobile: 11 digits starting with 09, e.g. 09XXXXXXXXX.
-const MOBILE_RE = /^(?:09\d{9}|\+639\d{9})$/;
-
-function validateStudentId(v: string): string {
-    return validateStudentNumber(v) || "";
-}
-
-function validateMobile(v: string): string {
-    return validateMobileNumber(v) || "";
-}
 
 // Strip anything that is not a digit. Used for mobile onChange so letters /
 // symbols can never be typed or pasted in. Pure function — no component
@@ -166,14 +168,18 @@ function Grid({ children }: { children: ReactNode }) {
 
 function applicationPayload(form: Record<string, string>, extra: Record<string, unknown> = {}) {
     const value = (field: string) => {
-        const trimmed = (form[field] || '').trim();
+        const raw = form[field] || '';
+        const trimmed = field === 'fullName'
+            ? normalizeFullName(raw)
+            : field === 'email'
+                ? normalizeEmail(raw)
+                : normalizeText(raw);
         if (!trimmed) return undefined;
-        if (field === 'mobile') return trimmed.replace(/[\s-]/g, '');
-        if (field === 'gwa' || field === 'unitsEnrolled') return trimmed;
         return trimmed;
     };
     return {
         fullName: value('fullName'),
+        email: normalizeEmail(form.email || ''),
         applicant: {
             studentId: value('studentId'),
             dateOfBirth: value('birthDate'),
@@ -185,7 +191,6 @@ function applicationPayload(form: Record<string, string>, extra: Record<string, 
             course: value('course'),
             yearLevel: value('yearLevel'),
             academicTerm: value('academicTerm'),
-            gwa: value('gwa'),
             unitsEnrolled: value('unitsEnrolled'),
             schoolType: value('schoolType'),
             schoolYear: value('schoolYear'),
@@ -194,20 +199,33 @@ function applicationPayload(form: Record<string, string>, extra: Record<string, 
     };
 }
 
-function getClientSubmitErrors(form: Record<string, string>): Record<string, string> {
+function getApplicationErrors(
+    form: Record<string, string>,
+    submitting: boolean,
+    renewal: boolean,
+): Record<string, string> {
     const errors: Record<string, string> = {};
-    const add = (field: string, message: string) => { if (message) errors[field] = message; };
-    add("fullName", (form.fullName || "").trim() ? "" : "Full Name is required.");
-    add("studentId", validateStudentId(form.studentId || ""));
-    add("mobileNumber", validateMobile(form.mobile || ""));
-    add("course", (form.course || "").trim() ? "" : "Course is required.");
-    add("yearLevel", (form.yearLevel || "").trim() ? "" : "Year Level is required.");
-    add("academicTerm", (form.academicTerm || "").trim() ? "" : "Academic Term is required.");
-    add("houseNo", (form.houseNo || "").trim() ? "" : "House No. is required.");
-    add("streetName", (form.streetName || "").trim() ? "" : "Street Name is required.");
-    add("gwa", validateGwa(form.gwa || "") || "");
-    add("unitsEnrolled", validateUnitsEnrolled(form.unitsEnrolled || "") || "");
-    add("email", validateOptionalEmail(form.email || "") || "");
+    const fields: Array<[string, string, boolean]> = [
+        ['fullName', 'fullName', true],
+        ['studentId', 'studentId', submitting],
+        ['mobile', 'mobileNumber', submitting],
+        ['birthDate', 'dateOfBirth', false],
+        ['sex', 'sex', false],
+        ['civilStatus', 'civilStatus', false],
+        ['houseNo', 'houseNo', submitting && !renewal],
+        ['streetName', 'streetName', submitting && !renewal],
+        ['schoolType', 'schoolType', false],
+        ['course', 'course', submitting],
+        ['yearLevel', 'yearLevel', submitting],
+        ['academicTerm', 'academicTerm', submitting],
+        ['schoolYear', 'schoolYear', false],
+        ['unitsEnrolled', 'unitsEnrolled', false],
+        ['email', 'email', true],
+    ];
+    for (const [formField, ruleField, required] of fields) {
+        const message = validateField(ruleField, form[formField], { required });
+        if (message) errors[ruleField] = message;
+    }
     return errors;
 }
 
@@ -256,6 +274,7 @@ export default function StudentApplication() {
     // and how to fix it.
     const [studentIdBlockedErr, setStudentIdBlockedErr] = useState("");
     const [mobileBlockedErr, setMobileBlockedErr] = useState("");
+    const [unitsBlockedErr, setUnitsBlockedErr] = useState("");
     const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
     const [university, setUniversity] = useState("");
 
@@ -274,38 +293,69 @@ export default function StudentApplication() {
         setErr("");
         try {
             const data = await api<{ success: boolean; application: App | null; documents: AppDoc[] }>("/student/application/documents?context=application");
-            const currentUser = getSessionUser();
+            const session = await fetchSessionDetails();
+            const currentUser = session?.user || getSessionUser();
             if (!currentUser) throw new Error("Unable to load your signed-in profile.");
             setApp(data.application ?? null);
             setDocs(data.documents ?? []);
             const savedUniversity = currentUser.university || "";
+            const profile = currentUser.profile || {};
             setUniversity(savedUniversity);
+            const profileValues = {
+                studentId: profile.studentId || "",
+                mobile: profile.mobileNumber || "",
+                birthDate: profile.dateOfBirth || "",
+                sex: profile.sex || "",
+                civilStatus: profile.civilStatus || "",
+                houseNo: profile.houseNo || "",
+                streetName: profile.streetName || "",
+                schoolType: profile.schoolType || "",
+                course: profile.course || "",
+                yearLevel: profile.yearLevel || "",
+                academicTerm: profile.academicTerm || "",
+                schoolYear: profile.schoolYear || "",
+                unitsEnrolled: profile.unitsEnrolled || "",
+            };
             if (data.application) {
                 const p = data.application.applicant ?? {};
-                setForm({
-                    studentId: p.studentId ?? "",
-                    parentName: p.parentName ?? "",
-                    parentRelationship: p.parentRelationship ?? "",
-                    parentMobile: p.parentMobile ?? "",
+                const values = {
+                    ...profileValues,
+                    studentId: p.studentId ?? profileValues.studentId,
+                    mobile: p.mobileNumber ?? profileValues.mobile,
+                    birthDate: p.dateOfBirth ?? profileValues.birthDate,
+                    sex: p.sex ?? profileValues.sex,
+                    civilStatus: p.civilStatus ?? profileValues.civilStatus,
+                    houseNo: p.houseNo ?? profileValues.houseNo,
+                    streetName: p.streetName ?? profileValues.streetName,
+                    schoolType: p.schoolType ?? profileValues.schoolType,
+                    course: p.course ?? profileValues.course,
+                    yearLevel: p.yearLevel ?? profileValues.yearLevel,
+                    academicTerm: p.academicTerm ?? profileValues.academicTerm,
+                    schoolYear: p.schoolYear ?? profileValues.schoolYear,
+                    unitsEnrolled: p.unitsEnrolled ?? profileValues.unitsEnrolled,
                     fullName: currentUser.name || data.application.student?.name || "",
-                    email: currentUser.email || data.application.student?.email || "",
-                    mobile: p.mobileNumber ?? "",
-                    birthDate: p.dateOfBirth ?? "",
-                    sex: p.sex ?? "",
-                    civilStatus: p.civilStatus ?? "",
-                    houseNo: p.houseNo ?? "",
-                    streetName: p.streetName ?? "",
+                    email: normalizeEmail(currentUser.email || data.application.student?.email || ""),
                     university: savedUniversity,
-                    schoolType: p.schoolType ?? "",
-                    course: p.course ?? "",
-                    yearLevel: p.yearLevel ?? "",
-                    academicTerm: p.academicTerm ?? "",
-                    schoolYear: p.schoolYear ?? "",
-                    gwa: p.gwa ?? "",
-                    unitsEnrolled: p.unitsEnrolled ?? "",
-                });
+                };
+                setForm(values);
+                const invalidSaved = getApplicationErrors(values, false, currentUser.scholarType === 'existing_scholar');
+                setTouched(Object.fromEntries(Object.keys(invalidSaved).map(field => [
+                    field === 'mobileNumber' ? 'mobile' : field === 'dateOfBirth' ? 'birthDate' : field,
+                    true,
+                ])));
             } else {
-                setForm({ university: savedUniversity });
+                const values = {
+                    ...profileValues,
+                    fullName: currentUser.name || "",
+                    email: normalizeEmail(currentUser.email || ""),
+                    university: savedUniversity,
+                };
+                setForm(values);
+                const invalidSaved = getApplicationErrors(values, false, currentUser.scholarType === 'existing_scholar');
+                setTouched(Object.fromEntries(Object.keys(invalidSaved).map(field => [
+                    field === 'mobileNumber' ? 'mobile' : field === 'dateOfBirth' ? 'birthDate' : field,
+                    true,
+                ])));
                 if (savedUniversity) {
                     try {
                         const created = await api<{ success: boolean; application: App }>("/student/application", {
@@ -341,9 +391,11 @@ export default function StudentApplication() {
         setForm(p => ({ ...p, [f]: v }));
         setSaved(false);
         setServerErrors(current => {
-            if (!current[f]) return current;
+            const serverField = f === "mobile" ? "mobileNumber" : f === "birthDate" ? "dateOfBirth" : f;
+            if (!current[f] && !current[serverField]) return current;
             const next = { ...current };
             delete next[f];
+            delete next[serverField];
             return next;
         });
     };
@@ -368,13 +420,19 @@ export default function StudentApplication() {
 
     const onMobileChange = (raw: string) => {
         touch("mobile");
-        const normalized = String(raw || '').replace(/[^\d+]/g, '').slice(0, 13);
-        if (normalized && !/^\+?[\d\s-]+$/.test(raw)) {
-            setMobileBlockedErr("Use a Philippine mobile number beginning with 09 or +639.");
+        const normalized = digitsOnly(raw).slice(0, 11);
+        if (/\D/.test(raw)) {
+            setMobileBlockedErr("Mobile Number accepts digits only.");
         } else {
             setMobileBlockedErr("");
         }
         set("mobile", normalized);
+    };
+
+    const onUnitsChange = (raw: string) => {
+        touch("unitsEnrolled");
+        setUnitsBlockedErr(/\D/.test(raw) ? "Units Enrolled accepts digits only." : "");
+        set("unitsEnrolled", digitsOnly(raw).slice(0, 2));
     };
 
     // Derived live errors: shown once the field is touched (first keystroke)
@@ -386,19 +444,18 @@ export default function StudentApplication() {
     // Format error for Student Number: empty value defers to the "required"
     // message only after submit; while typing, show the dash-pattern hint so
     // the student sees the expected XX-XX-XXXX-XXXXXX format break/fix live.
-    const studentIdFormatErr = !studentIdValue
-        ? (submitAttempted ? "Student Number is required." : "")
-        : validateStudentId(studentIdValue);
-    const mobileFormatErr = !mobileValue
-        ? (submitAttempted ? "Mobile Number is required." : "")
-        : (!MOBILE_RE.test(mobileValue.replace(/[\s-]/g, ''))
-            ? "Mobile Number must be 09XXXXXXXXX or +639XXXXXXXXX."
-            : "");
+    const renewalFlow = getSessionUser()?.scholarType === 'existing_scholar';
+    const applicationErrors = getApplicationErrors(form, false, renewalFlow);
+    const submitErrors = getApplicationErrors(form, true, renewalFlow);
+    const studentIdFormatErr = validateField("studentId", studentIdValue, { required: submitAttempted || touched.studentId }) || "";
+    const mobileFormatErr = validateField("mobileNumber", mobileValue, { required: submitAttempted || touched.mobile }) || "";
     const studentIdErr = studentIdBlockedErr || serverErrors.studentId || (showStudentIdErr ? studentIdFormatErr : "");
     const mobileErr = mobileBlockedErr || serverErrors.mobileNumber || (showMobileErr ? mobileFormatErr : "");
-    const emailErr = serverErrors.email || validateOptionalEmail(form.email || "") || "";
-    const gwaErr = serverErrors.gwa || validateGwa(form.gwa || "") || "";
-    const unitsErr = serverErrors.unitsEnrolled || validateUnitsEnrolled(form.unitsEnrolled || "") || "";
+    const visibleError = (field: string, formField = field) => serverErrors[field]
+        || ((touched[formField] || submitAttempted) ? submitErrors[field] || applicationErrors[field] || "" : "");
+    const emailErr = serverErrors.email || ((touched.email || submitAttempted) ? applicationErrors.email || "" : "");
+    const unitsErr = unitsBlockedErr || visibleError("unitsEnrolled");
+    const hasBlockingServerErrors = Object.keys(serverErrors).some(field => APPLICATION_VALIDATION_FIELDS.has(field));
 
     const requiredDocs = docSlots.filter(d => d.required);
     const missingRequiredDocs = requiredDocs.filter(d => !docs.some(doc => documentMatchesSlot(doc.type, d.key)));
@@ -420,6 +477,18 @@ export default function StudentApplication() {
 
     const doSave = useCallback(async () => {
         if (!app) return;
+        const errors = getApplicationErrors(form, false, renewalFlow);
+        if (Object.keys(errors).length) {
+            setTouched(current => ({
+                ...current,
+                ...Object.fromEntries(Object.keys(errors).map(field => [
+                    field === "mobileNumber" ? "mobile" : field === "dateOfBirth" ? "birthDate" : field,
+                    true,
+                ])),
+            }));
+            setSavedMsg(formatErrorBanner(errors, "Please correct the highlighted fields before saving."));
+            return;
+        }
         setServerErrors({});
         setSaving(true);
         setSaved(false);
@@ -442,7 +511,7 @@ export default function StudentApplication() {
         } finally {
             setSaving(false);
         }
-    }, [app, form]);
+    }, [app, form, renewalFlow]);
 
     const doSubmit = useCallback(async () => {
         if (!app) return;
@@ -456,11 +525,18 @@ export default function StudentApplication() {
         // Mark all validated fields touched so submit also reveals any
         // outstanding inline errors directly below each field.
         setSubmitAttempted(true);
-        setTouched(p => ({ ...p, studentId: true, mobile: true, course: true }));
-        const clientErrors = getClientSubmitErrors(form);
+        const clientErrors = getApplicationErrors(form, true, renewalFlow);
         if (Object.keys(clientErrors).length) {
+            setTouched(current => ({
+                ...current,
+                ...Object.fromEntries(Object.keys(clientErrors).map(field => [
+                    field === "mobileNumber" ? "mobile" : field === "dateOfBirth" ? "birthDate" : field,
+                    true,
+                ])),
+            }));
             setStudentIdBlockedErr("");
             setMobileBlockedErr("");
+            setUnitsBlockedErr("");
             setSaved(false);
             setServerErrors(clientErrors);
             setSavedMsg(formatErrorBanner(clientErrors, "Please correct the highlighted fields before submitting."));
@@ -492,7 +568,7 @@ export default function StudentApplication() {
         } finally {
             setSaving(false);
         }
-        }, [app, form]);
+        }, [app, form, renewalFlow]);
 
     const doc = (key: string) => docs.find(d => documentMatchesSlot(d.type, key));
 
@@ -688,8 +764,8 @@ function DocumentUploadButton({
                 <section>
                     <h3 className="text-lg font-bold text-[#0B1F3A] mb-4">Personal Information</h3>
                     <Grid>
-                        <Field label="Full Name" required error={serverErrors.fullName}>
-                            <input id="application-fullName" className={inputCls + (serverErrors.fullName ? inputErrorCls : "")} value={form.fullName || ""} onChange={(e) => set("fullName", e.target.value)} placeholder="e.g. Juan Dela Cruz" aria-invalid={Boolean(serverErrors.fullName)} required />
+                        <Field label="Full Name" required error={visibleError("fullName")}>
+                            <input id="application-fullName" className={inputCls + (visibleError("fullName") ? inputErrorCls : "")} value={form.fullName || ""} onChange={(e) => set("fullName", e.target.value)} onBlur={() => touch("fullName")} placeholder="e.g. Juan Dela Cruz" aria-invalid={Boolean(visibleError("fullName"))} required />
                         </Field>
                         <Field label="Student Number / ID" required error={studentIdErr}>
                             <input
@@ -700,11 +776,12 @@ function DocumentUploadButton({
                                 onBlur={() => touch("studentId")}
                                 placeholder="e.g. 03-01-2425-041702"
                                 inputMode="text"
+                                maxLength={17}
                                 aria-invalid={Boolean(studentIdErr)}
                                 required
                             />
                         </Field>
-        <Field label="Email Address" error={emailErr}>
+                        <Field label="Email Address" error={emailErr}>
                             <input id="application-email" className={inputCls + (emailErr ? inputErrorCls : "")} type="email" value={form.email || ""} readOnly aria-invalid={Boolean(emailErr)} />
                         </Field>
                         <Field label="Mobile Number" required error={mobileErr}>
@@ -716,34 +793,32 @@ function DocumentUploadButton({
                                 onBlur={() => touch("mobile")}
                                 placeholder="e.g. 09XXXXXXXXX"
                                 inputMode="numeric"
+                                maxLength={11}
                                 aria-invalid={Boolean(mobileErr)}
                             />
                         </Field>
-                        <Field label="Birth Date" error={serverErrors.dateOfBirth}>
-                            <input id="application-dateOfBirth" className={inputCls + (serverErrors.dateOfBirth ? inputErrorCls : "")} type="date" value={form.birthDate || ""} onChange={(e) => set("birthDate", e.target.value)} aria-invalid={Boolean(serverErrors.dateOfBirth)} />
+                        <Field label="Birth Date" error={visibleError("dateOfBirth", "birthDate")}>
+                            <input id="application-dateOfBirth" className={inputCls + (visibleError("dateOfBirth", "birthDate") ? inputErrorCls : "")} type="date" value={form.birthDate || ""} onChange={(e) => set("birthDate", e.target.value)} onBlur={() => touch("birthDate")} aria-invalid={Boolean(visibleError("dateOfBirth", "birthDate"))} />
                         </Field>
-                        <Field label="Sex">
-                            <select className={inputCls} value={form.sex || ""} onChange={(e) => set("sex", e.target.value)}>
+                        <Field label="Sex" error={visibleError("sex")}>
+                            <select id="application-sex" className={inputCls + (visibleError("sex") ? inputErrorCls : "")} value={form.sex || ""} onChange={(e) => set("sex", e.target.value)} onBlur={() => touch("sex")} aria-invalid={Boolean(visibleError("sex"))}>
                                 <option value="">Select…</option>
-                                <option value="Male">Male</option>
-                                <option value="Female">Female</option>
-                                <option value="Other">Other</option>
+                                {form.sex && !SEX_OPTIONS.includes(form.sex) && <option value={form.sex}>{form.sex} (invalid saved value)</option>}
+                                {SEX_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
                         </Field>
-                        <Field label="Civil Status">
-                            <select className={inputCls} value={form.civilStatus || ""} onChange={(e) => set("civilStatus", e.target.value)}>
+                        <Field label="Civil Status" error={visibleError("civilStatus")}>
+                            <select id="application-civilStatus" className={inputCls + (visibleError("civilStatus") ? inputErrorCls : "")} value={form.civilStatus || ""} onChange={(e) => set("civilStatus", e.target.value)} onBlur={() => touch("civilStatus")} aria-invalid={Boolean(visibleError("civilStatus"))}>
                                 <option value="">Select…</option>
-                                <option value="Single">Single</option>
-                                <option value="Married">Married</option>
-                                <option value="Widowed">Widowed</option>
-                                <option value="Divorced">Divorced</option>
+                                {form.civilStatus && !CIVIL_STATUS_OPTIONS.includes(form.civilStatus) && <option value={form.civilStatus}>{form.civilStatus} (invalid saved value)</option>}
+                                {CIVIL_STATUS_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
                         </Field>
-                        <Field label="House No." required error={serverErrors.houseNo}>
-                            <input id="application-houseNo" className={inputCls + (serverErrors.houseNo ? inputErrorCls : "")} value={form.houseNo || ""} onChange={(e) => set("houseNo", e.target.value)} placeholder="e.g. 123" aria-invalid={Boolean(serverErrors.houseNo)} required />
+                        <Field label="House No." required error={visibleError("houseNo")}>
+                            <input id="application-houseNo" className={inputCls + (visibleError("houseNo") ? inputErrorCls : "")} value={form.houseNo || ""} onChange={(e) => set("houseNo", e.target.value)} onBlur={() => touch("houseNo")} placeholder="e.g. 123" aria-invalid={Boolean(visibleError("houseNo"))} required />
                         </Field>
-                        <Field label="Street Name" required error={serverErrors.streetName}>
-                            <input id="application-streetName" className={inputCls + (serverErrors.streetName ? inputErrorCls : "")} value={form.streetName || ""} onChange={(e) => set("streetName", e.target.value)} placeholder="e.g. Rizal Street" aria-invalid={Boolean(serverErrors.streetName)} required />
+                        <Field label="Street Name" required error={visibleError("streetName")}>
+                            <input id="application-streetName" className={inputCls + (visibleError("streetName") ? inputErrorCls : "")} value={form.streetName || ""} onChange={(e) => set("streetName", e.target.value)} onBlur={() => touch("streetName")} placeholder="e.g. Rizal Street" aria-invalid={Boolean(visibleError("streetName"))} required />
                         </Field>
                     </Grid>
                 </section>
@@ -767,69 +842,47 @@ function DocumentUploadButton({
                                     : 'No university found on your account. Please contact the scholarship office to have it corrected.'}
                             </p>
                         </Field>
-                        <Field label="School Type">
-                            <select className={inputCls} value={form.schoolType || ""} onChange={(e) => set("schoolType", e.target.value)}>
+                        <Field label="School Type" error={visibleError("schoolType")}>
+                            <select id="application-schoolType" className={inputCls + (visibleError("schoolType") ? inputErrorCls : "")} value={form.schoolType || ""} onChange={(e) => set("schoolType", e.target.value)} onBlur={() => touch("schoolType")} aria-invalid={Boolean(visibleError("schoolType"))}>
                                 <option value="">Select…</option>
-                                <option value="Public">Public</option>
-                                <option value="Private">Private</option>
-                                <option value="State University">State University</option>
+                                {form.schoolType && !SCHOOL_TYPE_OPTIONS.includes(form.schoolType) && <option value={form.schoolType}>{form.schoolType} (invalid saved value)</option>}
+                                {SCHOOL_TYPE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
                         </Field>
-                        <Field label="Course" required error={serverErrors.course}>
+                        <Field label="Course" required error={visibleError("course")}>
                             <select
                                 id="application-course"
-                                className={inputCls + (serverErrors.course || (submitAttempted && !form.course) ? inputErrorCls : "")}
+                                className={inputCls + (visibleError("course") ? inputErrorCls : "")}
                                 value={form.course || ""}
                                 onChange={(e) => set("course", e.target.value)}
                                 onBlur={() => touch("course")}
-                                aria-invalid={Boolean(serverErrors.course || (submitAttempted && !form.course))}
+                                aria-invalid={Boolean(visibleError("course"))}
                                 required
                             >
                                 <option value="">Select…</option>
-                                <option value="BS Information Technology">BS Information Technology</option>
-                                <option value="BS Computer Science">BS Computer Science</option>
-                                <option value="BS Business Administration">BS Business Administration</option>
-                                <option value="BS Accountancy">BS Accountancy</option>
-                                <option value="BS Nursing">BS Nursing</option>
-                                <option value="BS Education">BS Education</option>
-                                <option value="BS Criminology">BS Criminology</option>
-                                <option value="BS Psychology">BS Psychology</option>
-                                <option value="BA Communication">BA Communication</option>
-                                <option value="BEEd / BSEd">BEEd / BSEd</option>
-                                <option value="BS Hospitality Management">BS Hospitality Management</option>
-                                <option value="BS Tourism Management">BS Tourism Management</option>
+                                {form.course && !COURSE_OPTIONS.includes(form.course) && <option value={form.course}>{form.course} (invalid saved value)</option>}
+                                {COURSE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
-                            {!serverErrors.course && submitAttempted && !form.course && (
-                                <p className={errorCls} role="alert">
-                                    <span aria-hidden="true">⚠</span> Course is required.
-                                </p>
-                            )}
                         </Field>
-                        <Field label="Year Level" required error={serverErrors.yearLevel}>
-                            <select id="application-yearLevel" className={inputCls + (serverErrors.yearLevel ? inputErrorCls : "")} value={form.yearLevel || ""} onChange={(e) => set("yearLevel", e.target.value)} aria-invalid={Boolean(serverErrors.yearLevel)} required>
+                        <Field label="Year Level" required error={visibleError("yearLevel")}>
+                            <select id="application-yearLevel" className={inputCls + (visibleError("yearLevel") ? inputErrorCls : "")} value={form.yearLevel || ""} onChange={(e) => set("yearLevel", e.target.value)} onBlur={() => touch("yearLevel")} aria-invalid={Boolean(visibleError("yearLevel"))} required>
                                 <option value="">Select…</option>
-                                <option value="1st Year">1st Year</option>
-                                <option value="2nd Year">2nd Year</option>
-                                <option value="3rd Year">3rd Year</option>
-                                <option value="4th Year">4th Year</option>
+                                {form.yearLevel && !YEAR_LEVEL_OPTIONS.includes(form.yearLevel) && <option value={form.yearLevel}>{form.yearLevel} (invalid saved value)</option>}
+                                {YEAR_LEVEL_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
                         </Field>
-                        <Field label="Academic Term" required error={serverErrors.academicTerm || (submitAttempted && !form.academicTerm ? "Academic Term is required." : "")}>
-                            <select id="application-academicTerm" className={inputCls + (serverErrors.academicTerm || (submitAttempted && !form.academicTerm) ? inputErrorCls : "")} value={form.academicTerm || ""} onChange={(e) => set("academicTerm", e.target.value)} aria-invalid={Boolean(serverErrors.academicTerm || (submitAttempted && !form.academicTerm))} required>
+                        <Field label="Academic Term" required error={visibleError("academicTerm")}>
+                            <select id="application-academicTerm" className={inputCls + (visibleError("academicTerm") ? inputErrorCls : "")} value={form.academicTerm || ""} onChange={(e) => set("academicTerm", e.target.value)} onBlur={() => touch("academicTerm")} aria-invalid={Boolean(visibleError("academicTerm"))} required>
                                 <option value="">Select…</option>
-                                <option value="1st Semester">1st Semester</option>
-                                <option value="2nd Semester">2nd Semester</option>
-                                <option value="Summer">Summer</option>
+                                {form.academicTerm && !ACADEMIC_TERM_OPTIONS.includes(form.academicTerm) && <option value={form.academicTerm}>{form.academicTerm} (invalid saved value)</option>}
+                                {ACADEMIC_TERM_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
                             </select>
                         </Field>
-                        <Field label="School Year">
-                            <input className={inputCls} value={form.schoolYear || ""} onChange={(e) => set("schoolYear", e.target.value)} placeholder="e.g. 2024-2025" />
-                        </Field>
-                        <Field label="Current GWA" error={gwaErr}>
-                            <input id="application-gwa" className={inputCls + (gwaErr ? inputErrorCls : "")} type="number" min="1" max="5" step="0.01" value={form.gwa || ""} onChange={(e) => set("gwa", e.target.value)} placeholder="e.g. 1.75" aria-invalid={Boolean(gwaErr)} />
+                        <Field label="School Year" error={visibleError("schoolYear")}>
+                            <input id="application-schoolYear" className={inputCls + (visibleError("schoolYear") ? inputErrorCls : "")} value={form.schoolYear || ""} onChange={(e) => set("schoolYear", e.target.value)} onBlur={() => touch("schoolYear")} placeholder="e.g. 2024-2025" aria-invalid={Boolean(visibleError("schoolYear"))} />
                         </Field>
                         <Field label="Units Enrolled" error={unitsErr}>
-                            <input id="application-unitsEnrolled" className={inputCls + (unitsErr ? inputErrorCls : "")} type="number" min="1" step="1" value={form.unitsEnrolled || ""} onChange={(e) => set("unitsEnrolled", e.target.value)} placeholder="e.g. 24" aria-invalid={Boolean(unitsErr)} />
+                            <input id="application-unitsEnrolled" className={inputCls + (unitsErr ? inputErrorCls : "")} type="text" inputMode="numeric" maxLength={2} value={form.unitsEnrolled || ""} onChange={(e) => onUnitsChange(e.target.value)} onBlur={() => touch("unitsEnrolled")} placeholder="e.g. 24" aria-invalid={Boolean(unitsErr)} />
                         </Field>
                     </Grid>
                 </section>
@@ -895,13 +948,13 @@ function DocumentUploadButton({
                             {saved && <span className="text-green-600 font-medium">Saved</span>}
                         </div>
                         <div className="flex gap-3">
-                            <button type="button" onClick={doSave} disabled={saving || !app || !university} className={outlineBtnCls}>
+                            <button type="button" onClick={doSave} disabled={saving || !app || !university || Object.keys(applicationErrors).length > 0 || hasBlockingServerErrors} className={outlineBtnCls}>
                                 {saving ? "Saving…" : "Save Draft"}
                             </button>
                             <button
                                 type="button"
                                 onClick={requestSubmit}
-                                disabled={saving || !app}
+                                disabled={saving || !app || !university || Object.keys(submitErrors).length > 0 || hasBlockingServerErrors}
                                 className={primaryBtnCls}
                             >
                                 {saving ? "Submitting…" : "Submit Application"}

@@ -3,75 +3,64 @@ const Document = require('../models/Document');
 const User = require('../models/User');
 const { missingRequiredApplicationDocuments } = require('./studentDocController');
 const { getProgramSettings } = require('../utils/cityProgramSettings');
+const {
+  normalizeText,
+  normalizeFullName,
+  validateField
+} = require('../../shared/validation');
+const { GRADING } = require('../utils/gradingConfig');
 
-const VALID_COURSES = new Set([
-  'BS Information Technology', 'BS Computer Science', 'BS Business Administration',
-  'BS Accountancy', 'BS Nursing', 'BS Education', 'BS Criminology',
-  'BS Psychology', 'BA Communication', 'BEEd / BSEd',
-  'BS Hospitality Management', 'BS Tourism Management'
-]);
-const VALID_YEAR_LEVELS = new Set(['1st Year', '2nd Year', '3rd Year', '4th Year']);
-const STUDENT_ID_PATTERN = /^\d{2}-\d{2}-\d{4}-\d{6}$/;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MOBILE_PATTERN = /^(?:09\d{9}|\+639\d{9})$/;
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const APPLICANT_VALIDATION_FIELDS = [
+  'dateOfBirth', 'sex', 'civilStatus', 'mobileNumber', 'studentId',
+  'course', 'yearLevel', 'academicTerm', 'unitsEnrolled',
+  'schoolType', 'schoolYear', 'houseNo', 'streetName'
+];
 
 function fieldError(errors, field, reason) {
   errors[field] = reason;
 }
 
+function applicantErrors(applicant, requiredFields = []) {
+  const errors = {};
+  const required = new Set(requiredFields);
+  for (const field of APPLICANT_VALIDATION_FIELDS) {
+    const message = validateField(field, applicant?.[field], {
+      required: required.has(field),
+      grading: GRADING
+    });
+    if (message) fieldError(errors, field, message);
+  }
+  return errors;
+}
+
+function validateApplicantInput(applicant) {
+  const errors = applicantErrors(applicant);
+  if (Object.prototype.hasOwnProperty.call(applicant || {}, 'gwa')) {
+    const message = validateField('gwa', applicant.gwa, { grading: GRADING });
+    if (message) fieldError(errors, 'gwa', message);
+  }
+  for (const field of CURRENT_APPLICANT_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(applicant || {}, field)) continue;
+    const value = applicant[field];
+    if (typeof value !== 'string' && !(typeof value === 'number' && (field === 'gwa' || field === 'unitsEnrolled'))) {
+      fieldError(errors, field, 'Enter a text value.');
+    }
+  }
+  return errors;
+}
+
 function submissionErrors(application, isRenewalFlow, studentName, accountEmail) {
   const errors = {};
-  if (!String(studentName || '').trim()) {
-    fieldError(errors, 'fullName', 'Full Name is required.');
-  }
-  if (accountEmail && !EMAIL_PATTERN.test(String(accountEmail).trim().toLowerCase())) {
-    fieldError(errors, 'email', 'Enter a valid email address.');
-  }
-  if (!application.university || !application.university.trim()) {
+  const nameError = validateField('fullName', studentName, { required: true });
+  if (nameError) fieldError(errors, 'fullName', nameError);
+  const emailError = validateField('email', accountEmail, { required: true });
+  if (emailError) fieldError(errors, 'email', emailError);
+  if (!String(application.university || '').trim()) {
     fieldError(errors, 'university', 'No university found on your account. Please contact the scholarship office to have it corrected.');
   }
-  const applicant = application.applicant || {};
-  if (!isRenewalFlow && !String(applicant.houseNo || '').trim()) {
-    fieldError(errors, 'houseNo', 'House No. is required.');
-  }
-  if (!isRenewalFlow && !String(applicant.streetName || '').trim()) {
-    fieldError(errors, 'streetName', 'Street Name is required.');
-  }
-  if (!String(applicant.course || '').trim()) {
-    fieldError(errors, 'course', 'Course is required.');
-  } else if (!VALID_COURSES.has(String(applicant.course).trim())) {
-    fieldError(errors, 'course', 'Select a valid Course.');
-  }
-  if (!String(applicant.yearLevel || '').trim()) {
-    fieldError(errors, 'yearLevel', 'Year Level is required.');
-  } else if (!VALID_YEAR_LEVELS.has(String(applicant.yearLevel).trim())) {
-    fieldError(errors, 'yearLevel', 'Select a valid college Year Level.');
-  }
-  if (!String(applicant.academicTerm || '').trim()) {
-    fieldError(errors, 'academicTerm', 'Academic Term is required.');
-  } else if (!['1st Semester', '2nd Semester', 'Summer'].includes(String(applicant.academicTerm).trim())) {
-    fieldError(errors, 'academicTerm', 'Select a valid Academic Term.');
-  }
-  if (!String(applicant.studentId || '').trim()) {
-    fieldError(errors, 'studentId', 'Student Number is required.');
-  } else if (!STUDENT_ID_PATTERN.test(String(applicant.studentId).replace(/\s+/g, ''))) {
-    fieldError(errors, 'studentId', 'Student Number must use the format XX-XX-XXXX-XXXXXX.');
-  }
-  if (!String(applicant.mobileNumber || '').trim()) {
-    fieldError(errors, 'mobileNumber', 'Mobile Number is required.');
-  } else if (!MOBILE_PATTERN.test(String(applicant.mobileNumber).replace(/[\s-]/g, ''))) {
-    fieldError(errors, 'mobileNumber', 'Mobile Number must be 09XXXXXXXXX or +639XXXXXXXXX.');
-  }
-  if (applicant.dateOfBirth && !DATE_PATTERN.test(String(applicant.dateOfBirth).trim())) {
-    fieldError(errors, 'dateOfBirth', 'Birth Date is invalid.');
-  }
-  if (applicant.gwa && (!Number.isFinite(Number(applicant.gwa)) || Number(applicant.gwa) < 1 || Number(applicant.gwa) > 5)) {
-    fieldError(errors, 'gwa', 'Current GWA must be between 1.00 and 5.00.');
-  }
-  if (applicant.unitsEnrolled && (!Number.isInteger(Number(applicant.unitsEnrolled)) || Number(applicant.unitsEnrolled) <= 0)) {
-    fieldError(errors, 'unitsEnrolled', 'Units Enrolled must be a positive whole number.');
-  }
+  const requiredFields = ['studentId', 'mobileNumber', 'course', 'yearLevel', 'academicTerm'];
+  if (!isRenewalFlow) requiredFields.push('houseNo', 'streetName');
+  Object.assign(errors, applicantErrors(application.applicant, requiredFields));
   return errors;
 }
 
@@ -105,7 +94,7 @@ async function applicationWindowBlockReason() {
 // new client writes.
 const CURRENT_APPLICANT_FIELDS = [
   'dateOfBirth', 'sex', 'civilStatus', 'mobileNumber', 'studentId',
-  'parentName', 'parentRelationship', 'parentMobile', 'course', 'yearLevel',
+  'course', 'yearLevel',
   'academicTerm', 'gwa', 'unitsEnrolled', 'schoolType', 'schoolYear',
   'houseNo', 'streetName'
 ];
@@ -115,12 +104,12 @@ function normalizeApplicantInput(applicant) {
   if (!applicant || typeof applicant !== 'object' || Array.isArray(applicant)) return {};
   const copy = {};
   for (const key of CURRENT_APPLICANT_FIELDS) {
-      if (typeof applicant[key] === 'string' || (key === 'gwa' || key === 'unitsEnrolled') && typeof applicant[key] === 'number') {
-        const value = String(applicant[key]).trim();
-        if (value) copy[key] = key === 'mobileNumber' ? value.replace(/[\s-]/g, '') : key === 'studentId' ? value.replace(/\s+/g, '') : value;
-      }
+      if (!Object.prototype.hasOwnProperty.call(applicant, key)) continue;
+      const value = typeof applicant[key] === 'number'
+        ? String(applicant[key])
+        : normalizeText(applicant[key]);
+      copy[key] = value;
   }
-  if (copy.yearLevel && ['grade 11', 'grade 12'].includes(copy.yearLevel.toLowerCase())) delete copy.yearLevel;
   return copy;
 }
 
@@ -158,6 +147,13 @@ const createStudentApplication = async (req, res, next) => {
   try {
     const existing = await Application.findOne({ student: req.user.id, status: 'draft' }).sort({ createdAt: -1 });
     if (existing) return res.status(409).json({ success: false, message: 'You already have a draft application.', errors: { application: 'A draft application already exists.' } });
+    const applicantInput = req.body?.applicant;
+    if (applicantInput !== undefined && (!applicantInput || typeof applicantInput !== 'object' || Array.isArray(applicantInput))) {
+      return sendValidationError(res, { applicant: 'Applicant data must be an object.' });
+    }
+    const errors = validateApplicantInput(applicantInput);
+    if (Object.keys(errors).length) return sendValidationError(res, errors);
+    const applicant = normalizeApplicantInput(applicantInput);
     // Residency link: copy the student's registered barangay (User.barangay,
     // chosen at registration) onto the application so the Barangay review
     // queue and City views can scope on application.barangay.
@@ -166,7 +162,7 @@ const createStudentApplication = async (req, res, next) => {
       return sendValidationError(res, { university: 'No university found on your account. Please contact the scholarship office to have it corrected.' });
     }
     const registrar = await User.findById(req.user.id).select('barangay').lean();
-    const application = await Application.create({ student: req.user.id, university, school: university, applicant: normalizeApplicantInput(req.body.applicant), barangay: registrar?.barangay || null, status: 'draft' });
+    const application = await Application.create({ student: req.user.id, university, school: university, applicant, barangay: registrar?.barangay || null, status: 'draft' });
     await application.populate('student', 'name email');
     return res.status(201).json({ success: true, application });
   } catch (err) { next(err); }
@@ -204,11 +200,26 @@ const updateStudentApplication = async (req, res, next) => {
       }
       return res.status(409).json({ success: false, message: 'This application has already been submitted.', errors: { application: 'This application has already been submitted.' } });
     }
-    // Full Name edits the account itself, not the application document.
-    if (typeof req.body.fullName === 'string' && req.body.fullName.trim()) {
-      await User.findByIdAndUpdate(req.user.id, { name: req.body.fullName.trim() });
+    if (req.body.applicant !== undefined && (!req.body.applicant || typeof req.body.applicant !== 'object' || Array.isArray(req.body.applicant))) {
+      return sendValidationError(res, { applicant: 'Applicant data must be an object.' });
     }
+    const incomingApplicantErrors = validateApplicantInput(req.body.applicant);
+    if (Object.keys(incomingApplicantErrors).length) return sendValidationError(res, incomingApplicantErrors);
+    const requestedName = Object.prototype.hasOwnProperty.call(req.body, 'fullName')
+      ? normalizeFullName(req.body.fullName)
+      : undefined;
+    if (requestedName !== undefined) {
+      const nameError = validateField('fullName', requestedName, { required: true });
+      if (nameError) return sendValidationError(res, { fullName: nameError });
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'email')) {
+      const emailError = validateField('email', req.body.email, { required: true });
+      if (emailError) return sendValidationError(res, { email: emailError });
+    }
+    const accountName = requestedName === undefined ? req.user.name : requestedName;
     if (req.body.applicant) application.applicant = { ...application.applicant, ...normalizeApplicantInput(req.body.applicant) };
+    const fieldErrors = applicantErrors(application.applicant);
+    if (Object.keys(fieldErrors).length) return sendValidationError(res, fieldErrors);
     const registrar = await User.findById(req.user.id).select('barangay').lean();
     if (registrar?.barangay) application.barangay = registrar.barangay;
     const university = await getUniversity(req.user.id);
@@ -222,7 +233,7 @@ const updateStudentApplication = async (req, res, next) => {
       const isRenewalFlow = isRenewalScholar;
       // Required fields are validated here rather than at the schema level
       // so drafts may stay incomplete. The university was refreshed above.
-      const errors = submissionErrors(application, isRenewalFlow, req.body.fullName || req.user.name, req.user.email);
+      const errors = submissionErrors(application, isRenewalFlow, accountName, req.user.email);
       if (Object.keys(errors).length) {
         return sendValidationError(res, errors);
       }
@@ -259,6 +270,9 @@ const updateStudentApplication = async (req, res, next) => {
           { returnDocument: "after" }
         );
         const renewed = updated || (await Application.findById(application._id)) || application;
+        if (updated && requestedName !== undefined && requestedName !== req.user.name) {
+          await User.findByIdAndUpdate(req.user.id, { name: requestedName }, { runValidators: true });
+        }
         await renewed.populate('student', 'name email');
         return res.json({ success: true, application: renewed });
       }
@@ -267,6 +281,9 @@ const updateStudentApplication = async (req, res, next) => {
       application.submittedAt = req.body.submittedAt ? new Date(req.body.submittedAt) : new Date();
     }
     await application.save();
+    if (requestedName !== undefined && requestedName !== req.user.name) {
+      await User.findByIdAndUpdate(req.user.id, { name: requestedName }, { runValidators: true });
+    }
     await application.populate('student', 'name email');
     return res.json({ success: true, application });
   } catch (err) { next(err); }

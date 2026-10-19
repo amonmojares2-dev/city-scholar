@@ -11,8 +11,8 @@
 //                mark, anything above 3.00 failed. "highest grade" = the
 //                LOWEST number on this scale.
 const GRADING = {
-    percentage: { passingMark: 70 },
-    decimal: { passingMark: 3.00 }
+    percentage: { passingMark: 70, min: 60, max: 100 },
+    decimal: { passingMark: 3.00, min: 1, max: 5 }
 };
 
 // Human readable labels for the two scales.
