@@ -19,8 +19,7 @@ const otpVerificationSchema = new mongoose.Schema({
     verified: { type: Boolean, default: false }
 }, { timestamps: true });
 
-// NOTE: no TTL auto-delete index on purpose.
-// LOGIN OTP must NOT expire — it stays valid until replaced by a resend.
-// Registration / password-reset expiry is enforced manually in the controller.
+// NOTE: no TTL auto-delete index on purpose. OTP expiry is enforced manually
+// by the controller so resend can recover an expired code on the same challenge.
 
 module.exports = mongoose.model("OTPVerification", otpVerificationSchema);

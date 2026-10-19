@@ -88,8 +88,7 @@ export default function LoginPage() {
   const [otpError, setOtpError] = useState('');
   const [otpLoading, setOtpLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
-  const [otpTimer, setOtpTimer] = useState(30);  // 30-second countdown (registration / forgot only)
-  // LOGIN OTP: no expiry. 6 wrong entries -> block input for 30s -> must request NEW code.
+  // Six incorrect codes block entry and resending for 60 seconds.
   const [otpBlocked, setOtpBlocked] = useState(false);
   const [blockCountdown, setBlockCountdown] = useState(0);
   const [attemptsRemaining, setAttemptsRemaining] = useState(6);
@@ -118,16 +117,7 @@ export default function LoginPage() {
     return () => clearTimeout(t);
   }, [resendCooldown]);
 
-  // 30-second OTP countdown timer (registration / forgot-password only).
-  // Login OTP does NOT expire — so freeze the timer for login purpose.
-  useEffect(() => {
-    if (!otpStep || otpPurpose === 'login' || otpTimer <= 0) return;
-    const timer = setTimeout(() => setOtpTimer(t => t - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [otpStep, otpPurpose, otpTimer]);
-
-  // Login: 6 wrong attempts -> block OTP entry for 30s, count down, then
-  // require the user to request a NEW code.
+  // Six incorrect codes block entry for 60s, then require a new code.
   useEffect(() => {
     if (!otpBlocked) return;
     if (blockCountdown <= 0) {
@@ -347,7 +337,6 @@ export default function LoginPage() {
       setMaskedEmail(result.email);
       setOtpPurpose('registration');
       resetLoginOtpState();
-      setOtpTimer(30);
       setResendCooldown(30);
       setOtpStep(true);
     } catch (error) {
@@ -377,7 +366,6 @@ export default function LoginPage() {
       setMaskedEmail(result.email);
       setOtpPurpose('password_reset');
       resetLoginOtpState();
-      setOtpTimer(30);
       setResendCooldown(30);
       setOtpStep(true);
     } catch (error) {
@@ -446,19 +434,16 @@ export default function LoginPage() {
     otpRefs.current[focusIdx]?.focus();
   };
 
-  // LOGIN OTP: 6 attempts -> block entry for 30s -> must request NEW code.
-  // No "verification code expired" for login.
+  // Six incorrect codes block entry for 60s for every OTP purpose.
   const handleOtpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (otpPurpose === 'login') {
-      if (otpBlocked && blockCountdown > 0) {
-        setOtpError(`Too many incorrect attempts. OTP entry is blocked for ${blockCountdown}s.`);
-        return;
-      }
-      if (mustResend) {
-        setOtpError('Please request a new code and enter the new OTP.');
-        return;
-      }
+    if (otpBlocked && blockCountdown > 0) {
+      setOtpError(`Too many incorrect attempts. OTP entry is blocked for ${blockCountdown}s.`);
+      return;
+    }
+    if (mustResend) {
+      setOtpError('Please request a new code and enter the new OTP.');
+      return;
     }
     const code = otp.join('');
     if (code.length < 6) { setOtpError('Please enter all 6 digits.'); return; }
@@ -496,22 +481,23 @@ export default function LoginPage() {
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to verify the code.';
       setOtpError(msg);
-      // 6th wrong login attempt -> block OTP entry for 30s.
-      if (otpPurpose === 'login' && /blocked for 30s|blocked for \d+s|temporarily blocked|Too many incorrect/i.test(msg)) {
+      // The server's attempt limit applies to registration, password reset,
+      // and login challenges equally.
+      if (/blocked for \d+s|temporarily blocked|Too many incorrect attempts/i.test(msg)) {
         const m = msg.match(/(\d+)s/);
-        const secs = m ? parseInt(m[1], 10) : 30;
+        const secs = m ? parseInt(m[1], 10) : 60;
         setOtpBlocked(true);
         setBlockCountdown(secs);
         setAttemptsRemaining(0);
-      } else if (otpPurpose === 'login' && /attempt\(s\) remaining/i.test(msg)) {
+      } else if (/attempt\(s\) remaining/i.test(msg)) {
         const m = msg.match(/(\d+) attempt/);
         if (m) setAttemptsRemaining(parseInt(m[1], 10));
-      } else if (otpPurpose === 'login' && /request a new code/i.test(msg)) {
+      } else if (/request a new code/i.test(msg)) {
         setMustResend(true);
         setAttemptsRemaining(0);
       }
       setOtp(['', '', '', '', '', '']);
-      otpRefs.current[0]?.focus();
+      if (!(otpBlocked && blockCountdown > 0)) otpRefs.current[0]?.focus();
     } finally {
       setOtpLoading(false);
     }
@@ -519,40 +505,65 @@ export default function LoginPage() {
 
   const handleResend = async () => {
     if (!challengeId) return;
-    // While blocked, resend is only allowed AFTER the 30s timer ends.
-    if (otpPurpose === 'login' && otpBlocked && blockCountdown > 0) {
+    // No challenge may be verified or resent during its attempt lock.
+    if (otpBlocked && blockCountdown > 0) {
       setOtpError(`OTP entry is blocked. Please wait ${blockCountdown}s for the timer to end before requesting a new code.`);
       return;
     }
-    // After the block timer ends (6 attempts used), user must request a new code.
-    // Otherwise (normal cooldown) still enforce the 30s resend timer.
-    if (otpPurpose !== 'login' || !mustResend) {
-      if (resendCooldown > 0) {
-        setOtpError(`Please wait ${resendCooldown}s for the timer to end before requesting a new code.`);
-        return;
-      }
+    // After the attempt limit, requesting a fresh code is required once the
+    // 60-second lock has ended. Otherwise enforce the ordinary resend delay.
+    if (!mustResend && resendCooldown > 0) {
+      setOtpError(`Please wait ${resendCooldown}s for the timer to end before requesting a new code.`);
+      return;
     }
     setOtpLoading(true);
     setOtpError('');
     try {
-      const result = await api<{ challengeId: string; email: string }>('/auth/resend-otp', {
-        method: 'POST',
-        body: JSON.stringify({ challengeId }),
-      });
+      let result: { challengeId: string; email: string };
+      try {
+        result = await api<{ challengeId: string; email: string }>('/auth/resend-otp', {
+          method: 'POST',
+          body: JSON.stringify({ challengeId }),
+        });
+      } catch (resendError) {
+        if (otpPurpose !== 'registration' || !(resendError instanceof ApiError) || resendError.status !== 404) {
+          throw resendError;
+        }
+
+        // A registration challenge can disappear if an older server/database
+        // expiry removed it. Recreate it from the still-open form instead of
+        // leaving the applicant unable to request another code.
+        result = await api<{ challengeId: string; email: string }>('/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({
+            firstName: normalizeName(registerForm.firstName),
+            lastName: normalizeName(registerForm.lastName),
+            email: registerForm.email.trim().toLowerCase(),
+            password: registerForm.password,
+            role: 'student',
+            scholarType,
+            barangay: registerForm.barangay,
+            university: registerForm.university.trim(),
+          }),
+        });
+      }
       setChallengeId(result.challengeId);
       setMaskedEmail(result.email);
       resetLoginOtpState();
-      setOtpTimer(30);
       setResendCooldown(30);
       otpRefs.current[0]?.focus();
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to resend the code.';
-      setOtpError(msg);
-      // Server says still blocked -> sync the 30s block timer locally.
+      setOtpError(
+        error instanceof ApiError && error.status === 409 && otpPurpose === 'registration'
+          ? 'This email is already registered. Please return to sign in.'
+          : msg,
+      );
+      // Server says still blocked -> sync the 60s attempt lock locally.
       const m = msg.match(/(\d+)s/);
-      if (otpPurpose === 'login' && /blocked/i.test(msg)) {
+      if (/blocked/i.test(msg)) {
         setOtpBlocked(true);
-        setBlockCountdown(m ? parseInt(m[1], 10) : 30);
+        setBlockCountdown(m ? parseInt(m[1], 10) : 60);
       }
     } finally {
       setOtpLoading(false);
@@ -635,28 +646,13 @@ export default function LoginPage() {
                 <div>
                   <p className="text-sm font-600 text-[#1F2937]" style={{ fontWeight: 600 }}>OTP sent to {maskedEmail}</p>
                   <p className="text-xs text-[#6B7280] mt-0.5 leading-relaxed">
-                    Enter the 6-digit code sent to your email.{otpPurpose !== 'login' ? <> You have {otpTimer}s to enter it.</> : null}
+                    Enter the 6-digit code sent to your email.
                   </p>
-                  {otpPurpose !== 'login' && otpTimer > 0 && otpTimer <= 10 && (
-                    <div className="mt-2 flex items-center gap-1.5 text-xs">
-                      <div className={`h-1.5 flex-1 rounded-full transition-colors duration-300 ${
-                        otpTimer <= 5 ? 'bg-[#DC2626]' : 'bg-[#163A63]'
-                      }`} style={{ width: `${(otpTimer / 30) * 100}%` }} />
-                      <span className={otpTimer <= 5 ? 'text-[#DC2626] font-semibold' : 'text-[#6B7280]'}>
-                        {otpTimer}s remaining
-                      </span>
-                    </div>
-                  )}
-                  {otpPurpose !== 'login' && otpTimer === 0 && (
-                    <p className="mt-2 text-xs text-[#DC2626] font-medium flex items-center gap-1">
-                      <Icon name="clock" size={12} /> Timer expired! Please request a new code.
-                    </p>
-                  )}
-                  {otpPurpose === 'login' && otpBlocked && (
+                  {otpBlocked && (
                     <div className="mt-2">
                       <div className="flex items-center gap-1.5 text-xs">
                         <div className="h-1.5 flex-1 rounded-full bg-[#E5E7EB] overflow-hidden">
-                          <div className="h-full bg-[#DC2626] transition-all duration-1000" style={{ width: `${(blockCountdown / 30) * 100}%` }} />
+                          <div className="h-full bg-[#DC2626] transition-all duration-1000" style={{ width: `${(blockCountdown / 60) * 100}%` }} />
                         </div>
                         <span className="text-[#DC2626] font-semibold">{blockCountdown}s</span>
                       </div>
@@ -671,12 +667,12 @@ export default function LoginPage() {
                       )}
                     </div>
                   )}
-                  {otpPurpose === 'login' && mustResend && !otpBlocked && (
+                  {mustResend && !otpBlocked && (
                     <p className="mt-2 text-xs text-[#DC2626] font-medium flex items-center gap-1">
                       <Icon name="alert-circle" size={12} /> Please request a new code and enter the new OTP.
                     </p>
                   )}
-                  {otpPurpose === 'login' && !otpBlocked && !mustResend && attemptsRemaining < 6 && (
+                  {!otpBlocked && !mustResend && attemptsRemaining < 6 && (
                     <p className="mt-2 text-xs text-[#6B7280]">
                       {attemptsRemaining} attempt{attemptsRemaining === 1 ? '' : 's'} remaining
                     </p>
@@ -696,7 +692,7 @@ export default function LoginPage() {
                         inputMode="numeric"
                         maxLength={1}
                         value={digit}
-                        disabled={otpPurpose === 'login' && (otpBlocked || mustResend)}
+                        disabled={otpBlocked || mustResend}
                         onChange={e => handleOtpChange(i, e.target.value)}
                         onKeyDown={e => handleOtpKeyDown(i, e)}
                         className={`w-12 h-14 text-center text-xl font-800 rounded-xl border-2 focus:outline-none transition-colors ${
@@ -717,7 +713,7 @@ export default function LoginPage() {
 
                 <button
                   type="submit"
-                  disabled={otpLoading || (otpPurpose === 'login' && (otpBlocked || mustResend))}
+                  disabled={otpLoading || otpBlocked || mustResend}
                   className="w-full py-3 bg-[#0B1F3A] text-white font-700 rounded-xl hover:bg-[#163A63] transition-colors text-sm disabled:opacity-60 flex items-center justify-center gap-2"
                   style={{ fontWeight: 700 }}
                 >
@@ -728,9 +724,9 @@ export default function LoginPage() {
               </form>
 
               <div className="mt-4 text-center">
-                {otpPurpose === 'login' && otpBlocked && blockCountdown > 0 ? (
+                {otpBlocked && blockCountdown > 0 ? (
                   <p className="text-xs text-[#DC2626]">OTP blocked — resend available in <span className="font-600" style={{ fontWeight: 600 }}>{blockCountdown}s</span></p>
-                ) : otpPurpose === 'login' && (mustResend || (otpBlocked && blockCountdown <= 0)) ? (
+                ) : mustResend || (otpBlocked && blockCountdown <= 0) ? (
                   <button onClick={handleResend} disabled={otpLoading} className="text-xs font-600 text-[#163A63] hover:text-[#0B1F3A] disabled:opacity-60" style={{ fontWeight: 600 }}>
                     Request a new code
                   </button>

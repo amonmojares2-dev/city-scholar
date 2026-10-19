@@ -30,12 +30,12 @@ const {
     clearActivity
 } = require("../middleware/authMiddleware");
 
-const OTP_TTL_MS = 30 * 1000; // 30 seconds - for registration / password reset
-const LOGIN_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes - login OTP does NOT expire after 30s
+const OTP_TTL_MS = 10 * 60 * 1000; // OTPs remain valid for 10 minutes.
+const LOGIN_OTP_TTL_MS = OTP_TTL_MS;
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds - must wait for timer to end before resend
-const MAX_ATTEMPTS = 6; // Block OTP entry after 6 wrong attempts (login)
+const MAX_ATTEMPTS = 6; // Block OTP entry after 6 wrong attempts.
 const MAX_RESENDS = 5;
-const BLOCK_DURATION_MS = 30 * 1000; // 30s block after 6 failed login attempts
+const BLOCK_DURATION_MS = 60 * 1000; // 60s block after 6 failed attempts.
 const PROFILE_FIELDS = [
     "dateOfBirth", "sex", "civilStatus", "nationality", "mobileNumber",
     "houseNo", "streetName", "city", "zipCode", "studentId", "course",
@@ -135,9 +135,8 @@ async function createChallenge({
 }) {
     const otp = createOtp();
 
-    // LOGIN OTP does NOT expire after 30 seconds — it stays valid and is
-    // only replaced when the user requests a new code. Registration /
-    // password-reset challenges keep the short TTL.
+    // Keep the code valid long enough to enter it; the 30-second resend
+    // cooldown is separate from the OTP's 10-minute validity.
     const ttl = purpose === "login" ? LOGIN_OTP_TTL_MS : OTP_TTL_MS;
 
     const challenge = await OTPVerification.create({
@@ -715,15 +714,35 @@ const setInitialPassword = async(req, res) => {
         // The account now has a usable password, so send the login OTP
         // for the staged challenge.
         const otp = createOtp();
+        const previous = {
+            otpHash: challenge.otpHash,
+            expiresAt: challenge.expiresAt,
+            lastSentAt: challenge.lastSentAt,
+            attempts: challenge.attempts,
+            resendCount: challenge.resendCount,
+            blockedUntil: challenge.blockedUntil
+        };
 
         challenge.otpHash = await bcrypt.hash(otp, 12);
         challenge.expiresAt = new Date(Date.now() + OTP_TTL_MS);
         challenge.lastSentAt = new Date();
         challenge.attempts = 0;
         challenge.resendCount = 0;
+        challenge.blockedUntil = null;
 
-        await sendOtpEmail(challenge.email, otp);
         await challenge.save();
+        try {
+            await sendOtpEmail(challenge.email, otp);
+        } catch (error) {
+            challenge.otpHash = previous.otpHash;
+            challenge.expiresAt = previous.expiresAt;
+            challenge.lastSentAt = previous.lastSentAt;
+            challenge.resendCount = previous.resendCount;
+            challenge.attempts = previous.attempts;
+            challenge.blockedUntil = previous.blockedUntil;
+            await challenge.save();
+            throw error;
+        }
 
         return res.json({
             success: true,
@@ -750,10 +769,8 @@ const setInitialPassword = async(req, res) => {
 // ==========================================
 // VERIFY OTP
 //
-// LOGIN: no 30-second expiry. User gets 6 attempts. On the 6th wrong code
-// the entry is BLOCKED for 30 seconds. When the timer ends the user must
-// request a NEW code and enter that one.
-// Registration / password_reset keep the short TTL behaviour.
+// OTPs remain valid for 10 minutes. After 6 incorrect codes, verification and
+// resend are blocked for 60 seconds; once the lock ends a fresh code is required.
 // ==========================================
 const verifyOtp = async(req, res) => {
     try {
@@ -780,53 +797,38 @@ const verifyOtp = async(req, res) => {
             });
         }
 
-        const isLogin = challenge.purpose === "login";
         const now = new Date();
 
-        // ---------------- Login: block handling (NO expiry) ----------------
-        if (isLogin) {
-            // Still blocked — reject every attempt until the 30s timer ends.
-            if (challenge.blockedUntil && challenge.blockedUntil > now) {
-                const remainingSeconds = Math.ceil(
-                    (challenge.blockedUntil.getTime() - now.getTime()) / 1000
-                );
+        // All OTP purposes enforce the same lock on both verification and resend.
+        if (challenge.blockedUntil && challenge.blockedUntil > now) {
+            const remainingSeconds = Math.ceil(
+                (challenge.blockedUntil.getTime() - now.getTime()) / 1000
+            );
+            return res.status(429).json({
+                success: false,
+                blocked: true,
+                remainingSeconds,
+                blockedUntil: challenge.blockedUntil,
+                attemptsRemaining: 0,
+                message: `Too many incorrect attempts. OTP entry is blocked for ${remainingSeconds}s. When the timer ends, request a new code.`
+            });
+        }
 
-                return res.status(429).json({
-                    success: false,
-                    blocked: true,
-                    remainingSeconds,
-                    blockedUntil: challenge.blockedUntil,
-                    attemptsRemaining: 0,
-                    message: `Too many incorrect attempts. OTP entry is blocked for ${remainingSeconds}s. When the timer ends, request a new code.`
-                });
-            }
+        if (challenge.attempts >= MAX_ATTEMPTS) {
+            return res.status(429).json({
+                success: false,
+                blocked: false,
+                mustResend: true,
+                attemptsRemaining: 0,
+                message: "You reached 6 incorrect attempts. Please request a new code and enter the new OTP."
+            });
+        }
 
-            // Block timer ended after 6 failures — old code is dead.
-            // User must request a NEW OTP before trying again.
-            if (challenge.attempts >= MAX_ATTEMPTS) {
-                return res.status(429).json({
-                    success: false,
-                    blocked: false,
-                    mustResend: true,
-                    attemptsRemaining: 0,
-                    message: "You reached 6 incorrect attempts. Please request a new code and enter the new OTP."
-                });
-            }
-        } else {
-            // ---------------- Registration / password reset ----------------
-            if (challenge.expiresAt <= now) {
-                return res.status(410).json({
-                    success: false,
-                    message: "The 30-second timer has ended. Please request a new verification code."
-                });
-            }
-
-            if (challenge.attempts >= MAX_ATTEMPTS) {
-                return res.status(429).json({
-                    success: false,
-                    message: "Too many incorrect attempts. Your account has been temporarily blocked. Please request a new verification code."
-                });
-            }
+        if (challenge.expiresAt <= now) {
+            return res.status(410).json({
+                success: false,
+                message: "This verification code has expired. Please request a new code."
+            });
         }
 
         if (!(await bcrypt.compare(
@@ -835,33 +837,30 @@ const verifyOtp = async(req, res) => {
             ))) {
             challenge.attempts += 1;
 
-            // Login: 6th wrong code -> block OTP entry for 30 seconds.
-            if (isLogin && challenge.attempts >= MAX_ATTEMPTS) {
+            // Sixth wrong code locks every OTP purpose; resend is also
+            // rejected until blockedUntil has passed.
+            if (challenge.attempts >= MAX_ATTEMPTS) {
                 challenge.blockedUntil = new Date(Date.now() + BLOCK_DURATION_MS);
                 await challenge.save();
 
                 return res.status(429).json({
                     success: false,
                     blocked: true,
-                    remainingSeconds: Math.ceil(BLOCK_DURATION_MS / 1000),
+                    remainingSeconds: 60,
                     blockedUntil: challenge.blockedUntil,
                     attemptsRemaining: 0,
-                    message: "Too many incorrect attempts. OTP entry is blocked for 30s. When the timer ends, request a new code."
+                    message: "Too many incorrect attempts. OTP entry is blocked for 60s. When the timer ends, request a new code."
                 });
             }
 
             await challenge.save();
 
-            return res
-                .status(challenge.attempts >= MAX_ATTEMPTS ? 429 : 400)
-                .json({
-                    success: false,
-                    blocked: false,
-                    mustResend: isLogin && challenge.attempts >= MAX_ATTEMPTS ? true : undefined,
-                    attemptsRemaining: Math.max(0, MAX_ATTEMPTS - challenge.attempts),
-                    message: challenge.attempts >= MAX_ATTEMPTS ?
-                        "Too many incorrect attempts. Please request a new verification code." : "Invalid verification code. You have " + (MAX_ATTEMPTS - challenge.attempts) + " attempt(s) remaining."
-                });
+            return res.status(400).json({
+                success: false,
+                blocked: false,
+                attemptsRemaining: Math.max(0, MAX_ATTEMPTS - challenge.attempts),
+                message: `Invalid verification code. You have ${MAX_ATTEMPTS - challenge.attempts} attempt(s) remaining.`
+            });
         }
 
         challenge.verified = true;
@@ -1018,9 +1017,8 @@ const activityPing = async(req, res) => {
 // ==========================================
 // RESEND OTP
 //
-// LOGIN: if the user hit 6 wrong attempts, a new code can ONLY be
-// requested AFTER the 30s block timer ends. A successful resend resets
-// attempts + block and issues a fresh code.
+// After 6 wrong attempts, a new code can ONLY be requested after the 60s
+// lock ends. A successful resend resets attempts + block and issues a fresh code.
 // ==========================================
 const resendOtp = async(req, res) => {
     try {
@@ -1038,8 +1036,8 @@ const resendOtp = async(req, res) => {
         const isLogin = challenge.purpose === "login";
         const now = new Date();
 
-        // Login: blocked (6 attempts) — no new code until timer ends.
-        if (isLogin && challenge.blockedUntil && challenge.blockedUntil > now) {
+        // No OTP purpose may resend while its six-attempt lock is active.
+        if (challenge.blockedUntil && challenge.blockedUntil > now) {
             const remainingSeconds = Math.ceil(
                 (challenge.blockedUntil.getTime() - now.getTime()) / 1000
             );
@@ -1075,6 +1073,14 @@ const resendOtp = async(req, res) => {
         }
 
         const otp = createOtp();
+        const previous = {
+            otpHash: challenge.otpHash,
+            expiresAt: challenge.expiresAt,
+            lastSentAt: challenge.lastSentAt,
+            attempts: challenge.attempts,
+            resendCount: challenge.resendCount,
+            blockedUntil: challenge.blockedUntil
+        };
 
         challenge.otpHash = await bcrypt.hash(otp, 12);
         challenge.expiresAt = new Date(
@@ -1086,8 +1092,19 @@ const resendOtp = async(req, res) => {
         challenge.attempts = 0;
         challenge.blockedUntil = null;
 
-        await sendOtpEmail(challenge.email, otp);
         await challenge.save();
+        try {
+            await sendOtpEmail(challenge.email, otp);
+        } catch (error) {
+            challenge.otpHash = previous.otpHash;
+            challenge.expiresAt = previous.expiresAt;
+            challenge.lastSentAt = previous.lastSentAt;
+            challenge.resendCount = previous.resendCount;
+            challenge.attempts = previous.attempts;
+            challenge.blockedUntil = previous.blockedUntil;
+            await challenge.save();
+            throw error;
+        }
 
         return res.json({
             success: true,
