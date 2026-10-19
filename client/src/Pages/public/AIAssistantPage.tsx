@@ -33,7 +33,7 @@ export default function AIAssistantPage() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'ai',
-      text: "Hello! I'm the City Scholarship AI Assistant. I can help you with questions about scholarship programs, eligibility, requirements, application process, and more.\n\nHow can I assist you today?",
+      text: "Hello! I'm CS BOT. I can help you with questions about scholarship programs, eligibility, requirements, application process, and more.\n\nHow can I assist you today?",
       time: getTime(),
     },
   ]);
@@ -55,7 +55,7 @@ export default function AIAssistantPage() {
       <div className="max-w-[900px] mx-auto px-6">
         <div className="text-center mb-8">
           <div className="text-xs font-600 text-[#D4A72C] uppercase tracking-widest mb-2" style={{ fontWeight: 600 }}>AI-Powered</div>
-          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>Scholarship Assistant</h1>
+          <h1 className="text-3xl font-800 text-[#0B1F3A] mb-3" style={{ fontWeight: 800 }}>CS BOT</h1>
           <p className="text-[#6B7280] max-w-md mx-auto text-sm">Get instant answers about scholarship programs, requirements, and the application process.</p>
         </div>
 
@@ -63,10 +63,10 @@ export default function AIAssistantPage() {
           {/* Header */}
           <div className="flex items-center gap-3 px-5 py-4 border-b border-[#E5E7EB] bg-[#F6F7F9]">
             <div className="w-9 h-9 rounded-xl bg-[#0B1F3A] flex items-center justify-center">
-              <span className="text-[#D4A72C] font-800 text-xs" style={{ fontWeight: 800 }}>AI</span>
+              <span className="text-[#D4A72C] font-800 text-xs" style={{ fontWeight: 800 }}>CS</span>
             </div>
             <div>
-              <div className="font-600 text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>City Scholarship Assistant</div>
+              <div className="font-600 text-sm text-[#1F2937]" style={{ fontWeight: 600 }}>CS BOT</div>
               <div className="flex items-center gap-1.5 text-xs text-[#22A06B]">
                 <span className="w-1.5 h-1.5 bg-[#22A06B] rounded-full" />
                 Online · Available 24/7
@@ -80,7 +80,7 @@ export default function AIAssistantPage() {
               <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                 {msg.role === 'ai' && (
                   <div className="w-7 h-7 rounded-full bg-[#0B1F3A] flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <span className="text-[#D4A72C] font-800 text-[9px]" style={{ fontWeight: 800 }}>AI</span>
+                    <span className="text-[#D4A72C] font-800 text-[9px]" style={{ fontWeight: 800 }}>CS</span>
                   </div>
                 )}
                 <div className={`max-w-[75%] ${msg.role === 'user' ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
@@ -136,7 +136,7 @@ export default function AIAssistantPage() {
         <div className="mt-5 p-4 bg-[#F8E7A8] border border-[#D4A72C]/30 rounded-xl flex gap-3">
           <Icon name="info" size={16} className="text-[#D97706] flex-shrink-0 mt-0.5" />
           <p className="text-xs text-[#6B7280]">
-            This AI Assistant provides general information only. For official decisions and specific case inquiries, please contact the City Scholarship Office at (02) 8123-4567 or visit us at City Hall, Room 210.
+            CS BOT provides general information only. For official decisions and specific case inquiries, please contact the City Scholarship Office at (02) 8123-4567 or visit us at City Hall, Room 210.
           </p>
         </div>
       </div>

@@ -1,4 +1,5 @@
 const Event = require("../models/Event");
+const Application = require("../models/Application");
 
 jest.mock("../models/Notification", () => ({ create: jest.fn().mockResolvedValue({}) }));
 jest.mock("../config/storage", () => ({
@@ -74,6 +75,7 @@ describe("listEvents", () => {
   });
 
   it("marks approved:false and canSubmit:false for a new applicant", async () => {
+    jest.spyOn(Application, "exists").mockResolvedValue(null);
     mockEvents([makeEvent()]);
     const r = res();
     await listEvents(req(newApplicant), r, () => {});
@@ -96,6 +98,28 @@ describe("listEvents", () => {
     const r = res();
     await listEvents(req(approvedApplicant), r, () => {});
     expect(r.body.events[0].canSubmit).toBe(true);
+  });
+
+  it("checks approved application records when auth user data lacks the client-only flag", async () => {
+    jest.spyOn(Application, "exists").mockResolvedValue({ _id: "approved-application" });
+    mockEvents([makeEvent()]);
+    const r = res();
+    await listEvents(req(newApplicant), r, () => {});
+    expect(r.body.events[0].canSubmit).toBe(true);
+  });
+
+  it("exposes verified attendance totals to City Office event lists", async () => {
+    mockEvents([makeEvent({
+      proofs: [
+        { status: "verified" },
+        { status: "pending" }
+      ]
+    })]);
+    const r = res();
+    await listEvents(req({ id: "city-1", role: "city_admin", account: {} }), r, () => {});
+    expect(r.body.events[0].attendanceCount).toBe(1);
+    expect(r.body.events[0]).not.toHaveProperty("proofs");
+    expect(r.body.events[0]).not.toHaveProperty("attendees");
   });
 
   it("keeps canSubmit:false before the event starts even for an approved scholar", async () => {

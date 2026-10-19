@@ -142,9 +142,9 @@ export default function HowToApplyPage() {
           <div className="bg-[#F6F7F9] rounded-2xl p-5 border border-[#E5E7EB]">
             <Icon name="help-circle" size={20} className="text-[#163A63] mb-3" />
             <h4 className="font-600 text-[#1F2937] mb-2" style={{ fontWeight: 600 }}>{content.helpTitle || 'Need Help?'}</h4>
-            <p className="text-sm text-[#6B7280] mb-3">{content.helpText || 'Our AI Assistant can answer your questions anytime, or contact the scholarship office directly.'}</p>
+            <p className="text-sm text-[#6B7280] mb-3">{content.helpText || 'CS BOT can answer your questions anytime, or contact the scholarship office directly.'}</p>
             <Link to="/ai-assistant" className="text-sm font-600 text-[#163A63] hover:text-[#0B1F3A]" style={{ fontWeight: 600 }}>
-              {content.helpLinkLabel ? `${content.helpLinkLabel} →` : 'Ask the AI Assistant →'}
+              {content.helpLinkLabel ? `${content.helpLinkLabel} →` : 'Ask CS BOT →'}
             </Link>
           </div>
           <div className="bg-[#0B1F3A] rounded-2xl p-5">

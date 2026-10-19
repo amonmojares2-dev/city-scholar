@@ -1,4 +1,6 @@
 const Event = require("../models/Event");
+const Application = require("../models/Application");
+const User = require("../models/User");
 const Notification = require("../models/Notification");
 const {
     persistUpload,
@@ -27,10 +29,21 @@ function ownProofSummary(event, userId) {
     };
 }
 
+async function hasEventAttendanceAccess(req) {
+    if (canSubmitAttendanceProof(req)) return true;
+    if (req.user?.account?.scholarType !== "new_applicant") return false;
+    if (req.user.account.applicationApproved === true) return true;
+    return Boolean(await Application.exists({
+        student: req.user.id,
+        status: { $in: ["approved", "renewal"] }
+    }));
+}
+
 const listEvents = async (req, res, next) => {
     try {
         const events = await Event.find().sort({ startsAt: 1 });
         const now = Date.now();
+        const attendanceAccess = await hasEventAttendanceAccess(req);
         const result = events.map((event) => {
             // Proof submission window: opens at startsAt, closes at endsAt + 48h
             // (or startsAt + 7 days when the event has no end time).
@@ -42,7 +55,7 @@ const listEvents = async (req, res, next) => {
             // Preserve `approved` as the existing-scholar approval indicator;
             // upload eligibility uses the shared Events page access rule below.
             const approved = isApprovedExistingScholar(req);
-            const canSubmit = canSubmitAttendanceProof(req) && now >= startsAt && now <= deadline;
+            const canSubmit = attendanceAccess && now >= startsAt && now <= deadline;
             return {
                 ...event.toObject(),
                 // Legacy "self-marked" flag for non-required events (the old
@@ -55,7 +68,12 @@ const listEvents = async (req, res, next) => {
                 // proof block that the client must not recompute itself.
                 approved,
                 canSubmit,
-                proofDeadline: new Date(deadline).toISOString()
+                proofDeadline: new Date(deadline).toISOString(),
+                ...(canReviewAttendanceProof(req.user.role) && {
+                    attendanceCount: event.required
+                        ? (event.proofs || []).filter((proof) => proof.status === "verified").length
+                        : event.attendees.length
+                })
             };
         });
         // proofs/attendees are raw ObjectId / proof docs that must not leak.
@@ -89,6 +107,14 @@ const createEvent = async (req, res, next) => {
         const { name, description, startsAt, endsAt, location, required = false } = req.body;
         if (!name || !startsAt || !location) {
             return res.status(400).json({ success: false, message: "Name, start time, and location are required" });
+        }
+        const startDate = new Date(startsAt);
+        const endDate = endsAt ? new Date(endsAt) : null;
+        if (Number.isNaN(startDate.getTime()) || (endDate && Number.isNaN(endDate.getTime()))) {
+            return res.status(400).json({ success: false, message: "Enter valid event start and end times." });
+        }
+        if (endDate && endDate <= startDate) {
+            return res.status(400).json({ success: false, message: "The event end time must be after its start time." });
         }
         const event = await Event.create({ name, description, startsAt, endsAt, location, required });
         res.status(201).json({ success: true, event });
@@ -128,7 +154,7 @@ const uploadProof = async (req, res, next) => {
         if (!event.required) {
             return res.status(400).json({ success: false, message: "Attendance proof is not required for this event." });
         }
-        if (!canSubmitAttendanceProof(req)) {
+        if (!await hasEventAttendanceAccess(req)) {
             return res.status(403).json({ success: false, message: "Event attendance access is required to upload proof." });
         }
         const now = new Date();
@@ -147,6 +173,9 @@ const uploadProof = async (req, res, next) => {
         const existing = (event.proofs || []).find(
             (item) => item.student && item.student.toString() === req.user.id
         );
+        if (existing?.status === "verified") {
+            return res.status(409).json({ success: false, message: "Your attendance has already been approved." });
+        }
         const previousProofFilename = existing?.proof;
         if (existing) {
             existing.proof = req.file.filename;
@@ -191,7 +220,7 @@ const removeProof = async (req, res, next) => {
     try {
         const event = await Event.findById(req.params.id);
         if (!event) return res.status(404).json({ success: false, message: "Event not found" });
-        if (!isApprovedExistingScholar(req)) return res.status(403).json({ success: false, message: "Not allowed" });
+        if (!await hasEventAttendanceAccess(req)) return res.status(403).json({ success: false, message: "Not allowed" });
         const proof = event.proofs.id(req.params.proofId);
         if (!proof) return res.status(404).json({ success: false, message: "Proof not found" });
         if (proof.student.toString() !== req.user.id) return res.status(403).json({ success: false, message: "Not allowed" });
@@ -221,13 +250,83 @@ const getEventAttendance = async (req, res, next) => {
         if (!canReviewAttendanceProof(req.user.role)) return res.status(403).json({ success: false, message: "Not allowed" });
 
         const proofs = event.proofs || [];
-        // Show every submitted proof by default; the ?status= filter narrows it
-        // (pending | verified | rejected | all) so the reviewer can see rejects.
-        let filtered = proofs.slice();
+        const deadline = getProofDeadline(event);
+        const isPastDeadline = event.required && Date.now() > deadline.getTime();
+        let students = [];
+        if (event.required) {
+            const approvedApplications = await Application.find({
+                status: { $in: ["approved", "renewal"] }
+            }).select("student").lean();
+            const approvedApplicantIds = approvedApplications.map((application) => application.student);
+            students = await User.find({
+                role: "student",
+                status: { $nin: ["suspended", "deactivated"] },
+                archived: { $ne: true },
+                $or: [
+                    { scholarType: "existing_scholar", scholarVerificationStatus: { $in: ["pending", "approved"] } },
+                    { _id: { $in: approvedApplicantIds } }
+                ]
+            }).select("name email profile.schoolName barangay").populate("barangay", "name").lean();
+        }
+        const proofByStudent = new Map(proofs.map((proof) => [
+            String(proof.student?._id || proof.student),
+            proof
+        ]));
+        const allRows = students.map((student) => {
+            const proof = proofByStudent.get(String(student._id));
+            const attendanceStatus = proof
+                ? proof.status === "verified" ? "attended" : proof.status === "rejected" ? "absent" : "pending"
+                : isPastDeadline ? "absent" : "not_submitted";
+            return {
+                _id: proof ? proof._id : student._id,
+                proofId: proof?._id || null,
+                student: {
+                    _id: student._id,
+                    name: student.name,
+                    email: student.email,
+                    school: student.profile?.schoolName || "",
+                    barangay: student.barangay?.name || ""
+                },
+                submittedAt: proof?.submittedAt || null,
+                status: proof?.status || attendanceStatus,
+                attendanceStatus,
+                reason: proof?.reason || "",
+                hasProof: Boolean(proof),
+                hasImage: Boolean(proof?.proof),
+                updatedAt: proof?.reviewedAt || null
+            };
+        });
+        // Preserve rows for legacy proofs whose owner is no longer an eligible
+        // student account, so City staff can still see and review them.
+        const knownStudents = new Set(allRows.map((row) => String(row.student._id)));
+        for (const proof of proofs) {
+            const studentId = String(proof.student?._id || proof.student);
+            if (knownStudents.has(studentId)) continue;
+            const student = proof.student || {};
+            allRows.push({
+                _id: proof._id,
+                proofId: proof._id,
+                student: {
+                    _id: student._id || studentId,
+                    name: student.name || "",
+                    email: student.email || "",
+                    school: student.profile?.schoolName || "",
+                    barangay: student.barangay?.name || ""
+                },
+                submittedAt: proof.submittedAt,
+                status: proof.status,
+                attendanceStatus: proof.status === "verified" ? "attended" : proof.status === "rejected" ? "absent" : "pending",
+                reason: proof.reason,
+                hasProof: true,
+                hasImage: Boolean(proof.proof),
+                updatedAt: proof.reviewedAt
+            });
+        }
         const status = String(req.query.status || "").trim().toLowerCase();
-        if (status && status !== "all") filtered = filtered.filter((p) => p.status === status);
         const search = String(req.query.search || "").trim().toLowerCase();
-        if (search) filtered = filtered.filter((p) => (p.student && String(p.student.name || "").toLowerCase()).includes(search));
+        const filtered = allRows
+            .filter((row) => !status || status === "all" || row.status === status || row.attendanceStatus === status)
+            .filter((row) => !search || String(row.student?.name || "").toLowerCase().includes(search));
 
         const selfMarked = event.attendees || [];
         const selfMarkedWithProof = selfMarked.filter((a) => {
@@ -236,34 +335,21 @@ const getEventAttendance = async (req, res, next) => {
             return !exists;
         });
 
-        const counts = { pending: 0, verified: 0, rejected: 0, selfMarked: 0 };
-        proofs.forEach((p) => { counts[p.status] = (counts[p.status] || 0) + 1; });
-        selfMarkedWithProof.forEach(() => { counts.selfMarked += 1; });
-
-        const proofRows = filtered.map((p) => {
-            const student = p.student || {};
-            return {
-                _id: p._id,
-                student: {
-                    _id: student._id,
-                    name: student.name,
-                    email: student.email,
-                    school: student.profile?.schoolName || "",
-                    barangay: student.barangay?.name || ""
-                },
-                submittedAt: p.submittedAt,
-                status: p.status,
-                reason: p.reason,
-                hasImage: Boolean(p.proof),
-                updatedAt: p.reviewedAt
-            };
+        const counts = { pending: 0, verified: 0, rejected: 0, absent: 0, notSubmitted: 0, selfMarked: 0 };
+        allRows.forEach((row) => {
+            if (row.status === "pending") counts.pending += 1;
+            if (row.status === "verified") counts.verified += 1;
+            if (row.status === "rejected") counts.rejected += 1;
+            if (row.attendanceStatus === "absent") counts.absent += 1;
+            if (row.attendanceStatus === "not_submitted") counts.notSubmitted += 1;
         });
+        selfMarkedWithProof.forEach(() => { counts.selfMarked += 1; });
 
         res.json({
             success: true,
-            event: { name: event.name, location: event.location, startsAt: event.startsAt, endsAt: event.endsAt, required: event.required },
+            event: { name: event.name, location: event.location, startsAt: event.startsAt, endsAt: event.endsAt, required: event.required, proofDeadline: deadline },
             proofCounts: counts,
-            proofs: proofRows,
+            proofs: filtered,
             selfMarkedAttendees: selfMarkedWithProof
         });
     } catch (error) {

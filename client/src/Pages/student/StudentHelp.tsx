@@ -30,7 +30,7 @@ export default function StudentHelp() {
       <div className="grid md:grid-cols-3 gap-4 mb-8">
         {[
           { icon: 'book', label: 'Guidelines', desc: 'Official scholarship policies', link: '/guidelines' },
-          { icon: 'message-square', label: 'AI Assistant', desc: 'Get instant answers', link: '/ai-assistant' },
+          { icon: 'message-square', label: 'CS BOT', desc: 'Get instant answers', link: '/ai-assistant' },
           { icon: 'mail', label: 'Contact Office', desc: 'Email or call us', link: '#contact' },
         ].map(card => (
           <Link key={card.label} to={card.link}

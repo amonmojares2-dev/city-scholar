@@ -49,7 +49,7 @@ function ProofThumb({ eventId, proofId }: { eventId: string; proofId: string }) 
   return <a href={url} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-lg overflow-hidden border border-[#E5E7EB] block"><img src={url} alt="Your attendance proof" className="w-full h-full object-cover" /></a>;
 }
 // Attendance proof uploader for a single required event.
-function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => void }) {
+function ProofSection({ event, onDone, canSubmit }: { event: EventRecord; onDone: () => void; canSubmit: boolean }) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
   const [fileError, setFileError] = useState('');
@@ -70,6 +70,7 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
   };
 
   const submit = async () => {
+    if (!canSubmit) return;
     if (!file) { setFileError('Please choose an image first.'); return; }
     setSaving(true);
     setSubmitError('');
@@ -117,14 +118,18 @@ function ProofSection({ event, onDone }: { event: EventRecord; onDone: () => voi
           </div>
         </div>
       )}
-      <div className="flex items-center gap-3 flex-wrap">
-        <input ref={inputRef} type="file" accept="image/png,image/jpeg" onChange={e => pick(e.target.files?.[0])} className="text-xs" />
-        {preview && <img src={preview} alt="Selected preview" className="w-16 h-16 rounded-lg object-cover border border-[#E5E7EB]" />}
-        <button onClick={submit} disabled={saving || !file} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50 disabled:cursor-not-allowed">
-          {saving ? `Uploading ${progress}%` : event.ownProof ? 'Replace proof' : 'Submit proof'}
-        </button>
-        {event.ownProof && (<button onClick={remove} disabled={removing} className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-600 text-[#6B7280] disabled:opacity-50">{removing ? 'Removing…' : 'Remove'}</button>)}
-      </div>
+      {event.ownProof?.status === 'verified' ? (
+        <div className="text-xs text-emerald-700">Your attendance is approved; this proof can no longer be replaced.</div>
+      ) : (
+        <div className="flex items-center gap-3 flex-wrap">
+          <input ref={inputRef} type="file" accept="image/png,image/jpeg" onChange={e => pick(e.target.files?.[0])} className="text-xs" />
+          {preview && <img src={preview} alt="Selected preview" className="w-16 h-16 rounded-lg object-cover border border-[#E5E7EB]" />}
+          <button onClick={submit} disabled={saving || !file || !canSubmit} className="px-3 py-1.5 rounded-lg bg-[#0B1F3A] text-white text-xs font-700 disabled:opacity-50 disabled:cursor-not-allowed">
+            {saving ? `Uploading ${progress}%` : canSubmit ? event.ownProof ? 'Replace proof' : 'Submit proof' : 'Available at event start'}
+          </button>
+          {event.ownProof?.status === 'pending' && (<button onClick={remove} disabled={removing} className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-600 text-[#6B7280] disabled:opacity-50">{removing ? 'Removing…' : 'Remove'}</button>)}
+        </div>
+      )}
       {fileError && <div className="text-xs text-red-600">{fileError}</div>}
       {submitError && <div className="text-xs text-red-600">{submitError}</div>}
     </>
@@ -142,9 +147,9 @@ function RequiredProofBlock({
   hasAttendanceAccess: boolean;
   onDone: () => void;
 }) {
-  const canSubmitNow = hasAttendanceAccess
-    && now >= new Date(event.startsAt).getTime()
-    && now <= new Date(event.proofDeadline).getTime();
+  const beforeStart = now < new Date(event.startsAt).getTime();
+  const beforeDeadline = now <= new Date(event.proofDeadline).getTime();
+  const canSubmitNow = hasAttendanceAccess && !beforeStart && beforeDeadline;
 
   return (
     <div className="mt-3 pt-3 border-t border-[#E5E7EB] space-y-3">
@@ -152,14 +157,13 @@ function RequiredProofBlock({
         <div className="text-xs font-700 text-[#1F2937] flex items-center gap-1.5"><Icon name="paperclip" size={13} /> Attendance proof</div>
         {event.ownProof ? <StatusBadge status={event.ownProof.status} /> : <span className="text-xs text-[#9CA3AF]">No proof</span>}
       </div>
-      {canSubmitNow ? (
-        <ProofSection event={event} onDone={onDone} />
-      ) : now < new Date(event.startsAt).getTime() ? (
-        <div className="text-xs text-[#6B7280]">Opens when the event starts <span className="font-600 text-[#374151]">{date(event.startsAt)} at {time(event.startsAt)}</span></div>
-      ) : now > new Date(event.proofDeadline).getTime() ? (
+      {hasAttendanceAccess && beforeDeadline ? (
+        <>
+          {beforeStart && <div className="text-xs text-[#6B7280]">Submission opens at the event start ({date(event.startsAt)} at {time(event.startsAt)}). You may select an image now and submit it once the event begins.</div>}
+          <ProofSection event={event} onDone={onDone} canSubmit={canSubmitNow} />
+        </>
+      ) : !beforeDeadline ? (
         <div className="text-xs text-[#6B7280]">Deadline passed on {stamp(event.proofDeadline)}</div>
-      ) : hasAttendanceAccess ? (
-        <div className="text-xs text-[#6B7280]">Proof submission is temporarily unavailable. Refresh the page to try again.</div>
       ) : (
         <div className="text-xs text-[#6B7280]">Attendance proof is unavailable for this account.</div>
       )}

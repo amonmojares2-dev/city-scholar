@@ -38,7 +38,7 @@ export default function PublicLayout() {
   const [chatOpen, setChatOpen] = useState(false);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'ai', text: "Hi! I'm the City Scholarship AI Assistant. Ask me anything about scholarships, eligibility, or the application process." },
+    { role: 'ai', text: "Hi! I'm CS BOT. Ask me anything about scholarships, eligibility, or the application process." },
   ]);
 
   const sendMessage = (text: string) => {
@@ -124,7 +124,7 @@ export default function PublicLayout() {
         <Outlet />
       </main>
 
-      {/* AI Assistant floating widget */}
+      {/* CS BOT floating widget */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
 
         {/* Chat popup */}
@@ -137,10 +137,10 @@ export default function PublicLayout() {
             <div className="flex items-center justify-between px-4 py-3 bg-[#0B1F3A] flex-shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-[#D4A72C] flex items-center justify-center flex-shrink-0">
-                  <span className="text-[#0B1F3A] font-800 text-[10px]" style={{ fontWeight: 800 }}>AI</span>
+                  <span className="text-[#0B1F3A] font-800 text-[10px]" style={{ fontWeight: 800 }}>CS</span>
                 </div>
                 <div>
-                  <div className="text-sm font-700 text-white leading-tight" style={{ fontWeight: 700 }}>Scholarship Assistant</div>
+                  <div className="text-sm font-700 text-white leading-tight" style={{ fontWeight: 700 }}>CS BOT</div>
                   <div className="flex items-center gap-1.5 text-[10px] text-white/50 leading-tight">
                     <span className="w-1.5 h-1.5 bg-[#22A06B] rounded-full" />
                     Online · Available 24/7
@@ -161,7 +161,7 @@ export default function PublicLayout() {
                 <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                   {msg.role === 'ai' && (
                     <div className="w-6 h-6 rounded-full bg-[#0B1F3A] flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <span className="text-[#D4A72C] font-800" style={{ fontWeight: 800, fontSize: 8 }}>AI</span>
+                      <span className="text-[#D4A72C] font-800" style={{ fontWeight: 800, fontSize: 8 }}>CS</span>
                     </div>
                   )}
                   <div
@@ -217,13 +217,13 @@ export default function PublicLayout() {
           className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl shadow-lg transition-all hover:shadow-xl hover:-translate-y-0.5 ${
             chatOpen ? 'bg-[#163A63]' : 'bg-[#0B1F3A] hover:bg-[#163A63]'
           } text-white`}
-          aria-label={chatOpen ? 'Close AI Assistant' : 'Open AI Assistant'}
+          aria-label={chatOpen ? 'Close CS BOT' : 'Open CS BOT'}
         >
           <div className="w-7 h-7 rounded-xl bg-[#D4A72C] flex items-center justify-center flex-shrink-0">
-            <span className="text-[#0B1F3A] font-800 text-[10px]" style={{ fontWeight: 800 }}>AI</span>
+            <span className="text-[#0B1F3A] font-800 text-[10px]" style={{ fontWeight: 800 }}>CS</span>
           </div>
           <div className="text-left">
-            <div className="text-xs font-700 leading-tight" style={{ fontWeight: 700 }}>AI Assistant</div>
+            <div className="text-xs font-700 leading-tight" style={{ fontWeight: 700 }}>CS BOT</div>
             <div className="text-[10px] text-white/50 leading-tight">{chatOpen ? 'Click to close' : 'Ask me anything'}</div>
           </div>
           <Icon name={chatOpen ? 'chevron-down' : 'chevron-right'} size={14} className="text-white/60 ml-0.5" />
@@ -257,7 +257,7 @@ export default function PublicLayout() {
                 ))}
                 <li>
                   <button onClick={() => { setChatOpen(true); window.scrollTo({ top: 0 }); }} className="text-sm text-white/60 hover:text-white transition-colors">
-                    AI Assistant
+                    CS BOT
                   </button>
                 </li>
               </ul>

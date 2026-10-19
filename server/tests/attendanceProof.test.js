@@ -1,4 +1,6 @@
 const Event = require("../models/Event");
+const Application = require("../models/Application");
+const User = require("../models/User");
 
 jest.mock("../models/Notification", () => ({ create: jest.fn().mockResolvedValue({}) }));
 jest.mock("../config/storage", () => ({
@@ -19,6 +21,7 @@ const {
   removeProof,
   verifyProof,
   rejectProof,
+  getEventAttendance,
   serveProofFile
 } = require("../controllers/eventController");
 
@@ -200,6 +203,7 @@ describe("uploadProof — students with Events page access", () => {
   it("refuses an applicant who cannot open the Events page (403)", async () => {
     const event = makeEvent();
     jest.spyOn(Event, "findById").mockResolvedValue(event);
+    jest.spyOn(Application, "exists").mockResolvedValue(null);
     const r = res();
     await uploadProof(req(newApplicant, { id: "event-1" }, { file }), r, () => {});
     expect(r.status).toHaveBeenCalledWith(403);
@@ -223,10 +227,10 @@ describe("uploadProof — students with Events page access", () => {
   });
 });
 
-describe("uploadProof — replace before the deadline resets to pending and deletes the old file", () => {
-  it("replaces the caller's existing proof, removing the previous image", async () => {
+describe("uploadProof — replace pending proofs before the deadline", () => {
+  it("replaces the caller's pending proof and deletes the old image", async () => {
     const event = makeEvent({
-      proofs: [{ _id: "p1", student: "student-a", status: "verified", proof: "old.png", originalName: "old.png", mimeType: "image/png", submittedAt: new Date(), reason: "", reviewedAt: new Date(), reviewedBy: "city-1" }]
+      proofs: [{ _id: "p1", student: "student-a", status: "pending", proof: "old.png", originalName: "old.png", mimeType: "image/png", submittedAt: new Date(), reason: "", reviewedAt: null, reviewedBy: null }]
     });
     jest.spyOn(Event, "findById").mockResolvedValue(event);
     const r = res();
@@ -236,6 +240,20 @@ describe("uploadProof — replace before the deadline resets to pending and dele
     expect(event.proofs[0].proof).toBe("new.png");
     expect(event.proofs[0].status).toBe("pending");
     expect(storage.removeStoredFileByFilename).toHaveBeenCalledWith("old.png");
+  });
+
+  it("does not allow a student to replace proof after City approval", async () => {
+    const event = makeEvent({
+      proofs: [{ _id: "p1", student: "student-a", status: "verified", proof: "approved.png" }]
+    });
+    jest.spyOn(Event, "findById").mockResolvedValue(event);
+    const r = res();
+
+    await uploadProof(req(approvedScholar, { id: "event-1" }, { file: { filename: "new.png", originalname: "new.png", mimetype: "image/png" } }), r, () => {});
+
+    expect(r.status).toHaveBeenCalledWith(409);
+    expect(event.proofs[0].proof).toBe("approved.png");
+    expect(event.save).not.toHaveBeenCalled();
   });
 });
 
@@ -267,6 +285,71 @@ describe("verify / reject a proof (city office)", () => {
     expect(event.proofs.id("p1").status).toBe("rejected");
     expect(event.proofs.id("p1").reason).toBe("blurry");
     expect(Notification.create).toHaveBeenCalledWith(expect.objectContaining({ recipient: "student-a", title: "Proof rejected" }));
+  });
+});
+
+describe("getEventAttendance — attendance totals", () => {
+  function mockRoster(event, students) {
+    jest.spyOn(Event, "findById").mockReturnValue({
+      populate: jest.fn().mockResolvedValue(event)
+    });
+    jest.spyOn(Application, "find").mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        lean: jest.fn().mockResolvedValue([])
+      })
+    });
+    jest.spyOn(User, "find").mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        populate: jest.fn().mockReturnValue({
+          lean: jest.fn().mockResolvedValue(students)
+        })
+      })
+    });
+  }
+
+  it("counts rejected proofs and missed deadlines as absent without writing records", async () => {
+    const event = makeEvent({
+      startsAt: new Date(Date.now() - 9 * DAY),
+      endsAt: undefined,
+      proofs: [
+        { _id: "proof-1", student: { _id: "student-1", name: "Rejected Student" }, status: "rejected", reason: "Unreadable", proof: "file-1" },
+        { _id: "proof-2", student: { _id: "student-2", name: "Approved Student" }, status: "verified", proof: "file-2" }
+      ]
+    });
+    mockRoster(event, [
+      { _id: "student-1", name: "Rejected Student", profile: {}, barangay: null },
+      { _id: "student-2", name: "Approved Student", profile: {}, barangay: null },
+      { _id: "student-3", name: "Missed Student", profile: {}, barangay: null }
+    ]);
+    const r = res();
+
+    await getEventAttendance(req(cityAdmin, { id: "event-1" }), r, () => {});
+
+    expect(r.body.proofCounts).toEqual(expect.objectContaining({
+      absent: 2,
+      verified: 1,
+      rejected: 1,
+      notSubmitted: 0
+    }));
+    expect(r.body.proofs.map(row => [row.student.name, row.attendanceStatus])).toEqual([
+      ["Rejected Student", "absent"],
+      ["Approved Student", "attended"],
+      ["Missed Student", "absent"]
+    ]);
+    expect(r.body.proofs[2].proofId).toBeNull();
+    expect(event.save).not.toHaveBeenCalled();
+  });
+
+  it("shows students without proof as not submitted until the deadline", async () => {
+    const event = makeEvent({ startsAt: new Date(Date.now() - HOUR), endsAt: undefined, proofs: [] });
+    mockRoster(event, [{ _id: "student-1", name: "Waiting Student", profile: {}, barangay: null }]);
+    const r = res();
+
+    await getEventAttendance(req(cityAdmin, { id: "event-1" }), r, () => {});
+
+    expect(r.body.proofs[0].attendanceStatus).toBe("not_submitted");
+    expect(r.body.proofCounts.notSubmitted).toBe(1);
+    expect(r.body.proofCounts.absent).toBe(0);
   });
 });
 

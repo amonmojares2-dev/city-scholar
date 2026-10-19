@@ -3,21 +3,24 @@ import PageHeader from '../../components/PageHeader';
 import { api } from '../../lib/api';
 import { usePrivateResourceUrl } from '../../lib/docUrl';
 
-type EventRecord = { _id: string; name: string; description: string; startsAt: string; endsAt?: string; location: string; required: boolean; attendees?: string[] };
+type EventRecord = { _id: string; name: string; description: string; startsAt: string; endsAt?: string; location: string; required: boolean; attendanceCount?: number };
 
-type ProofStatus = 'pending' | 'verified' | 'rejected';
+type AttendanceStatus = 'pending' | 'attended' | 'absent' | 'not_submitted';
 type ProofRow = {
   _id: string;
+  proofId?: string | null;
   student: { _id: string; name: string; email: string; school: string; barangay: string };
-  submittedAt: string;
-  status: ProofStatus;
+  submittedAt?: string | null;
+  status: string;
+  attendanceStatus: AttendanceStatus;
   reason: string;
+  hasProof: boolean;
   hasImage: boolean;
   updatedAt?: string | null;
 };
 type AttendanceData = {
-  event: { name: string; location: string; startsAt: string; endsAt?: string; required: boolean };
-  proofCounts: { pending: number; verified: number; rejected: number; selfMarked: number };
+  event: { name: string; location: string; startsAt: string; endsAt?: string; required: boolean; proofDeadline: string };
+  proofCounts: { pending: number; verified: number; rejected: number; absent: number; notSubmitted: number; selfMarked: number };
   proofs: ProofRow[];
   selfMarkedAttendees: string[];
 };
@@ -26,14 +29,15 @@ const PHILIPPINES_TIME_ZONE = 'Asia/Manila';
 const date = (value: string) => new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: PHILIPPINES_TIME_ZONE });
 const stamp = (value?: string | null) => (value ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: PHILIPPINES_TIME_ZONE }) : '—');
 
-const STATUS_STYLES: Record<ProofStatus, string> = {
+const STATUS_STYLES: Record<AttendanceStatus, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
-  verified: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  rejected: 'bg-red-50 text-red-700 border-red-200',
+  attended: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  absent: 'bg-red-50 text-red-700 border-red-200',
+  not_submitted: 'bg-[#F3F4F6] text-[#6B7280] border-[#E5E7EB]',
 };
-const STATUS_LABEL: Record<ProofStatus, string> = { pending: 'Pending', verified: 'Verified', rejected: 'Rejected' };
+const STATUS_LABEL: Record<AttendanceStatus, string> = { pending: 'Pending review', attended: 'Attended', absent: 'Absent', not_submitted: 'Not submitted' };
 
-function StatusBadge({ status }: { status: ProofStatus }) {
+function StatusBadge({ status }: { status: AttendanceStatus }) {
   return <span className={`inline-block text-xs font-600 px-2 py-0.5 rounded-full border ${STATUS_STYLES[status]}`}>{STATUS_LABEL[status]}</span>;
 }
 
@@ -68,17 +72,21 @@ function AttendeesPanel({ eventId }: { eventId: string }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [status, setStatus] = useState<'all' | ProofStatus>('all');
+  const [status, setStatus] = useState<'all' | AttendanceStatus>('all');
   const [popupId, setPopupId] = useState('');
   const [rejectId, setRejectId] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState('');
 
   const load = () => api<AttendanceData>(`/events/${eventId}/attendance-proofs`)
-    .then(result => setData(result))
+    .then(result => { setData(result); setError(''); })
     .catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load attendees.'))
     .finally(() => setLoading(false));
-  useEffect(() => { load(); }, [eventId]);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [eventId]);
 
   const act = async (proofId: string, action: 'verify' | 'reject', body?: unknown) => {
     setBusy(proofId);
@@ -102,7 +110,7 @@ function AttendeesPanel({ eventId }: { eventId: string }) {
     const list = (data?.proofs || []).slice();
     const needle = search.trim().toLowerCase();
     return list
-      .filter(row => (status === 'all' ? true : row.status === status))
+      .filter(row => (status === 'all' ? true : row.attendanceStatus === status))
       .filter(row => (needle ? (row.student?.name || '').toLowerCase().includes(needle) : true));
   }, [data, search, status]);
 
@@ -113,20 +121,23 @@ function AttendeesPanel({ eventId }: { eventId: string }) {
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <span className="text-xs font-700 text-[#1F2937]">Attendees</span>
         <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Pending {data?.proofCounts.pending || 0}</span>
-        <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Verified {data?.proofCounts.verified || 0}</span>
-        <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">Rejected {data?.proofCounts.rejected || 0}</span>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Attended {data?.proofCounts.verified || 0}</span>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">Absent {data?.proofCounts.absent || 0}</span>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#6B7280] border border-[#E5E7EB]">Not submitted {data?.proofCounts.notSubmitted || 0}</span>
         <span className="text-xs px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#6B7280] border border-[#E5E7EB]">Self-marked {data?.proofCounts.selfMarked || 0}</span>
+        <span className="text-xs text-[#6B7280]">Proof deadline: {stamp(data?.event.proofDeadline)}</span>
         <div className="flex-1" />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name…" className="px-2.5 py-1.5 border border-[#E5E7EB] rounded-lg text-xs w-40" />
-        <select value={status} onChange={e => setStatus(e.target.value as 'all' | ProofStatus)} className="px-2.5 py-1.5 border border-[#E5E7EB] rounded-lg text-xs">
+        <select value={status} onChange={e => setStatus(e.target.value as 'all' | AttendanceStatus)} className="px-2.5 py-1.5 border border-[#E5E7EB] rounded-lg text-xs">
           <option value="all">All statuses</option>
           <option value="pending">Pending</option>
-          <option value="verified">Verified</option>
-          <option value="rejected">Rejected</option>
+          <option value="attended">Attended</option>
+          <option value="absent">Absent</option>
+          <option value="not_submitted">Not submitted</option>
         </select>
       </div>
       {rows.length === 0 ? (
-        <div className="p-4 text-center text-xs text-[#6B7280]">No proofs match the current filter.</div>
+        <div className="p-4 text-center text-xs text-[#6B7280]">No students match the current filter.</div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -151,20 +162,22 @@ function AttendeesPanel({ eventId }: { eventId: string }) {
                   <td className="py-2 pr-3 text-[#6B7280]">{stamp(row.submittedAt)}</td>
                   <td className="py-2 pr-3">
                     <div className="flex flex-col gap-1">
-                      <StatusBadge status={row.status} />
+                      <StatusBadge status={row.attendanceStatus} />
                       {row.status === 'rejected' && row.reason && <span className="text-[10px] text-red-600 max-w-[160px]">{row.reason}</span>}
                     </div>
                   </td>
-                  <td className="py-2 pr-3">{row.hasImage ? <Thumb eventId={eventId} proofId={row._id} onClick={() => setPopupId(row._id)} /> : <span className="text-[#9CA3AF]">—</span>}</td>
+                  <td className="py-2 pr-3">{row.hasImage && row.proofId ? <Thumb eventId={eventId} proofId={row.proofId} onClick={() => setPopupId(row.proofId!)} /> : <span className="text-[#9CA3AF]">—</span>}</td>
                   <td className="py-2">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => act(row._id, 'verify')} disabled={busy === row._id || row.status === 'verified'} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-700 disabled:opacity-40">{busy === row._id ? '…' : 'Verify'}</button>
-                      <button onClick={() => { setRejectId(rejectId === row._id ? '' : row._id); setReason(''); }} className="px-2.5 py-1 rounded-lg border border-red-300 text-red-600 text-[11px] font-700">Reject</button>
+                      {row.proofId ? <>
+                        <button onClick={() => act(row.proofId!, 'verify')} disabled={busy === row.proofId || row.status === 'verified'} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-700 disabled:opacity-40">{busy === row.proofId ? '…' : 'Approve'}</button>
+                        <button onClick={() => { setRejectId(rejectId === row.proofId ? '' : row.proofId!); setReason(''); }} className="px-2.5 py-1 rounded-lg border border-red-300 text-red-600 text-[11px] font-700">Reject</button>
+                      </> : <span className="text-[#9CA3AF]">—</span>}
                     </div>
-                    {rejectId === row._id && (
+                    {row.proofId && rejectId === row.proofId && (
                       <div className="mt-2 flex items-center gap-2">
                         <input autoFocus value={reason} onChange={e => setReason(e.target.value)} placeholder="Reason for rejection…" className="px-2 py-1 border border-[#E5E7EB] rounded-lg text-[11px] w-48" />
-                        <button onClick={() => act(row._id, 'reject', { reason })} disabled={busy === row._id || !reason.trim()} className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-700 disabled:opacity-40">Confirm</button>
+                        <button onClick={() => act(row.proofId!, 'reject', { reason })} disabled={busy === row.proofId || !reason.trim()} className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-700 disabled:opacity-40">Confirm</button>
                         <button onClick={() => setRejectId('')} className="px-2 py-1 text-[11px] text-[#6B7280]">Cancel</button>
                       </div>
                     )}
@@ -192,6 +205,14 @@ export default function CityEvents() {
   const [expanded, setExpanded] = useState('');
   const load = () => api<{ events: EventRecord[] }>('/events').then(result => setEvents(result.events)).catch(requestError => setError(requestError instanceof Error ? requestError.message : 'Unable to load events.'));
   useEffect(() => { load().finally(() => setLoading(false)); }, []);
+  const manilaDateTimeIso = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value)) {
+      throw new Error('Enter a valid event date and time.');
+    }
+    const dateTime = new Date(`${value.length === 16 ? `${value}:00` : value}+08:00`);
+    if (Number.isNaN(dateTime.getTime())) throw new Error('Enter a valid event date and time.');
+    return dateTime.toISOString();
+  };
   const publish = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
@@ -201,8 +222,8 @@ export default function CityEvents() {
         method: 'POST',
         body: JSON.stringify({
           ...form,
-          startsAt: new Date(form.startsAt).toISOString(),
-          endsAt: form.endsAt ? new Date(form.endsAt).toISOString() : undefined,
+          startsAt: manilaDateTimeIso(form.startsAt),
+          endsAt: form.endsAt ? manilaDateTimeIso(form.endsAt) : undefined,
         }),
       });
       setForm({ name: '', description: '', startsAt: '', endsAt: '', location: '', required: false });
@@ -223,12 +244,12 @@ export default function CityEvents() {
         {events.length === 0 ? <div className="bg-white rounded-2xl border border-[#E5E7EB] p-10 text-center text-sm text-[#6B7280]">No events published yet.</div> : events.map(event => (
           <article key={event._id} className="bg-white rounded-2xl border border-[#E5E7EB] p-5">
             <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-xl bg-[#0B1F3A] text-white flex items-center justify-center">{event.attendees?.length || 0}</div>
+              <div className="w-10 h-10 rounded-xl bg-[#0B1F3A] text-white flex items-center justify-center">{event.attendanceCount || 0}</div>
               <div className="flex-1">
                 <h2 className="font-700 text-sm text-[#1F2937]">{event.name} {event.required && <span className="ml-2 text-xs text-red-600">Requires attendance proof</span>}</h2>
                 <p className="text-xs text-[#6B7280] mt-1">{date(event.startsAt)} · {event.location}</p>
                 <p className="text-sm text-[#6B7280] mt-2">{event.description}</p>
-                <p className="text-xs text-[#6B7280] mt-1">{event.attendees?.length || 0} attended</p>
+                <p className="text-xs text-[#6B7280] mt-1">{event.attendanceCount || 0} attended</p>
               </div>
               {event.required && (
                 <button onClick={() => setExpanded(expanded === event._id ? '' : event._id)} className="px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-600 text-[#1F2937]">
@@ -255,6 +276,7 @@ export default function CityEvents() {
             </div>
             <input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} className="w-full px-3 py-2.5 border border-[#E5E7EB] rounded-xl text-sm" placeholder="Location" />
             <label className="flex items-center gap-2 text-sm text-[#1F2937]"><input type="checkbox" checked={form.required} onChange={event => setForm({ ...form, required: event.target.checked })} /> Requires attendance proof</label>
+            <p className="text-xs text-[#6B7280]">When required, eligible students can upload an image from the event start until 48 hours after the end time (or 7 days after the start if no end time is set). Times use Philippine time.</p>
             <button type="submit" disabled={saving} className="w-full py-2.5 rounded-xl bg-[#0B1F3A] text-white text-sm font-700 disabled:opacity-50">{saving ? 'Publishing…' : 'Publish Event'}</button>
           </form>
         </div>
