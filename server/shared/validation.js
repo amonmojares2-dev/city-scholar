@@ -108,6 +108,17 @@ function validateEmail(value, required = false) {
   return null;
 }
 
+function validateRegistrationEmail(value, required = false) {
+  const normalized = normalizeEmail(value);
+  if (!normalized) return required ? 'Email is required.' : null;
+  const error = validateEmail(value, required);
+  if (error) return error;
+  if (normalized.split('@')[1] !== 'gmail.com') {
+    return 'Use a Gmail address ending in @gmail.com.';
+  }
+  return null;
+}
+
 function isRealDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
@@ -248,6 +259,7 @@ module.exports = {
   validateFullName,
   validateNamePart,
   validateEmail,
+  validateRegistrationEmail,
   validateBirthDate,
   validateGwa,
   validateField,

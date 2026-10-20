@@ -17,8 +17,9 @@ const {
 const {
     normalizeFullName,
     normalizeText,
-    validateField
-} = require("../../shared/validation");
+    validateField,
+    validateRegistrationEmail
+} = require("../shared/validation");
 const { GRADING } = require("../utils/gradingConfig");
 const { sendOtpEmail, EmailDeliveryError } = require("../utils/email");
 const { logAudit } = require("../utils/audit");
@@ -47,7 +48,7 @@ function registrationErrorField(message) {
     if (/^Invalid account role/.test(message)) return "role";
     if (/^First name/.test(message)) return "firstName";
     if (/^Last name/.test(message)) return "lastName";
-    if (/valid email/i.test(message)) return "email";
+    if (/valid email|gmail/i.test(message)) return "email";
     if (/Password/.test(message)) return "password";
     if (/barangay/i.test(message)) return "barangay";
     if (/University/.test(message)) return "university";
@@ -181,7 +182,7 @@ const registerUser = async(req, res) => {
         const lastName = normalizeFullName(data.lastName);
         const firstNameError = validateField("firstName", firstName, { required: true });
         const lastNameError = validateField("lastName", lastName, { required: true });
-        const emailError = validateField("email", email, { required: true });
+        const emailError = validateRegistrationEmail(email, true);
         if (firstNameError) nameErrors.firstName = firstNameError;
         if (lastNameError) nameErrors.lastName = lastNameError;
         if (emailError) nameErrors.email = emailError;

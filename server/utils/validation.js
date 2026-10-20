@@ -10,8 +10,9 @@ const {
     normalizeFullName,
     normalizeEmail: normalizeSharedEmail,
     validateNamePart,
-    validateEmail: validateSharedEmail
-} = require("../../shared/validation");
+    validateEmail: validateSharedEmail,
+    validateRegistrationEmail: validateSharedRegistrationEmail
+} = require("../shared/validation");
 
 // ------------------------------------------
 // Email validation
@@ -192,8 +193,9 @@ function validateRegistration(data, validBarangayNames) {
     // --------------------------------------
     // Validate email
     // --------------------------------------
-    if (!EMAIL_PATTERN.test(email) || email.length > 254 || validateSharedEmail(email, true)) {
-        return "Please enter a valid email address.";
+    const emailError = validateSharedRegistrationEmail(email, true);
+    if (!EMAIL_PATTERN.test(email) || email.length > 254 || emailError) {
+        return emailError || "Please enter a valid email address.";
     }
 
 

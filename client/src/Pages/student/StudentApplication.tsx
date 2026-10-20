@@ -20,7 +20,7 @@ import {
     normalizeFullName,
     normalizeText,
     validateField,
-} from "../../../../shared/validation.js";
+} from "../../../../server/shared/validation.js";
 import { studentApplicationStatus } from "../../lib/applicationStatus";
 import { fetchSessionDetails, getSessionUser } from "../../lib/auth";
 

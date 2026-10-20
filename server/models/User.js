@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const { validateFullName } = require("../../shared/validation");
+const { validateFullName } = require("../shared/validation");
 
 const userSchema = new mongoose.Schema({
     // The student registration form always supplies a full name, so this is

@@ -7,7 +7,7 @@ const {
   normalizeText,
   normalizeFullName,
   validateField
-} = require('../../shared/validation');
+} = require('../shared/validation');
 const { GRADING } = require('../utils/gradingConfig');
 
 const APPLICANT_VALIDATION_FIELDS = [

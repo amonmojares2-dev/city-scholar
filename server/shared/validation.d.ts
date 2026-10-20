@@ -16,6 +16,7 @@ export function normalizeEmail(value: unknown): string;
 export function validateFullName(value: unknown, required?: boolean): string | null;
 export function validateNamePart(value: unknown, label?: string, required?: boolean): string | null;
 export function validateEmail(value: unknown, required?: boolean): string | null;
+export function validateRegistrationEmail(value: unknown, required?: boolean): string | null;
 export function validateBirthDate(value: unknown, now?: Date): string | null;
 export function validateGwa(value: unknown, grading?: {
   decimal?: { min: number; max: number };

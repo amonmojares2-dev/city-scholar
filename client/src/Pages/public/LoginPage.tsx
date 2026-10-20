@@ -6,6 +6,7 @@ import { portalForRole, setSessionUser, type SessionUser } from '../../lib/auth'
 import PasswordInput from '../../components/PasswordInput';
 import {
   validateEmail,
+  validateRegistrationEmail,
   validateName,
   validateNamePart,
   normalizeName,
@@ -184,7 +185,7 @@ export default function LoginPage() {
   const validateRegisterValue = (name: keyof RegisterForm, value: string) => {
     if (name === 'firstName') return validateNamePart(value, 'First name') || '';
     if (name === 'lastName') return validateNamePart(value, 'Last name') || '';
-    if (name === 'email') return validateEmail(value) || '';
+    if (name === 'email') return validateRegistrationEmail(value) || '';
     if (name === 'barangay') return validateRequired(value, 'Barangay') || '';
     if (name === 'university') {
       if (!value) return 'Please select your University.';
@@ -309,7 +310,7 @@ export default function LoginPage() {
     if (!nextErrors.firstName && !nextErrors.lastName && validateName(`${values.firstName} ${values.lastName}`, 'Full Name')) {
       nextErrors.lastName = 'First and last name together must use no more than 100 valid characters.';
     }
-    nextErrors.email = validateEmail(values.email) || '';
+    nextErrors.email = validateRegistrationEmail(values.email) || '';
     nextErrors.barangay = validateRequired(values.barangay, 'Barangay') || '';
     nextErrors.password = validatePassword(values.password) || '';
     nextErrors.confirmPassword = validatePasswordConfirmation(values.password, values.confirmPassword) || '';
@@ -863,6 +864,7 @@ export default function LoginPage() {
                       autoComplete="given-name"
                       required
                       type="text"
+                      maxLength={100}
                       aria-invalid={Boolean(regErrors.firstName)}
                       className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] ${regErrors.firstName ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
                       placeholder="Maria"
@@ -880,6 +882,7 @@ export default function LoginPage() {
                       autoComplete="family-name"
                       required
                       type="text"
+                      maxLength={100}
                       aria-invalid={Boolean(regErrors.lastName || combinedRegisterNameError)}
                       className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] ${regErrors.lastName || combinedRegisterNameError ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
                       placeholder="Santos"
@@ -898,7 +901,11 @@ export default function LoginPage() {
                     autoComplete="email"
                     required
                     type="email"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-[#E5E7EB] text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63]"
+                    maxLength={254}
+                    pattern="[^@\s]+@gmail\.com"
+                    title="Use a valid Gmail address ending in @gmail.com."
+                    aria-invalid={Boolean(regErrors.email)}
+                    className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-[#163A63]/20 focus:border-[#163A63] ${regErrors.email ? 'border-[#DC2626]' : 'border-[#E5E7EB]'}`}
                     placeholder="you@gmail.com"
                   />
                   {regErrors.email && <p className="text-xs text-[#DC2626] mt-1">{regErrors.email}</p>}
@@ -959,8 +966,8 @@ export default function LoginPage() {
                   )}
                 </div>
 
-                <PasswordInput id="register-password" name="password" autoComplete="new-password" required minLength={8} label="Create Password" value={registerForm.password} error={regErrors.password} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Minimum 8 characters" />
-                <PasswordInput id="register-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} label="Confirm Password" value={registerForm.confirmPassword} error={regErrors.confirmPassword} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Re-enter your password" />
+                <PasswordInput id="register-password" name="password" autoComplete="new-password" required minLength={8} maxLength={72} label="Create Password" value={registerForm.password} error={regErrors.password} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Minimum 8 characters" />
+                <PasswordInput id="register-confirm-password" name="confirmPassword" autoComplete="new-password" required minLength={8} maxLength={72} label="Confirm Password" value={registerForm.confirmPassword} error={regErrors.confirmPassword} onChange={handleRegisterFieldChange} onBlur={handleRegisterFieldBlur} placeholder="Re-enter your password" />
                   {/* Live strength bar: red / yellow / green. */}
                   {registerForm.password && (() => {
                     const strength = passwordStrength(registerForm.password);

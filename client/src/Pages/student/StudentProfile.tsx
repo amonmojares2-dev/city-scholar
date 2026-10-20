@@ -18,7 +18,7 @@ import {
   normalizeFullName,
   normalizeText,
   validateField,
-} from '../../../../shared/validation.js';
+} from '../../../../server/shared/validation.js';
 
 type Application = { program?: string; school?: string; applicant?: Record<string, string> };
 type User = SessionUser & { profile?: Record<string, string>; barangay?: { name: string } };

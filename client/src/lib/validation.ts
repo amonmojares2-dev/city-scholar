@@ -5,11 +5,12 @@ import {
   STUDENT_NUMBER_PATTERN,
   normalizeFullName,
   validateEmail as validateSharedEmail,
+  validateRegistrationEmail as validateSharedRegistrationEmail,
   validateField,
   validateFullName,
   validateNamePart as validateSharedNamePart,
   validateGwa as validateSharedGwa,
-} from '../../../shared/validation.js';
+} from '../../../server/shared/validation.js';
 import { GRADING } from './gradingConfig';
 
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/;
@@ -37,6 +38,10 @@ export function validateNamePart(value: string, label = 'Name'): string | null {
 
 export function validateEmail(value: string): string | null {
   return validateSharedEmail(value, true);
+}
+
+export function validateRegistrationEmail(value: string): string | null {
+  return validateSharedRegistrationEmail(value, true);
 }
 
 export function validatePassword(value: string): string | null {

@@ -1,5 +1,6 @@
 const Application = require('../models/Application');
 const User = require('../models/User');
+const Barangay = require('../models/Barangay');
 const OTPVerification = require('../models/OTPVerification');
 const {
   updateStudentApplication
@@ -99,6 +100,31 @@ describe('server validation rejects invalid values before persistence', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
       errors: expect.objectContaining({ firstName: expect.any(String) })
     }));
+    expect(createChallenge).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-Gmail registration addresses before database lookups or challenge creation', async() => {
+    const createChallenge = jest.spyOn(OTPVerification, 'create');
+    const findBarangays = jest.spyOn(Barangay, 'find');
+    const res = response();
+
+    await registerUser({
+      body: {
+        firstName: 'Maria',
+        lastName: 'Santos',
+        email: 'student@example.com',
+        password: 'Password1',
+        role: 'student',
+        barangay: 'Test Barangay',
+        university: 'Test University'
+      }
+    }, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      errors: expect.objectContaining({ email: 'Use a Gmail address ending in @gmail.com.' })
+    }));
+    expect(findBarangays).not.toHaveBeenCalled();
     expect(createChallenge).not.toHaveBeenCalled();
   });
 });

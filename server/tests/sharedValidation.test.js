@@ -8,8 +8,9 @@ const {
   YEAR_LEVEL_OPTIONS,
   normalizeEmail,
   normalizeFullName,
-  validateField
-} = require('../../shared/validation');
+  validateField,
+  validateRegistrationEmail
+} = require('../shared/validation');
 const { GRADING } = require('../utils/gradingConfig');
 
 describe('shared input validation rules', () => {
@@ -36,6 +37,14 @@ describe('shared input validation rules', () => {
     expect(validateField('email', 'Student@Example.COM')).toBeNull();
     expect(validateField('email', 'not-an-email')).not.toBeNull();
     expect(validateField('email', `${'a'.repeat(243)}@example.com`)).not.toBeNull();
+  });
+
+  it('restricts new account registration email to Gmail addresses', () => {
+    expect(validateRegistrationEmail(' Student@GMAIL.COM ')).toBeNull();
+    expect(validateRegistrationEmail('student+scholar@gmail.com')).toBeNull();
+    expect(validateRegistrationEmail('student@example.com')).toMatch(/@gmail\.com/);
+    expect(validateRegistrationEmail('student@gmail.com.example.org')).toMatch(/@gmail\.com/);
+    expect(validateRegistrationEmail('not-an-email')).toMatch(/valid email/);
   });
 
   it('accepts only real dates for students aged 15 through 60 and rejects future dates', () => {

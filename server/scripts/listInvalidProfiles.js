@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Application = require('../models/Application');
-const { validateField } = require('../../shared/validation');
+const { validateField } = require('../shared/validation');
 const { GRADING } = require('../utils/gradingConfig');
 
 const USER_PROFILE_FIELDS = [

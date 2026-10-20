@@ -153,7 +153,7 @@ describe("student application document uploads", () => {
 const validRegistration = {
     firstName: "Maria",
     lastName: "Santos",
-    email: "maria@example.com",
+    email: "maria@gmail.com",
     password: "Password1",
     role: "student",
     scholarType: "new_applicant",
