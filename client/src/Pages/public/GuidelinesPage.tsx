@@ -135,32 +135,93 @@ function TermsClause({ clause }: { clause: ParsedClause }) {
   );
 }
 
+// Shared accordion card used by every section on this page so the card style,
+// header typography, padding, and chevron stay identical everywhere.
+function AccordionSection({
+  id,
+  title,
+  isOpen,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const panelId = `${id}-panel`;
+  return (
+    <section id={id} className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden scroll-mt-24">
+      <h2 className="m-0">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={isOpen}
+          aria-controls={panelId}
+          className="w-full flex items-center justify-between gap-4 px-6 py-4 text-left hover:bg-[#F6F7F9] transition-colors"
+        >
+          <span className="font-700 text-[#1F2937]" style={{ fontWeight: 700 }}>{title}</span>
+          <Icon
+            name="chevron-down"
+            size={16}
+            className={`flex-shrink-0 text-[#6B7280] transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+      </h2>
+      {isOpen && (
+        <div id={panelId} className="px-6 pb-6 border-t border-[#E5E7EB] space-y-5">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatUpdatedAt(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
 function TermsAndPrivacySection({
   document,
   anchorId,
+  isOpen,
+  onToggle,
 }: {
   document: TermsPrivacyDocument;
   anchorId: string;
+  isOpen: boolean;
+  onToggle: () => void;
 }) {
   const parsed = useMemo(() => parseDocumentText(document.content), [document.content]);
+  const updatedAt = formatUpdatedAt(document.updatedAt);
 
   return (
-    <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden scroll-mt-24">
-      <h2 id={anchorId} className="font-700 text-[#1F2937] text-lg px-6 py-4">
-        {document.title}
-      </h2>
+    <AccordionSection
+      id={anchorId}
+      title={document.title}
+      isOpen={isOpen}
+      onToggle={onToggle}
+    >
       {parsed ? (
-        <div className="px-6 pb-6 border-t border-[#E5E7EB] pt-5 space-y-5">
-          <h3 className="font-600 text-sm text-[#0B1F3A] mb-2">{parsed.sectionTitle}</h3>
-          {parsed.clauses.map((clause, index) => (
-            <TermsClause
-              key={clause.label || clause.number || `clause-${index}`}
-              clause={clause}
-            />
-          ))}
+        <div className="pt-5">
+          <h3 className="font-600 text-sm text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>{parsed.sectionTitle}</h3>
+          <p className="mb-4 text-xs text-[#9CA3AF]">Last updated: {updatedAt || 'Not yet updated'}</p>
+          <div className="space-y-5">
+            {parsed.clauses.map((clause, index) => (
+              <TermsClause
+                key={clause.label || clause.number || `clause-${index}`}
+                clause={clause}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
-    </div>
+    </AccordionSection>
   );
 }
 
@@ -185,7 +246,15 @@ export default function GuidelinesPage() {
   useEffect(() => {
     initialHashRef.current = typeof window !== 'undefined' ? window.location.hash : '';
   }, []);
-  const [expanded, setExpanded] = useState<string[]>([]);
+  // Open state lives ONLY here. It must not be derived from the active section:
+  // the active section is just what the Contents box highlights, and coupling
+  // the two made section headers unable to close their own section.
+  const [expanded, setExpanded] = useState<string[]>(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      return [window.location.hash.replace('#', '')];
+    }
+    return [sections[0].id];
+  });
 
   // City Office can rename or reorder sections, so fall back to the first one
   // when the section that was open on load no longer exists.
@@ -198,16 +267,38 @@ export default function GuidelinesPage() {
     setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  // Scroll to the section referenced by the URL hash once the public content
-  // has finished rendering, so the page does not keep re-flowing under the anchor.
-  useEffect(() => {
-    const id = initialHashRef.current.replace(/^#/, '');
-    if (!id) return;
-    if (loading) return;
+  // Open a section (if it is closed) without ever closing others, so the
+  // current open/close model — any number of sections open at once — holds.
+  const openSection = (id: string) => {
+    setExpanded(prev => prev.includes(id) ? prev : [...prev, id]);
+  };
+
+  // The public nav is sticky (h-16 = 64px); leave extra breathing room so the
+  // section header lands fully below it.
+  const SCROLL_OFFSET = 88;
+  const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.scrollY - SCROLL_OFFSET;
+    window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+  };
+
+  // Open the section referenced by the URL hash once the public content has
+  // finished rendering, then scroll to it so the page does not keep re-flowing
+  // under the anchor.
+  useEffect(() => {
+    if (loading) return;
+    const id = initialHashRef.current.replace(/^#/, '');
+    if (id && tocEntries.some(entry => entry.id === id)) {
+      openSection(id);
+      // Wait a frame so the opened panel is in the DOM before scrolling.
+      requestAnimationFrame(() => scrollToSection(id));
+    } else if (!tocEntries.some(entry => expanded.includes(entry.id))) {
+      // The City Office can rename or reorder sections; if the section list
+      // that shipped on load no longer exists, open the active one instead.
+      openSection(active);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
   return (
@@ -230,14 +321,12 @@ export default function GuidelinesPage() {
                     <a
                       href={`#${entry.id}`}
                       onClick={(event) => {
-                        setActiveSection(entry.id);
                         event.preventDefault();
-                        const el = document.getElementById(entry.id);
-                        if (el) {
-                          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }
+                        setActiveSection(entry.id);
+                        openSection(entry.id);
+                        scrollToSection(entry.id);
                       }}
-                      className={`text-left w-full text-sm px-3 py-2 rounded-lg transition-colors ${
+                      className={`block w-full text-left text-sm leading-6 px-3 py-2 rounded-lg transition-colors ${
                         active === entry.id
                           ? 'bg-[#0B1F3A] text-white font-600'
                           : 'text-[#6B7280] hover:text-[#1F2937] hover:bg-[#F6F7F9]'
@@ -255,38 +344,33 @@ export default function GuidelinesPage() {
           {/* Content */}
           <div className="flex-1 space-y-4">
             {visibleSections.map(section => (
-              <div key={section.id} id={section.id} className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden scroll-mt-24">
-                <button
-                  onClick={() => { setActiveSection(section.id); toggleExpand(section.id); }}
-                  className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-[#F6F7F9] transition-colors"
-                >
-                  <h2 className="font-700 text-[#1F2937]" style={{ fontWeight: 700 }}>{section.title}</h2>
-                  <Icon
-                    name="chevron-down"
-                    size={16}
-                    className={`text-[#6B7280] transition-transform ${expanded.includes(section.id) || active === section.id ? 'rotate-180' : ''}`}
-                  />
-                </button>
-                {(expanded.includes(section.id) || active === section.id) && (
-                  <div className="px-6 pb-6 border-t border-[#E5E7EB] space-y-5">
-                    {(section.content || []).map(item => (
-                      <div key={item.heading} className="pt-5">
-                        <h3 className="font-600 text-sm text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>{item.heading}</h3>
-                        <p className="text-sm text-[#6B7280] leading-relaxed">{item.text}</p>
-                      </div>
-                    ))}
+              <AccordionSection
+                key={section.id}
+                id={section.id}
+                title={section.title}
+                isOpen={expanded.includes(section.id)}
+                onToggle={() => { setActiveSection(section.id); toggleExpand(section.id); }}
+              >
+                {(section.content || []).map(item => (
+                  <div key={item.heading} className="pt-5">
+                    <h3 className="font-600 text-sm text-[#0B1F3A] mb-2" style={{ fontWeight: 600 }}>{item.heading}</h3>
+                    <p className="text-sm text-[#6B7280] leading-relaxed">{item.text}</p>
                   </div>
-                )}
-              </div>
+                ))}
+              </AccordionSection>
             ))}
 
             <TermsAndPrivacySection
               document={termsPrivacy.terms}
               anchorId="terms"
+              isOpen={expanded.includes('terms')}
+              onToggle={() => { setActiveSection('terms'); toggleExpand('terms'); }}
             />
             <TermsAndPrivacySection
               document={termsPrivacy.privacy}
               anchorId="privacy"
+              isOpen={expanded.includes('privacy')}
+              onToggle={() => { setActiveSection('privacy'); toggleExpand('privacy'); }}
             />
           </div>
         </div>
