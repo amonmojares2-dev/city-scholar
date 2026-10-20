@@ -39,3 +39,7 @@ Thumbs.db
 # Uploaded documents (local dev disk storage -- never commit)
 server/uploads/*
 !server/uploads/.gitkeep
+
+# Super Admin database backups (may contain sensitive personal information)
+backups/*
+!backups/.gitkeep

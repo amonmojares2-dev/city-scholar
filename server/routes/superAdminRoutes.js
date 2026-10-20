@@ -18,6 +18,7 @@ const {
     getReports,
     exportReport
 } = require("../controllers/superAdminController");
+const backupController = require("../controllers/superAdminBackupController");
 
 const router = express.Router();
 
@@ -51,6 +52,12 @@ router.patch("/barangays/:id", saveBarangay);
 // Archive + audit trail
 router.get("/archive", listArchive);
 router.get("/audit", listAuditLogs);
+
+// Database backups
+router.get("/backups", backupController.list);
+router.post("/backups", backupController.create);
+router.delete("/backups/:id", backupController.remove);
+router.post("/backups/:id/restore", backupController.restore);
 
 // Reports
 router.get("/reports", getReports);
