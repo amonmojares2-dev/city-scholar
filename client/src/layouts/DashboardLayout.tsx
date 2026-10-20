@@ -98,7 +98,7 @@ export default function DashboardLayout({ role, sidebarItems, userName, userRole
   }
 
   const isActive = (path: string) => {
-    if (path === '/student' || path === '/barangay' || path === '/city') return pathname === path;
+    if (path === '/student' || path === '/barangay' || path === '/city' || path === '/superadmin') return pathname === path;
     return pathname.startsWith(path);
   };
 

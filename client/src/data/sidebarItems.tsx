@@ -38,6 +38,7 @@ export const superAdminSidebarItems: SidebarItem[] = [
   { label: 'Program Config',      path: '/superadmin/program',            icon: 'sliders',      group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Schools & Barangays', path: '/superadmin/data',               icon: 'database',     group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Archive',             path: '/superadmin/archive',            icon: 'archive',      group: 'SCHOLARSHIP MANAGEMENT' },
+  { label: 'Backup & Recovery',   path: '/superadmin/backup',             icon: 'hard-drive',   group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Audit Log',           path: '/superadmin/audit',              icon: 'file-bar-chart', group: 'REPORTS & COMPLIANCE' },
   { label: 'Export Reports',      path: '/superadmin/reports',            icon: 'download',     group: 'REPORTS & COMPLIANCE' },
   { label: 'Announcements',       path: '/superadmin/announcements',      icon: 'megaphone',    group: 'COMMUNICATION' },

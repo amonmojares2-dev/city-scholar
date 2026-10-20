@@ -54,6 +54,7 @@ import SuperAdminAnnouncements from './Pages/superadmin/SuperAdminAnnouncements'
 import SuperAdminMessages from './Pages/superadmin/SuperAdminMessages';
 import SuperAdminDataManagement from './Pages/superadmin/SuperAdminDataManagement';
 import SuperAdminArchive from './Pages/superadmin/SuperAdminArchive';
+import SuperAdminBackup from './Pages/superadmin/SuperAdminBackup';
 import { studentSidebarItems, barangaySidebarItems, citySidebarItems, superAdminSidebarItems } from './data/sidebarItems';
 
 // Every /login visit from an already-signed-in user goes to that user's
@@ -289,6 +290,7 @@ export const router = createBrowserRouter([
           { path: 'messages', Component: SuperAdminMessages },
           { path: 'data', Component: SuperAdminDataManagement },
           { path: 'archive', Component: SuperAdminArchive },
+          { path: 'backup', Component: SuperAdminBackup },
           { path: 'scholars', Component: SuperAdminScholars },
         ],
       },
