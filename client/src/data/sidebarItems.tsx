@@ -35,7 +35,6 @@ export const superAdminSidebarItems: SidebarItem[] = [
   { label: 'Dashboard',           path: '/superadmin',                    icon: 'grid',         group: 'OVERVIEW' },
   { label: 'Staff Accounts',      path: '/superadmin/accounts',           icon: 'user-check',   group: 'ACCOUNT MANAGEMENT' },
   { label: 'All Users',           path: '/superadmin/users',              icon: 'users',        group: 'ACCOUNT MANAGEMENT' },
-  { label: 'Program Config',      path: '/superadmin/program',            icon: 'sliders',      group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Schools & Barangays', path: '/superadmin/data',               icon: 'database',     group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Archive',             path: '/superadmin/archive',            icon: 'archive',      group: 'SCHOLARSHIP MANAGEMENT' },
   { label: 'Backup & Recovery',   path: '/superadmin/backup',             icon: 'hard-drive',   group: 'SCHOLARSHIP MANAGEMENT' },

@@ -47,7 +47,6 @@ import SuperAdminDashboard from './Pages/superadmin/SuperAdminDashboard';
 import SuperAdminScholars from './Pages/superadmin/SuperAdminScholars';
 import SuperAdminAccounts from './Pages/superadmin/SuperAdminAccounts';
 import SuperAdminAllUsers from './Pages/superadmin/SuperAdminAllUsers';
-import SuperAdminProgramConfig from './Pages/superadmin/SuperAdminProgramConfig';
 import SuperAdminAuditLog from './Pages/superadmin/SuperAdminAuditLog';
 import SuperAdminReports from './Pages/superadmin/SuperAdminReports';
 import SuperAdminAnnouncements from './Pages/superadmin/SuperAdminAnnouncements';
@@ -283,7 +282,6 @@ export const router = createBrowserRouter([
           { index: true, Component: SuperAdminDashboard },
           { path: 'accounts', Component: SuperAdminAccounts },
           { path: 'users', Component: SuperAdminAllUsers },
-          { path: 'program', Component: SuperAdminProgramConfig },
           { path: 'audit', Component: SuperAdminAuditLog },
           { path: 'reports', Component: SuperAdminReports },
           { path: 'announcements', Component: SuperAdminAnnouncements },
